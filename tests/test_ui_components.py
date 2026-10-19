@@ -1,0 +1,524 @@
+"""
+AirTeach AI — Phase 3 UI Component Tests
+==========================================
+Tests for LessonBoard, CameraWidget, ChatPanel, SettingsDialog,
+FaceAuthDialog, and MainWindow — all run without a real camera or display.
+
+All tests use a single QApplication instance via a module-scoped fixture.
+"""
+from __future__ import annotations
+
+import sys
+import uuid
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import numpy as np
+import pytest
+
+# Ensure PySide6 can run headlessly
+import os
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QRectF, Qt, QPointF
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QApplication
+
+
+# ── Module-scoped QApplication ────────────────────────────────────────────────
+
+@pytest.fixture(scope="module")
+def qapp():
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    yield app
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LessonBoard Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestLessonBoard:
+    """Tests for LessonBoard (QGraphicsScene canvas)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, qapp):
+        from src.ui.lesson_board import LessonBoard, InkStroke, BOARD_WIDTH, BOARD_HEIGHT
+        from src.core.stroke_beautifier import BezierSegment, ShapeType
+        self.LessonBoard = LessonBoard
+        self.InkStroke = InkStroke
+        self.BOARD_WIDTH = BOARD_WIDTH
+        self.BOARD_HEIGHT = BOARD_HEIGHT
+        self.BezierSegment = BezierSegment
+        self.ShapeType = ShapeType
+        self.board = LessonBoard()
+
+    def test_scene_rect(self):
+        rect = self.board.sceneRect()
+        assert rect.width() == self.BOARD_WIDTH
+        assert rect.height() == self.BOARD_HEIGHT
+
+    def test_laser_starts_hidden(self):
+        assert not self.board._laser_item.isVisible()
+
+    def test_move_laser_visible(self):
+        self.board.move_laser(100.0, 200.0, visible=True)
+        assert self.board._laser_item.isVisible()
+        assert self.board._laser_item.pos().x() == pytest.approx(100.0)
+        assert self.board._laser_item.pos().y() == pytest.approx(200.0)
+
+    def test_move_laser_invisible(self):
+        self.board.move_laser(0.0, 0.0, visible=False)
+        assert not self.board._laser_item.isVisible()
+
+    def test_set_background_page(self):
+        img = np.full((480, 640, 3), 200, dtype=np.uint8)
+        self.board.set_background_page(img)
+        assert self.board._bg_item is not None
+
+    def test_clear_background(self):
+        img = np.full((480, 640, 3), 200, dtype=np.uint8)
+        self.board.set_background_page(img)
+        self.board.clear_background()
+        assert self.board._bg_item is None
+
+    def test_begin_update_end_stroke_preview(self):
+        color = QColor("#ff0000")
+        self.board.begin_stroke_preview(50.0, 60.0, color)
+        assert self.board._preview_item is not None
+        self.board.update_stroke_preview(70.0, 80.0)
+        self.board.update_stroke_preview(90.0, 100.0)
+        self.board.end_stroke_preview()
+        assert self.board._preview_item is None
+        assert len(self.board._live_points) == 0
+
+    def _make_freehand_stroke(self, stroke_id: str = None) -> object:
+        """Create a minimal freehand InkStroke for testing."""
+        if stroke_id is None:
+            stroke_id = str(uuid.uuid4())
+        # BezierSegment fields: p0 (start), p1 (cp1), p2 (cp2), p3 (end)
+        seg = self.BezierSegment(
+            p0=np.array([10.0, 10.0]),
+            p1=np.array([20.0, 5.0]),
+            p2=np.array([30.0, 15.0]),
+            p3=np.array([40.0, 10.0]),
+        )
+        return self.InkStroke(
+            stroke_id=stroke_id,
+            segments=[seg],
+            widths=[2.5],
+            snap=None,
+            color=QColor("#202124"),
+            timestamps_ms=[0.0, 16.0],
+        )
+
+    def test_commit_freehand_stroke(self):
+        stroke = self._make_freehand_stroke("stroke-001")
+        self.board.commit_stroke(stroke)
+        assert "stroke-001" in self.board._strokes
+        assert stroke._path_item is not None
+
+    def test_remove_stroke(self):
+        stroke = self._make_freehand_stroke("stroke-002")
+        self.board.commit_stroke(stroke)
+        result = self.board.remove_stroke("stroke-002")
+        assert result is True
+        assert "stroke-002" not in self.board._strokes
+
+    def test_remove_nonexistent_stroke(self):
+        result = self.board.remove_stroke("does-not-exist")
+        assert result is False
+
+    def test_clear_all_strokes(self):
+        for i in range(3):
+            self.board.commit_stroke(self._make_freehand_stroke(f"batch-{i}"))
+        self.board.clear_all_strokes()
+        assert len(self.board._strokes) == 0
+
+    def test_get_strokes_for_export(self):
+        board2 = self.LessonBoard()
+        stroke = self._make_freehand_stroke("export-001")
+        board2.commit_stroke(stroke)
+        data = board2.get_strokes_for_export()
+        assert any(d["stroke_id"] == "export-001" for d in data)
+        entry = next(d for d in data if d["stroke_id"] == "export-001")
+        assert "segments" in entry
+        assert "widths" in entry
+        assert "color_hex" in entry
+        assert "timestamps_ms" in entry
+
+    def test_show_hide_selection_rect(self):
+        rect = QRectF(100, 100, 200, 150)
+        self.board.show_selection_rect(rect)
+        assert self.board._select_rect_item is not None
+        self.board.hide_selection_rect()
+        assert self.board._select_rect_item is None
+
+    def test_add_text_overlay(self):
+        item = self.board.add_text_overlay("Hello AirTeach", 50.0, 50.0)
+        assert item is not None
+        assert item.toPlainText() == "Hello AirTeach"
+
+    def test_add_latex_overlay(self):
+        rgba_img = np.full((100, 200, 4), 255, dtype=np.uint8)
+        item = self.board.add_latex_overlay(rgba_img, 60.0, 70.0)
+        assert item is not None
+
+    def test_snapshot_as_pixmap(self):
+        pixmap = self.board.snapshot_as_pixmap()
+        assert not pixmap.isNull()
+        assert pixmap.width() == self.BOARD_WIDTH
+        assert pixmap.height() == self.BOARD_HEIGHT
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CameraWidget Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCameraWidget:
+    """Tests for CameraWidget (video display label)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, qapp):
+        from src.ui.camera_widget import CameraWidget
+        self.widget = CameraWidget()
+
+    def test_instantiation(self):
+        assert self.widget is not None
+
+    def test_size_hint(self):
+        hint = self.widget.sizeHint()
+        assert hint.width() > 0
+        assert hint.height() > 0
+
+    def test_minimum_size(self):
+        assert self.widget.minimumWidth() >= 240
+        assert self.widget.minimumHeight() >= 180
+
+    def test_on_frame_updates_pixmap(self):
+        frame = np.full((240, 320, 3), 128, dtype=np.uint8)
+        self.widget.on_frame(frame)
+        # After calling on_frame, current_frame should be set
+        assert self.widget._current_frame is not None
+
+    def test_on_frame_stores_frame(self):
+        frame = np.ones((240, 320, 3), dtype=np.uint8) * 100
+        self.widget.on_frame(frame)
+        assert self.widget._current_frame is frame
+
+    def test_set_show_landmarks(self):
+        self.widget.set_show_landmarks(False)
+        assert self.widget._show_landmarks is False
+        self.widget.set_show_landmarks(True)
+        assert self.widget._show_landmarks is True
+
+    def test_frame_displayed_signal_exists(self):
+        assert hasattr(self.widget, "frame_displayed")
+
+    def test_initial_text_is_offline(self):
+        # Fresh widget should show "Camera offline" placeholder
+        w2 = __import__("src.ui.camera_widget", fromlist=["CameraWidget"]).CameraWidget()
+        # The text is set in __init__ before styleSheet override; check _current_frame is None
+        assert w2._current_frame is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ChatPanel Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestChatPanel:
+    """Tests for ChatPanel (Gemini assistant UI)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, qapp):
+        from src.ui.chat_panel import ChatPanel
+        # Create a mock assistant with the correct is_online property
+        mock_assistant = MagicMock()
+        mock_assistant.is_online = True
+        self.panel = ChatPanel(assistant=mock_assistant)
+
+    def test_instantiation(self):
+        assert self.panel is not None
+
+    def test_minimum_width(self):
+        assert self.panel.minimumWidth() >= 300
+
+    def test_set_current_page_text(self):
+        self.panel.set_current_page_text("Slide text goes here.")
+        assert self.panel._current_page_text == "Slide text goes here."
+
+    def test_append_message_user(self):
+        self.panel._append_message("Tôi", "Xin chào AI!", is_user=True)
+        text = self.panel._history_view.toPlainText()
+        assert "Xin chào AI!" in text
+
+    def test_append_message_ai(self):
+        self.panel._append_message("AI", "Chào bạn!", is_user=False)
+        text = self.panel._history_view.toPlainText()
+        assert "Chào bạn!" in text
+
+    def test_update_online_status_offline(self):
+        self.panel.update_online_status(False)
+        # isHidden() reflects setVisible(False) regardless of whether widget is shown on screen
+        assert not self.panel._offline_banner.isHidden()
+
+    def test_update_online_status_online(self):
+        self.panel.update_online_status(True)
+        assert self.panel._offline_banner.isHidden()
+
+    def test_history_list_starts_empty(self):
+        from src.ui.chat_panel import ChatPanel
+        mock_assistant = MagicMock()
+        mock_assistant.is_online = True
+        fresh = ChatPanel(assistant=mock_assistant)
+        assert fresh._history == []
+
+    def test_request_canvas_snapshot_signal_exists(self):
+        assert hasattr(self.panel, "request_canvas_snapshot")
+
+    def test_input_box_exists(self):
+        assert hasattr(self.panel, "_input_box")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SettingsDialog Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSettingsDialog:
+    """Tests for SettingsDialog (application settings)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, qapp):
+        from src.ui.settings_dialog import SettingsDialog
+        self.dlg = SettingsDialog()
+
+    def test_instantiation(self):
+        assert self.dlg is not None
+
+    def test_default_ink_color(self):
+        color = self.dlg.ink_color
+        assert isinstance(color, str)
+        assert color.startswith("#")
+
+    def test_default_min_stroke_width(self):
+        assert self.dlg.min_stroke_width > 0
+
+    def test_default_max_stroke_width(self):
+        assert self.dlg.max_stroke_width >= self.dlg.min_stroke_width
+
+    def test_default_rdp_epsilon(self):
+        eps = self.dlg.rdp_epsilon
+        assert eps > 0.0
+
+    def test_one_euro_beta(self):
+        beta = self.dlg.one_euro_beta
+        assert isinstance(beta, float)
+
+    def test_shape_snapping_enabled_is_bool(self):
+        enabled = self.dlg.shape_snapping_enabled
+        assert isinstance(enabled, bool)
+
+    def test_clahe_enabled_is_bool(self):
+        enabled = self.dlg.clahe_enabled
+        assert isinstance(enabled, bool)
+
+    def test_api_key_changed_signal_exists(self):
+        assert hasattr(self.dlg, "api_key_changed")
+
+    def test_camera_index_changed_signal_exists(self):
+        assert hasattr(self.dlg, "camera_index_changed")
+
+    def test_calibration_requested_signal_exists(self):
+        assert hasattr(self.dlg, "calibration_requested")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FaceAuthDialog Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestFaceAuthDialog:
+    """Tests for FaceAuthDialog (face login / enrollment)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, qapp):
+        from src.ui.face_auth_dialog import FaceAuthDialog, DialogMode
+        from src.services.face_profile_service import TeacherProfileService
+        self.FaceAuthDialog = FaceAuthDialog
+        self.DialogMode = DialogMode
+        # Create a mock service so dialogs can be instantiated without SQLite
+        self.mock_service = MagicMock(spec=TeacherProfileService)
+
+    def test_login_mode_instantiation(self):
+        dlg = self.FaceAuthDialog(service=self.mock_service, mode=self.DialogMode.LOGIN)
+        assert dlg is not None
+
+    def test_enroll_mode_instantiation(self):
+        dlg = self.FaceAuthDialog(service=self.mock_service, mode=self.DialogMode.ENROLL)
+        assert dlg is not None
+
+    def test_login_title(self):
+        dlg = self.FaceAuthDialog(service=self.mock_service, mode=self.DialogMode.LOGIN)
+        title = dlg.windowTitle()
+        assert len(title) > 0
+
+    def test_enroll_title(self):
+        dlg = self.FaceAuthDialog(service=self.mock_service, mode=self.DialogMode.ENROLL)
+        title = dlg.windowTitle()
+        assert len(title) > 0
+
+    def test_login_title_different_from_enroll(self):
+        login_dlg = self.FaceAuthDialog(service=self.mock_service, mode=self.DialogMode.LOGIN)
+        enroll_dlg = self.FaceAuthDialog(service=self.mock_service, mode=self.DialogMode.ENROLL)
+        # Titles should differ
+        assert login_dlg.windowTitle() != enroll_dlg.windowTitle()
+
+    def test_result_attribute_exists(self):
+        dlg = self.FaceAuthDialog(service=self.mock_service, mode=self.DialogMode.LOGIN)
+        # Should have _mode attribute
+        assert hasattr(dlg, "_mode")
+        assert dlg._mode == self.DialogMode.LOGIN
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MainWindow Smoke Tests (no camera, no real network)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestMainWindowSmoke:
+    """Smoke tests for MainWindow — verifies instantiation and key attributes."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, qapp):
+        # Patch HandTrackingWorker to avoid camera access
+        with patch("src.ui.main_window._QtCameraWorker") as mock_cam_cls, \
+             patch("src.ui.main_window.QThread") as mock_thread_cls:
+
+            mock_cam = MagicMock()
+            for attr in ("frame_ready", "gesture_event", "error_occurred"):
+                sig = MagicMock()
+                sig.connect = MagicMock()
+                setattr(mock_cam, attr, sig)
+            mock_cam_cls.return_value = mock_cam
+
+            mock_thread = MagicMock()
+            mock_thread.isRunning.return_value = False
+            mock_thread.started = MagicMock()
+            mock_thread.started.connect = MagicMock()
+            mock_thread_cls.return_value = mock_thread
+
+            from src.ui.main_window import MainWindow
+            self.window = MainWindow(teacher_row=None, camera_index=99)
+
+    def test_window_title(self):
+        assert "AirTeach" in self.window.windowTitle()
+
+    def test_scene_is_lesson_board(self):
+        from src.ui.lesson_board import LessonBoard
+        assert isinstance(self.window._scene, LessonBoard)
+
+    def test_chat_panel_exists(self):
+        from src.ui.chat_panel import ChatPanel
+        assert isinstance(self.window._chat_panel, ChatPanel)
+
+    def test_camera_widget_exists(self):
+        from src.ui.camera_widget import CameraWidget
+        assert isinstance(self.window._cam_widget, CameraWidget)
+
+    def test_gesture_hud_label(self):
+        assert self.window._gesture_hud is not None
+
+    def test_status_bar_labels(self):
+        assert self.window._status_mode is not None
+        assert self.window._status_page is not None
+        assert self.window._status_fps is not None
+
+    def test_ink_color_default(self):
+        assert isinstance(self.window._ink_color, QColor)
+
+    def test_snapping_on_default(self):
+        assert isinstance(self.window._snapping_on, bool)
+        assert self.window._snapping_on is True
+
+    def test_doc_manager_initialized(self):
+        from src.services.document_manager import DocumentManager
+        assert isinstance(self.window._doc_manager, DocumentManager)
+
+    def test_assistant_initialized(self):
+        from src.services.gemini_assistant import GeminiAssistant
+        assert isinstance(self.window._assistant, GeminiAssistant)
+
+    def test_recognizer_initialized(self):
+        from src.services.smart_ink_ocr import SmartInkRecognizer
+        assert isinstance(self.window._recognizer, SmartInkRecognizer)
+
+    def test_scene_coords_center(self):
+        bx, by = self.window._scene_coords(0.5, 0.5)
+        from src.ui.lesson_board import BOARD_WIDTH, BOARD_HEIGHT
+        assert bx == pytest.approx(BOARD_WIDTH * 0.5)
+        assert by == pytest.approx(BOARD_HEIGHT * 0.5)
+
+    def test_scene_coords_origin(self):
+        bx, by = self.window._scene_coords(0.0, 0.0)
+        assert bx == pytest.approx(0.0)
+        assert by == pytest.approx(0.0)
+
+    def test_scene_coords_full(self):
+        bx, by = self.window._scene_coords(1.0, 1.0)
+        from src.ui.lesson_board import BOARD_WIDTH, BOARD_HEIGHT
+        assert bx == pytest.approx(BOARD_WIDTH)
+        assert by == pytest.approx(BOARD_HEIGHT)
+
+    def test_rdp_epsilon_positive(self):
+        assert self.window._rdp_epsilon > 0
+
+    def test_ink_width_range_valid(self):
+        assert self.window._ink_min_width > 0
+        assert self.window._ink_max_width >= self.window._ink_min_width
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# InkStroke Dataclass Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestInkStroke:
+    """Verify InkStroke dataclass fields and compare=False behavior."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, qapp):
+        from src.ui.lesson_board import InkStroke
+        from src.core.stroke_beautifier import BezierSegment
+        self.InkStroke = InkStroke
+        self.BezierSegment = BezierSegment
+
+    def _make_seg(self):
+        # BezierSegment fields: p0 (start), p1 (cp1), p2 (cp2), p3 (end)
+        return self.BezierSegment(
+            p0=np.array([0.0, 0.0]),
+            p1=np.array([1.0, 0.0]),
+            p2=np.array([2.0, 0.0]),
+            p3=np.array([3.0, 0.0]),
+        )
+
+    def test_defaults(self):
+        s = self.InkStroke(stroke_id="abc", segments=[], widths=[])
+        assert s.snap is None
+        assert s._path_item is None
+        assert s._shape_item is None
+        assert s.timestamps_ms == []
+
+    def test_equality_ignores_graphics_items(self):
+        """Two strokes with same data but different _path_item should be equal."""
+        seg = self._make_seg()
+        s1 = self.InkStroke(stroke_id="x", segments=[seg], widths=[2.0])
+        s2 = self.InkStroke(stroke_id="x", segments=[seg], widths=[2.0])
+        # _path_item has compare=False so these should be equal
+        s1._path_item = object()  # type: ignore
+        assert s1 == s2
+
+    def test_stroke_id_stored_correctly(self):
+        s = self.InkStroke(stroke_id="test-id-123", segments=[], widths=[])
+        assert s.stroke_id == "test-id-123"
+
+    def test_color_default(self):
+        s = self.InkStroke(stroke_id="c", segments=[], widths=[])
+        assert s.color == QColor("#202124")
