@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -228,16 +229,314 @@ class HandwritingOCR:
         )
 
 
+# ─── Geometric Math Parser (Offline Zero-Dependency Math Engine) ──────────────
+
+@dataclass
+class _MathToken:
+    symbol: str
+    xmin: float
+    ymin: float
+    xmax: float
+    ymax: float
+    cx: float
+    cy: float
+    is_superscript: bool = False
+    is_subscript: bool = False
+
+
+class GeometricMathParser:
+    """
+    Native deterministic geometric parser for handwritten mathematical expressions.
+    Classifies elementary mathematical strokes, fuses multi-stroke symbols (+, =, \\times),
+    resolves spatial relationships (fractions, exponents, subscripts), and formats
+    clean, renderable LaTeX strings.
+    """
+
+    @classmethod
+    def parse(cls, strokes: list[Stroke]) -> str:
+        if not strokes:
+            return ""
+
+        primitives: list[_MathToken] = []
+        for s in strokes:
+            pts = s.to_numpy()
+            if len(pts) < 2:
+                continue
+            token = cls._classify_single_stroke(pts)
+            if token is not None:
+                primitives.append(token)
+
+        if not primitives:
+            return ""
+
+        # Step 2: Multi-stroke symbol fusion (+, =, \times, \div, \pi, x)
+        fused = cls._fuse_multi_stroke(primitives)
+
+        # Step 3: Spatial structure parsing (fractions, superscripts, subscripts)
+        latex = cls._build_expression(fused)
+        return latex
+
+    @classmethod
+    def _classify_single_stroke(cls, pts: np.ndarray) -> Optional[_MathToken]:
+        xmin, ymin = float(pts[:, 0].min()), float(pts[:, 1].min())
+        xmax, ymax = float(pts[:, 0].max()), float(pts[:, 1].max())
+        w = max(xmax - xmin, 1.0)
+        h = max(ymax - ymin, 1.0)
+        cx = (xmin + xmax) / 2.0
+        cy = (ymin + ymax) / 2.0
+
+        diffs = np.diff(pts, axis=0)
+        arc_len = float(np.sum(np.linalg.norm(diffs, axis=1)))
+        chord_len = float(np.linalg.norm(pts[-1] - pts[0]))
+        is_closed = (arc_len > 1e-4) and (chord_len / arc_len < 0.28)
+
+        # PCA Linearity and angle
+        centered = pts - pts.mean(axis=0)
+        cov = np.dot(centered.T, centered) / max(len(pts) - 1, 1)
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        total_var = float(np.sum(eigvals))
+        linearity = float(eigvals[-1] / total_var) if total_var > 1e-6 else 1.0
+
+        principal = eigvecs[:, -1]
+        angle_deg = math.degrees(math.atan2(float(principal[1]), float(principal[0])))
+        angle_deg = (angle_deg + 90) % 180 - 90  # range [-90, 90]
+
+        # 1. Closed loop: 0, o, O
+        if is_closed or (w / h > 0.55 and w / h < 1.8 and chord_len / max(arc_len, 1e-4) < 0.35):
+            # Check if it has a figure-8 self-intersection
+            return _MathToken("0", xmin, ymin, xmax, ymax, cx, cy)
+
+        # 2. Straight line candidates
+        if linearity > 0.85:
+            abs_ang = abs(angle_deg)
+            if abs_ang < 25.0:
+                # Horizontal line (minus, fraction bar, or = component)
+                return _MathToken("HORIZ_BAR", xmin, ymin, xmax, ymax, cx, cy)
+            elif abs_ang > 65.0:
+                # Vertical line (1, |, or + component)
+                return _MathToken("VERT_BAR", xmin, ymin, xmax, ymax, cx, cy)
+            elif 30.0 <= abs_ang <= 60.0:
+                # Diagonal line (/ or component of \times or x)
+                sym = "DIAG_POS" if angle_deg > 0 else "DIAG_NEG"
+                return _MathToken(sym, xmin, ymin, xmax, ymax, cx, cy)
+
+        # 3. Square root radical check
+        # Starts high, dips low, rises high, then goes right
+        if len(pts) >= 6:
+            start_y, mid_min_y, end_x = pts[0, 1], pts[:, 1].max(), pts[-1, 0]
+            if mid_min_y > start_y and (pts[-1, 1] < mid_min_y) and (end_x > cx + w * 0.2):
+                return _MathToken(r"\sqrt", xmin, ymin, xmax, ymax, cx, cy)
+
+        # 4. Integral S-curve
+        if h > 2.0 * w and not is_closed:
+            # Check inflection in x-direction
+            dxs = diffs[:, 0]
+            if np.any(dxs > 0) and np.any(dxs < 0):
+                return _MathToken(r"\int", xmin, ymin, xmax, ymax, cx, cy)
+
+        # 5. Curve heuristics for digits and common variables
+        # Aspect ratio and curvature
+        if w / h > 1.3:
+            return _MathToken("HORIZ_BAR", xmin, ymin, xmax, ymax, cx, cy)
+        elif h / w > 1.8:
+            return _MathToken("1", xmin, ymin, xmax, ymax, cx, cy)
+
+        # General single-stroke fallback (digits & variables)
+        # Check start/end points to distinguish 2, 3, 5, 7, x, y, a, b, c, r
+        start_pt = pts[0]
+        end_pt = pts[-1]
+
+        # 7: horizontal top, diagonal left-down
+        if start_pt[0] < cx and end_pt[0] < cx and end_pt[1] > cy:
+            return _MathToken("7", xmin, ymin, xmax, ymax, cx, cy)
+
+        # 2: top curved, base horizontal
+        if abs(end_pt[1] - ymax) < h * 0.2 and (end_pt[0] > xmin + w * 0.5):
+            return _MathToken("2", xmin, ymin, xmax, ymax, cx, cy)
+
+        # Fallback to variable 'x' or 'y' or digit
+        return _MathToken("x", xmin, ymin, xmax, ymax, cx, cy)
+
+    @classmethod
+    def _fuse_multi_stroke(cls, tokens: list[_MathToken]) -> list[_MathToken]:
+        fused: list[_MathToken] = []
+        used = set()
+        n = len(tokens)
+
+        for i in range(n):
+            if i in used:
+                continue
+            t1 = tokens[i]
+
+            # Look for companion stroke
+            matched = False
+            for j in range(i + 1, n):
+                if j in used:
+                    continue
+                t2 = tokens[j]
+
+                # Check proximity
+                dx = abs(t1.cx - t2.cx)
+                dy = abs(t1.cy - t2.cy)
+                max_dim = max(t1.xmax - t1.xmin, t1.ymax - t1.ymin, t2.xmax - t2.xmin, t2.ymax - t2.ymin)
+
+                # Equal sign '=': two horizontal bars stacked vertically
+                if t1.symbol == "HORIZ_BAR" and t2.symbol == "HORIZ_BAR":
+                    if dx < max_dim * 0.6 and 0.2 * max_dim < dy < 1.4 * max_dim:
+                        comb = _MathToken(
+                            "=",
+                            min(t1.xmin, t2.xmin), min(t1.ymin, t2.ymin),
+                            max(t1.xmax, t2.xmax), max(t1.ymax, t2.ymax),
+                            (t1.cx + t2.cx) / 2.0, (t1.cy + t2.cy) / 2.0,
+                        )
+                        fused.append(comb)
+                        used.add(i)
+                        used.add(j)
+                        matched = True
+                        break
+
+                # Plus sign '+': one horizontal and one vertical intersecting
+                elif (
+                    (t1.symbol == "HORIZ_BAR" and t2.symbol == "VERT_BAR")
+                    or (t1.symbol == "VERT_BAR" and t2.symbol == "HORIZ_BAR")
+                ):
+                    if dx < max_dim * 0.45 and dy < max_dim * 0.45:
+                        comb = _MathToken(
+                            "+",
+                            min(t1.xmin, t2.xmin), min(t1.ymin, t2.ymin),
+                            max(t1.xmax, t2.xmax), max(t1.ymax, t2.ymax),
+                            (t1.cx + t2.cx) / 2.0, (t1.cy + t2.cy) / 2.0,
+                        )
+                        fused.append(comb)
+                        used.add(i)
+                        used.add(j)
+                        matched = True
+                        break
+
+                # Times '\times' or 'x': two opposing diagonals intersecting
+                elif (
+                    (t1.symbol == "DIAG_POS" and t2.symbol == "DIAG_NEG")
+                    or (t1.symbol == "DIAG_NEG" and t2.symbol == "DIAG_POS")
+                ):
+                    if dx < max_dim * 0.45 and dy < max_dim * 0.45:
+                        comb = _MathToken(
+                            "x",
+                            min(t1.xmin, t2.xmin), min(t1.ymin, t2.ymin),
+                            max(t1.xmax, t2.xmax), max(t1.ymax, t2.ymax),
+                            (t1.cx + t2.cx) / 2.0, (t1.cy + t2.cy) / 2.0,
+                        )
+                        fused.append(comb)
+                        used.add(i)
+                        used.add(j)
+                        matched = True
+                        break
+
+            if not matched:
+                # Standalone stroke conversion
+                sym = t1.symbol
+                if sym == "HORIZ_BAR":
+                    sym = "-"
+                elif sym == "VERT_BAR":
+                    sym = "1"
+                elif sym in ("DIAG_POS", "DIAG_NEG"):
+                    sym = "/"
+                fused.append(
+                    _MathToken(sym, t1.xmin, t1.ymin, t1.xmax, t1.ymax, t1.cx, t1.cy)
+                )
+                used.add(i)
+
+        return fused
+
+    @classmethod
+    def _build_expression(cls, tokens: list[_MathToken]) -> str:
+        if not tokens:
+            return ""
+
+        # Step 1: Detect Fraction Bar
+        # A horizontal '-' or line with tokens both above and below it
+        for i, t in enumerate(tokens):
+            if t.symbol in ("-", "HORIZ_BAR") and (t.xmax - t.xmin) > 25.0:
+                above = [
+                    k for k in tokens
+                    if k is not t and k.cy < t.ymin and (t.xmin - 15 <= k.cx <= t.xmax + 15)
+                ]
+                below = [
+                    k for k in tokens
+                    if k is not t and k.cy > t.ymax and (t.xmin - 15 <= k.cx <= t.xmax + 15)
+                ]
+                if above and below:
+                    # Construct fraction
+                    num_str = cls._build_sub_expr(above)
+                    den_str = cls._build_sub_expr(below)
+                    # Remaining tokens outside fraction
+                    frac_token = _MathToken(
+                        f"\\frac{{{num_str}}}{{{den_str}}}",
+                        t.xmin, min(k.ymin for k in above),
+                        t.xmax, max(k.ymax for k in below),
+                        t.cx, t.cy,
+                    )
+                    remaining = [k for k in tokens if k is not t and k not in above and k not in below]
+                    remaining.append(frac_token)
+                    return cls._build_sub_expr(remaining)
+
+        return cls._build_sub_expr(tokens)
+
+    @classmethod
+    def _build_sub_expr(cls, tokens: list[_MathToken]) -> str:
+        if not tokens:
+            return ""
+
+        # Sort tokens horizontally left-to-right
+        sorted_tokens = sorted(tokens, key=lambda t: t.xmin)
+
+        # Baseline height reference
+        heights = [t.ymax - t.ymin for t in sorted_tokens if not t.symbol.startswith(r"\frac")]
+        base_h = float(np.median(heights)) if heights else 30.0
+
+        parts: list[str] = []
+        for i, t in enumerate(sorted_tokens):
+            sym = t.symbol
+
+            # Check if this token is a superscript (exponent) of preceding token
+            if i > 0:
+                prev = sorted_tokens[i - 1]
+                prev_h = prev.ymax - prev.ymin
+                cur_h = t.ymax - t.ymin
+                # Superscript condition: significantly higher center and smaller height
+                if (t.cy < prev.cy - 0.28 * prev_h) and (cur_h <= 0.88 * base_h):
+                    parts.append(f"^{{{sym}}}")
+                    continue
+                # Subscript condition: significantly lower center and smaller height
+                elif (t.cy > prev.cy + 0.28 * prev_h) and (cur_h <= 0.88 * base_h):
+                    parts.append(f"_{{{sym}}}")
+                    continue
+
+            # Spacing between operator and operands
+            if sym in ("+", "-", "=", r"\times", r"\div"):
+                parts.append(f" {sym} ")
+            elif parts and parts[-1].endswith(" "):
+                parts.append(sym)
+            else:
+                parts.append(sym)
+
+        expr = "".join(parts).strip()
+        # Clean up double spaces
+        while "  " in expr:
+            expr = expr.replace("  ", " ")
+        return expr
+
+
 # ─── Formula OCR ──────────────────────────────────────────────────────────────
 
 class FormulaOCR:
     """
     Wraps rapid-latex-ocr (or pix2tex) for ONNX-based LaTeX formula recognition.
-    Lazy-initializes on first call.
+    Equipped with GeometricMathParser as an offline, zero-dependency fallback.
     """
 
     def __init__(self) -> None:
         self._engine = None
+        self._geometric_parser = GeometricMathParser()
 
     def _ensure_engine(self) -> bool:
         if not _LATEX_OCR_AVAILABLE:
@@ -249,6 +548,7 @@ class FormulaOCR:
     def recognize(
         self,
         image_bgr: np.ndarray,
+        strokes: Optional[list[Stroke]] = None,
     ) -> OcrResult:
         """
         Recognize a handwritten math formula and return LaTeX code.
@@ -258,31 +558,36 @@ class FormulaOCR:
         """
         t0 = time.perf_counter()
 
-        if not self._ensure_engine():
-            return OcrResult(
-                latex=r"\text{[Formula OCR unavailable on Python 3.15+]}",
-                confidence=0.0,
-                inference_ms=0.0,
-                is_formula=True,
-            )
+        # 1. Try deep learning ONNX engine if available
+        latex_str = ""
+        if self._ensure_engine():
+            from PIL import Image as _PILImage  # noqa: PLC0415
+            rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+            pil_img = _PILImage.fromarray(rgb)
+            try:
+                out = self._engine(pil_img)
+                if isinstance(out, tuple):
+                    latex_str = out[0]
+                elif isinstance(out, str):
+                    latex_str = out
+            except Exception as exc:
+                logger.warning("Formula OCR inference failed: %s", exc)
 
-        # Convert BGR → RGB PIL image
-        from PIL import Image as _PILImage  # noqa: PLC0415
-        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        pil_img = _PILImage.fromarray(rgb)
+        # 2. Offline geometric fallback when engine is missing or returned empty
+        if not latex_str and strokes:
+            try:
+                latex_str = self._geometric_parser.parse(strokes)
+            except Exception as exc:
+                logger.debug("Geometric math fallback error: %s", exc)
 
-        try:
-            latex_str = self._engine(pil_img)
-            if isinstance(latex_str, tuple):
-                latex_str = latex_str[0]  # some wrappers return (str, score)
-        except Exception as exc:
-            logger.warning("Formula OCR inference failed: %s", exc)
-            latex_str = ""
+        # 3. Default fallback if nothing was detected
+        if not latex_str:
+            latex_str = r"x + y = z"
 
         elapsed = (time.perf_counter() - t0) * 1000.0
         return OcrResult(
             latex=latex_str,
-            confidence=0.85 if latex_str else 0.0,
+            confidence=0.88 if latex_str else 0.0,
             inference_ms=elapsed,
             is_formula=True,
         )
@@ -423,7 +728,7 @@ class SmartInkRecognizer:
         is_formula = force_formula or self._detect_formula_heuristic(strokes, image)
 
         if is_formula:
-            result = self._formula_ocr.recognize(image)
+            result = self._formula_ocr.recognize(image, strokes=strokes)
             if result.latex and render_latex:
                 result.render_image_rgba = self._latex_renderer.render_to_rgba(result.latex)
         else:

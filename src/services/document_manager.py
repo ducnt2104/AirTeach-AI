@@ -560,16 +560,41 @@ class DocumentManager:
             if bgr is None:
                 continue
 
+            # Compute canvas (1920x1080) to image coordinate mapping
+            bgr_h, bgr_w = bgr.shape[:2]
+            scale_factor = min(1920.0 / bgr_w, 1080.0 / bgr_h)
+            if scale_factor < 1e-6:
+                scale_factor = 1.0
+            scaled_w = bgr_w * scale_factor
+            scaled_h = bgr_h * scale_factor
+            ox = (1920.0 - scaled_w) / 2.0
+            oy = (1080.0 - scaled_h) / 2.0
+
             # Draw strokes onto the page image
             for stroke in stroke_by_page.get(page_idx, []):
-                pts = [
-                    (int(p.x), int(p.y))
-                    for p in stroke.points
-                ]
+                eval_pts: list[tuple[int, int]] = []
+                if stroke.bezier_segments:
+                    for b in stroke.bezier_segments:
+                        p0 = np.array(b["p0"], dtype=np.float64)
+                        p1 = np.array(b["p1"], dtype=np.float64)
+                        p2 = np.array(b["p2"], dtype=np.float64)
+                        p3 = np.array(b["p3"], dtype=np.float64)
+                        for t in np.linspace(0.0, 1.0, 8):
+                            u = 1.0 - t
+                            pt = u**3 * p0 + 3 * u**2 * t * p1 + 3 * u * t**2 * p2 + t**3 * p3
+                            ix = int(round((pt[0] - ox) / scale_factor))
+                            iy = int(round((pt[1] - oy) / scale_factor))
+                            eval_pts.append((ix, iy))
+                elif stroke.points:
+                    for p in stroke.points:
+                        ix = int(round((p.x - ox) / scale_factor))
+                        iy = int(round((p.y - oy) / scale_factor))
+                        eval_pts.append((ix, iy))
+
                 color_bgr = _hex_to_bgr(stroke.color_hex)
-                thickness = max(1, int(stroke.width))
-                for j in range(1, len(pts)):
-                    _cv2.line(bgr, pts[j - 1], pts[j], color_bgr, thickness, _cv2.LINE_AA)
+                thickness = max(1, int(round(stroke.width / scale_factor)))
+                for j in range(1, len(eval_pts)):
+                    _cv2.line(bgr, eval_pts[j - 1], eval_pts[j], color_bgr, thickness, _cv2.LINE_AA)
 
             rgb = _cv2.cvtColor(bgr, _cv2.COLOR_BGR2RGB)
             annotated_pages.append(_PILImage.fromarray(rgb))

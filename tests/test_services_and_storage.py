@@ -951,3 +951,65 @@ startxref
 441
 %%EOF"""
     return pdf
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 14. GeometricMathParser Tests (Offline Zero-Dependency Math Engine)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestGeometricMathParser:
+    def test_parse_empty_strokes_returns_empty(self):
+        from src.services.smart_ink_ocr import GeometricMathParser
+        assert GeometricMathParser.parse([]) == ""
+
+    def test_parse_single_horizontal_is_minus(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        s = Stroke(points=[StrokePoint(10.0, 50.0, 0), StrokePoint(50.0, 50.0, 10)])
+        res = GeometricMathParser.parse([s])
+        assert "-" in res
+
+    def test_parse_two_stacked_horizontal_lines_is_equal(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        s1 = Stroke(points=[StrokePoint(10.0, 45.0, 0), StrokePoint(50.0, 45.0, 10)])
+        s2 = Stroke(points=[StrokePoint(10.0, 55.0, 20), StrokePoint(50.0, 55.0, 30)])
+        res = GeometricMathParser.parse([s1, s2])
+        assert "=" in res
+
+    def test_parse_crossing_horizontal_vertical_is_plus(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        s_h = Stroke(points=[StrokePoint(10.0, 50.0, 0), StrokePoint(50.0, 50.0, 10)])
+        s_v = Stroke(points=[StrokePoint(30.0, 30.0, 20), StrokePoint(30.0, 70.0, 30)])
+        res = GeometricMathParser.parse([s_h, s_v])
+        assert "+" in res
+
+    def test_parse_fraction_structure(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        # Numerator (above bar)
+        s_num = Stroke(points=[StrokePoint(25.0, 20.0, 0), StrokePoint(25.0, 35.0, 10)])
+        # Fraction bar
+        s_bar = Stroke(points=[StrokePoint(10.0, 50.0, 20), StrokePoint(60.0, 50.0, 30)])
+        # Denominator (below bar)
+        s_den = Stroke(points=[StrokePoint(25.0, 65.0, 40), StrokePoint(25.0, 80.0, 50)])
+        res = GeometricMathParser.parse([s_num, s_bar, s_den])
+        assert r"\frac{" in res
+
+    def test_parse_superscript_exponent(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        # Base variable 'x'
+        s_base = Stroke(points=[StrokePoint(20.0, 50.0, 0), StrokePoint(20.0, 90.0, 10)])
+        # Small elevated '2'
+        s_exp = Stroke(points=[StrokePoint(35.0, 35.0, 20), StrokePoint(45.0, 45.0, 30)])
+        res = GeometricMathParser.parse([s_base, s_exp])
+        assert "^" in res
+
+    def test_smart_ink_recognizer_uses_geometric_fallback(self):
+        from src.services.smart_ink_ocr import SmartInkRecognizer, Stroke, StrokePoint
+        recognizer = SmartInkRecognizer()
+        s1 = Stroke(points=[StrokePoint(10.0, 50.0, 0), StrokePoint(50.0, 50.0, 10)])
+        s2 = Stroke(points=[StrokePoint(30.0, 30.0, 20), StrokePoint(30.0, 70.0, 30)])
+        out = recognizer.recognize_strokes([s1, s2], force_formula=True, render_latex=True)
+        assert out.is_formula
+        assert out.latex != ""
+        assert out.confidence >= 0.8
+        assert out.render_image_rgba is not None
+

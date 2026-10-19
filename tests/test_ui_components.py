@@ -522,3 +522,111 @@ class TestInkStroke:
     def test_color_default(self):
         s = self.InkStroke(stroke_id="c", segments=[], widths=[])
         assert s.color == QColor("#202124")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MainWindow Multi-Page Segregation & Restoration Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestMainWindowMultiPage:
+    """Verify stroke segregation, stashing, and page switching in MainWindow."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, qapp):
+        with patch("src.ui.main_window._QtCameraWorker") as mock_cam_cls, \
+             patch("src.ui.main_window.QThread") as mock_thread_cls:
+
+            mock_cam = MagicMock()
+            for attr in ("frame_ready", "gesture_event", "error_occurred"):
+                sig = MagicMock()
+                sig.connect = MagicMock()
+                setattr(mock_cam, attr, sig)
+            mock_cam_cls.return_value = mock_cam
+
+            mock_thread = MagicMock()
+            mock_thread.isRunning.return_value = False
+            mock_thread.started = MagicMock()
+            mock_thread.started.connect = MagicMock()
+            mock_thread_cls.return_value = mock_thread
+
+            from src.ui.main_window import MainWindow
+            from src.services.document_manager import PageInfo
+            self.window = MainWindow(teacher_row=None, camera_index=99)
+            # Create synthetic 3 pages
+            self.window._pages = [
+                PageInfo(page_index=0, image_path="", width_px=1920, height_px=1080, text="P1"),
+                PageInfo(page_index=1, image_path="", width_px=1920, height_px=1080, text="P2"),
+                PageInfo(page_index=2, image_path="", width_px=1920, height_px=1080, text="P3"),
+            ]
+
+    def _create_sample_stroke(self, stroke_id: str):
+        from src.ui.lesson_board import InkStroke
+        from src.core.stroke_beautifier import BezierSegment
+        seg = BezierSegment(
+            p0=np.array([10.0, 10.0]),
+            p1=np.array([20.0, 20.0]),
+            p2=np.array([30.0, 30.0]),
+            p3=np.array([40.0, 40.0]),
+        )
+        return InkStroke(
+            stroke_id=stroke_id,
+            segments=[seg],
+            widths=[2.5],
+            color=QColor("#ff0000"),
+            timestamps_ms=[0.0],
+        )
+
+    def test_stroke_segregation_across_pages(self):
+        # Draw on Page 0
+        s0 = self._create_sample_stroke("stroke_p0")
+        self.window._scene.commit_stroke(s0)
+        self.window._page_strokes[0] = list(self.window._scene._strokes.values())
+
+        assert len(self.window._scene._strokes) == 1
+        assert "stroke_p0" in self.window._scene._strokes
+
+        # Navigate to Page 1
+        self.window._on_next_page()
+        assert self.window._current_page_index == 1
+        assert len(self.window._scene._strokes) == 0
+
+        # Draw on Page 1
+        s1 = self._create_sample_stroke("stroke_p1")
+        self.window._scene.commit_stroke(s1)
+        self.window._page_strokes[1] = list(self.window._scene._strokes.values())
+        assert len(self.window._scene._strokes) == 1
+        assert "stroke_p1" in self.window._scene._strokes
+
+        # Navigate back to Page 0
+        self.window._on_prev_page()
+        assert self.window._current_page_index == 0
+        assert len(self.window._scene._strokes) == 1
+        assert "stroke_p0" in self.window._scene._strokes
+
+        # Navigate to Page 1 again
+        self.window._on_next_page()
+        assert self.window._current_page_index == 1
+        assert len(self.window._scene._strokes) == 1
+        assert "stroke_p1" in self.window._scene._strokes
+
+    def test_load_strokes_from_records(self):
+        from src.services.document_manager import StrokeRecord, BezierPointRecord
+        rec0 = StrokeRecord(
+            stroke_id="rec_p0",
+            page_index=0,
+            color_hex="#0000ff",
+            width=3.0,
+            points=[BezierPointRecord(10.0, 10.0, 0.0), BezierPointRecord(50.0, 50.0, 100.0)],
+        )
+        rec1 = StrokeRecord(
+            stroke_id="rec_p1",
+            page_index=1,
+            color_hex="#00ff00",
+            width=2.0,
+            points=[BezierPointRecord(20.0, 20.0, 0.0), BezierPointRecord(80.0, 80.0, 100.0)],
+        )
+        self.window._load_strokes_from_records([rec0, rec1])
+        assert len(self.window._page_strokes[0]) == 1
+        assert len(self.window._page_strokes[1]) == 1
+        assert self.window._page_strokes[0][0].stroke_id == "rec_p0"
+        assert self.window._page_strokes[1][0].stroke_id == "rec_p1"

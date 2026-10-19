@@ -289,52 +289,121 @@ class LessonBoard(QGraphicsScene):
         p = snap.params
 
         if st == ShapeType.LINE:
-            pts = p.get("points", [])
-            if len(pts) >= 2:
-                item = QGraphicsLineItem(pts[0][0], pts[0][1], pts[-1][0], pts[-1][1])
+            start = p.get("start")
+            end = p.get("end")
+            if start is not None and end is not None:
+                item = QGraphicsLineItem(start[0], start[1], end[0], end[1])
+                item.setPen(pen)
+            elif snap.render_points is not None and len(snap.render_points) >= 2:
+                p0 = snap.render_points[0]
+                p1 = snap.render_points[-1]
+                item = QGraphicsLineItem(p0[0], p0[1], p1[0], p1[1])
                 item.setPen(pen)
             else:
-                item = self._render_bezier_stroke(stroke)
+                pts = p.get("points", [])
+                if len(pts) >= 2:
+                    item = QGraphicsLineItem(pts[0][0], pts[0][1], pts[-1][0], pts[-1][1])
+                    item.setPen(pen)
+                else:
+                    item = self._render_bezier_stroke(stroke)
 
         elif st == ShapeType.ARROW:
-            item = self._build_arrow_item(p, pen)
+            item = self._build_arrow_item(p, pen, snap.render_points)
 
         elif st in (ShapeType.CIRCLE, ShapeType.ELLIPSE):
-            cx = float(p.get("center_x", 0))
-            cy = float(p.get("center_y", 0))
-            rx = float(p.get("radius_x", p.get("radius", 40)))
-            ry = float(p.get("radius_y", p.get("radius", 40)))
-            angle = float(p.get("angle", 0))
-            item = QGraphicsEllipseItem(cx - rx, cy - ry, 2 * rx, 2 * ry)
-            item.setPen(pen)
-            item.setBrush(Qt.BrushStyle.NoBrush)
-            if abs(angle) > 0.5:
-                item.setTransformOriginPoint(cx, cy)
-                item.setRotation(angle)
+            center = p.get("center")
+            if center is not None:
+                cx, cy = float(center[0]), float(center[1])
+                rx = float(p.get("semi_major", 40))
+                ry = float(p.get("semi_minor", 40))
+                angle = float(p.get("angle_deg", 0))
+            else:
+                cx = float(p.get("center_x", 0))
+                cy = float(p.get("center_y", 0))
+                rx = float(p.get("radius_x", p.get("radius", 40)))
+                ry = float(p.get("radius_y", p.get("radius", 40)))
+                angle = float(p.get("angle", 0))
 
-        elif st == ShapeType.RECTANGLE:
-            verts = p.get("vertices", [])
-            if len(verts) == 4:
-                xs = [v[0] for v in verts]
-                ys = [v[1] for v in verts]
-                item = QGraphicsRectItem(min(xs), min(ys),
-                                         max(xs) - min(xs), max(ys) - min(ys))
+            if snap.render_points is not None and len(snap.render_points) >= 3:
+                path = QPainterPath()
+                path.moveTo(snap.render_points[0][0], snap.render_points[0][1])
+                for pt in snap.render_points[1:]:
+                    path.lineTo(pt[0], pt[1])
+                path.closeSubpath()
+                item = QGraphicsPathItem(path)
                 item.setPen(pen)
                 item.setBrush(Qt.BrushStyle.NoBrush)
             else:
-                item = self._render_bezier_stroke(stroke)
+                item = QGraphicsEllipseItem(cx - rx, cy - ry, 2 * rx, 2 * ry)
+                item.setPen(pen)
+                item.setBrush(Qt.BrushStyle.NoBrush)
+                if abs(angle) > 0.5:
+                    item.setTransformOriginPoint(cx, cy)
+                    item.setRotation(angle)
+
+        elif st == ShapeType.RECTANGLE:
+            corners = p.get("corners")
+            if corners is not None and len(corners) == 4:
+                path = QPainterPath()
+                path.moveTo(corners[0][0], corners[0][1])
+                for c in corners[1:]:
+                    path.lineTo(c[0], c[1])
+                path.closeSubpath()
+                item = QGraphicsPathItem(path)
+                item.setPen(pen)
+                item.setBrush(Qt.BrushStyle.NoBrush)
+            elif snap.render_points is not None and len(snap.render_points) >= 4:
+                path = QPainterPath()
+                path.moveTo(snap.render_points[0][0], snap.render_points[0][1])
+                for pt in snap.render_points[1:]:
+                    path.lineTo(pt[0], pt[1])
+                path.closeSubpath()
+                item = QGraphicsPathItem(path)
+                item.setPen(pen)
+                item.setBrush(Qt.BrushStyle.NoBrush)
+            else:
+                verts = p.get("vertices", [])
+                if len(verts) == 4:
+                    xs = [v[0] for v in verts]
+                    ys = [v[1] for v in verts]
+                    item = QGraphicsRectItem(min(xs), min(ys),
+                                             max(xs) - min(xs), max(ys) - min(ys))
+                    item.setPen(pen)
+                    item.setBrush(Qt.BrushStyle.NoBrush)
+                else:
+                    item = self._render_bezier_stroke(stroke)
 
         elif st == ShapeType.TRIANGLE:
-            verts = p.get("vertices", [])
-            path = QPainterPath()
-            if len(verts) >= 3:
-                path.moveTo(verts[0][0], verts[0][1])
-                for v in verts[1:]:
-                    path.lineTo(v[0], v[1])
+            corners = p.get("corners")
+            if corners is not None and len(corners) == 3:
+                path = QPainterPath()
+                path.moveTo(corners[0][0], corners[0][1])
+                for c in corners[1:]:
+                    path.lineTo(c[0], c[1])
                 path.closeSubpath()
-            item = QGraphicsPathItem(path)
-            item.setPen(pen)
-            item.setBrush(Qt.BrushStyle.NoBrush)
+                item = QGraphicsPathItem(path)
+                item.setPen(pen)
+                item.setBrush(Qt.BrushStyle.NoBrush)
+            elif snap.render_points is not None and len(snap.render_points) >= 3:
+                path = QPainterPath()
+                path.moveTo(snap.render_points[0][0], snap.render_points[0][1])
+                for pt in snap.render_points[1:]:
+                    path.lineTo(pt[0], pt[1])
+                path.closeSubpath()
+                item = QGraphicsPathItem(path)
+                item.setPen(pen)
+                item.setBrush(Qt.BrushStyle.NoBrush)
+            else:
+                verts = p.get("vertices", [])
+                path = QPainterPath()
+                if len(verts) >= 3:
+                    path.moveTo(verts[0][0], verts[0][1])
+                    for v in verts[1:]:
+                        path.lineTo(v[0], v[1])
+                    path.closeSubpath()
+                item = QGraphicsPathItem(path)
+                item.setPen(pen)
+                item.setBrush(Qt.BrushStyle.NoBrush)
 
         else:
             item = self._render_bezier_stroke(stroke)
@@ -344,14 +413,27 @@ class LessonBoard(QGraphicsScene):
         self.addItem(item)
         return item
 
-    def _build_arrow_item(self, params: dict, pen: QPen) -> QGraphicsPathItem:
+    def _build_arrow_item(
+        self,
+        params: dict,
+        pen: QPen,
+        render_points: Optional[np.ndarray] = None,
+    ) -> QGraphicsPathItem:
         """Build an arrow path: shaft + two arrowhead lines."""
-        pts = params.get("points", [])
-        if len(pts) < 2:
-            return QGraphicsPathItem()
+        start = params.get("start")
+        end = params.get("tip") or params.get("shaft_end")
+        if start is None or end is None:
+            if render_points is not None and len(render_points) >= 2:
+                start = render_points[0]
+                end = render_points[-1]
+            else:
+                pts = params.get("points", [])
+                if len(pts) >= 2:
+                    start = pts[0]
+                    end = pts[-1]
+                else:
+                    return QGraphicsPathItem()
 
-        start = pts[0]
-        end   = pts[-1]
         dx = end[0] - start[0]
         dy = end[1] - start[1]
         length = math.hypot(dx, dy)

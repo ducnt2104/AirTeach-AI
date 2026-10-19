@@ -192,6 +192,7 @@ class MainWindow(QMainWindow):
         self._filter = OneEuroFilter2D()
         self._snapper = GeometricShapeSnapper()
         self._current_page_index = 0
+        self._page_strokes: dict[int, list[InkStroke]] = {}
         self._page_texts: list[str] = []
         self._ink_color = QColor("#202124")
         self._ink_min_width = 1.5
@@ -562,14 +563,13 @@ class MainWindow(QMainWindow):
         avg_vel = float(vels.mean()) if len(vels) > 0 else 1.0
 
         # Tier 2: Bézier fitting
-        segments, widths = fit_cubic_bezier_spline(
+        segments = fit_cubic_bezier_spline(
             simplified,
-            velocities=vels,
-            v_min=0.5,
-            v_max=float(avg_vel * 3 + 1),
-            w_min=self._ink_min_width,
-            w_max=self._ink_max_width,
+            velocities=vels if len(vels) == len(simplified) else None,
+            width_min=self._ink_min_width,
+            width_max=self._ink_max_width,
         )
+        widths = [seg.width_start for seg in segments] if segments else [2.5]
 
         # Tier 3: Shape snapping
         snap: Optional[SnapResult] = None
@@ -590,6 +590,7 @@ class MainWindow(QMainWindow):
             timestamps_ms=t_ms,
         )
         self._scene.commit_stroke(stroke)
+        self._page_strokes[self._current_page_index] = list(self._scene._strokes.values())
         self._current_stroke_id = None
         self._live_raw_points.clear()
 
@@ -676,6 +677,64 @@ class MainWindow(QMainWindow):
 
     # ── Document management ───────────────────────────────────────────────────
 
+    def _stash_current_page_strokes(self) -> None:
+        """Save current canvas strokes to the active page buffer."""
+        self._page_strokes[self._current_page_index] = list(self._scene._strokes.values())
+
+    def _restore_current_page_strokes(self) -> None:
+        """Clear canvas and restore strokes for the active page."""
+        self._scene.clear_all_strokes()
+        saved_strokes = self._page_strokes.get(self._current_page_index, [])
+        for stroke in saved_strokes:
+            self._scene.commit_stroke(stroke)
+
+    def _load_strokes_from_records(self, records: list) -> None:
+        """Reconstruct InkStroke objects from StrokeRecords and populate _page_strokes."""
+        for rec in records:
+            segments: list[BezierSegment] = []
+            if getattr(rec, "bezier_segments", None):
+                for seg_d in rec.bezier_segments:
+                    try:
+                        p0 = np.array(seg_d["p0"], dtype=np.float64)
+                        p1 = np.array(seg_d["p1"], dtype=np.float64)
+                        p2 = np.array(seg_d["p2"], dtype=np.float64)
+                        p3 = np.array(seg_d["p3"], dtype=np.float64)
+                        w_start = float(seg_d.get("width_start", rec.width))
+                        w_end = float(seg_d.get("width_end", rec.width))
+                        segments.append(BezierSegment(p0, p1, p2, p3, w_start, w_end))
+                    except Exception as err:
+                        logger.warning("Error parsing bezier segment: %s", err)
+            elif getattr(rec, "points", None) and len(rec.points) >= 2:
+                pts = np.array([[p.x, p.y] for p in rec.points], dtype=np.float64)
+                w = float(rec.width) if rec.width else 2.5
+                segments = fit_cubic_bezier_spline(pts, width_min=w, width_max=w)
+
+            widths = [float(rec.width) if rec.width else 2.5] * max(len(segments), 1)
+            color = QColor(rec.color_hex) if rec.color_hex else QColor("#202124")
+
+            snap = None
+            shape_type_str = getattr(rec, "shape_type", "FREEFORM")
+            if shape_type_str and shape_type_str != "FREEFORM":
+                try:
+                    st = ShapeType[shape_type_str]
+                    if getattr(rec, "points", None) and len(rec.points) >= 2:
+                        pts = np.array([[p.x, p.y] for p in rec.points], dtype=np.float64)
+                        snap = self._snapper.snap(pts)
+                    else:
+                        snap = SnapResult(shape_type=st)
+                except Exception as err:
+                    logger.debug("Could not restore snapped shape: %s", err)
+
+            stroke = InkStroke(
+                stroke_id=rec.stroke_id,
+                segments=segments,
+                widths=widths,
+                snap=snap,
+                color=color,
+                timestamps_ms=getattr(rec, "timestamps_ms", []),
+            )
+            self._page_strokes.setdefault(rec.page_index, []).append(stroke)
+
     def _on_open_document(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Mở tài liệu",
@@ -687,6 +746,8 @@ class MainWindow(QMainWindow):
         try:
             self._status.showMessage("Đang mở tài liệu…", 0)
             QApplication.processEvents()
+            self._page_strokes.clear()
+            self._scene.clear_all_strokes()
             self._pages = self._doc_manager.import_document(Path(path))
             self._current_page_index = 0
             self._show_current_page()
@@ -705,14 +766,15 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            from src.services.document_manager import AirTeachManifest  # noqa: PLC0415
-            manifest, page_paths, strokes, recognized = self._doc_manager.open_lesson(Path(path))
-            # Build synthetic PageInfo list from extracted page paths
             from src.services.document_manager import PageInfo  # noqa: PLC0415
+            manifest, page_paths, strokes, recognized = self._doc_manager.open_lesson(Path(path))
             self._pages = [
                 PageInfo(page_index=i, image_path=str(p), width_px=0, height_px=0, text="")
                 for i, p in enumerate(page_paths)
             ]
+            self._page_strokes.clear()
+            self._scene.clear_all_strokes()
+            self._load_strokes_from_records(strokes)
             self._current_page_index = 0
             self._show_current_page()
             self._status.showMessage(
@@ -734,28 +796,40 @@ class MainWindow(QMainWindow):
                 AirTeachManifest, StrokeRecord, BezierPointRecord, RecognizedItem
             )
             from datetime import datetime, timezone  # noqa: PLC0415
+
+            self._stash_current_page_strokes()
+
             manifest = AirTeachManifest(
                 title="Bài giảng AirTeach",
                 page_count=len(getattr(self, "_pages", [])),
                 created_at=datetime.now(timezone.utc).isoformat(),
                 modified_at=datetime.now(timezone.utc).isoformat(),
             )
-            # Convert InkStroke → StrokeRecord
             stroke_records: list[StrokeRecord] = []
-            for ink in self._scene._strokes.values():
-                pts = []
-                t_list = ink.timestamps_ms
-                for i, seg in enumerate(ink.segments):
-                    t = t_list[i] if i < len(t_list) else 0.0
-                    pts.append(BezierPointRecord(x=seg.p0[0], y=seg.p0[1], t_ms=t))
-                stroke_records.append(StrokeRecord(
-                    stroke_id=ink.stroke_id,
-                    page_index=self._current_page_index,
-                    color_hex=ink.color.name(),
-                    width=float(np.mean(ink.widths)) if ink.widths else 2.5,
-                    points=pts,
-                    timestamps_ms=ink.timestamps_ms,
-                ))
+            for p_idx, p_strokes in self._page_strokes.items():
+                for ink in p_strokes:
+                    pts = []
+                    t_list = ink.timestamps_ms
+                    for i, seg in enumerate(ink.segments):
+                        t = t_list[i] if i < len(t_list) else 0.0
+                        pts.append(BezierPointRecord(x=float(seg.p0[0]), y=float(seg.p0[1]), t_ms=t))
+                    if ink.segments:
+                        last_seg = ink.segments[-1]
+                        last_t = t_list[-1] if t_list else 0.0
+                        pts.append(BezierPointRecord(x=float(last_seg.p3[0]), y=float(last_seg.p3[1]), t_ms=last_t))
+                    seg_dicts = [seg.to_dict() for seg in ink.segments]
+                    shape_str = ink.snap.shape_type.name if ink.snap else "FREEFORM"
+                    avg_w = float(np.mean(ink.widths)) if ink.widths else 2.5
+                    stroke_records.append(StrokeRecord(
+                        stroke_id=ink.stroke_id,
+                        page_index=p_idx,
+                        color_hex=ink.color.name(),
+                        width=avg_w,
+                        points=pts,
+                        bezier_segments=seg_dicts,
+                        timestamps_ms=ink.timestamps_ms,
+                        shape_type=shape_str,
+                    ))
             page_image_paths = [
                 Path(p.image_path) for p in getattr(self, "_pages", [])
                 if Path(p.image_path).exists()
@@ -787,17 +861,25 @@ class MainWindow(QMainWindow):
             if not page_image_paths:
                 QMessageBox.warning(self, "Xuất PDF", "Chưa có tài liệu nào được mở.")
                 return
+
+            self._stash_current_page_strokes()
+
             stroke_records: list[StrokeRecord] = []
-            for ink in self._scene._strokes.values():
-                pts = [BezierPointRecord(x=seg.p0[0], y=seg.p0[1], t_ms=0.0)
-                       for seg in ink.segments]
-                stroke_records.append(StrokeRecord(
-                    stroke_id=ink.stroke_id,
-                    page_index=self._current_page_index,
-                    color_hex=ink.color.name(),
-                    width=float(np.mean(ink.widths)) if ink.widths else 2.5,
-                    points=pts,
-                ))
+            for p_idx, p_strokes in self._page_strokes.items():
+                for ink in p_strokes:
+                    pts = [BezierPointRecord(x=float(seg.p0[0]), y=float(seg.p0[1]), t_ms=0.0)
+                           for seg in ink.segments]
+                    if ink.segments:
+                        last_seg = ink.segments[-1]
+                        pts.append(BezierPointRecord(x=float(last_seg.p3[0]), y=float(last_seg.p3[1]), t_ms=0.0))
+                    avg_w = float(np.mean(ink.widths)) if ink.widths else 2.5
+                    stroke_records.append(StrokeRecord(
+                        stroke_id=ink.stroke_id,
+                        page_index=p_idx,
+                        color_hex=ink.color.name(),
+                        width=avg_w,
+                        points=pts,
+                    ))
             self._doc_manager.export_annotated_pdf(
                 page_image_paths=page_image_paths,
                 strokes=stroke_records,
@@ -818,6 +900,7 @@ class MainWindow(QMainWindow):
         img = cv2.imread(page.image_path)
         if img is not None:
             self._scene.set_background_page(img)
+        self._restore_current_page_strokes()
         self._board_view.fitInView(
             self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio
         )
@@ -828,12 +911,14 @@ class MainWindow(QMainWindow):
 
     def _on_prev_page(self) -> None:
         if self._current_page_index > 0:
+            self._stash_current_page_strokes()
             self._current_page_index -= 1
             self._show_current_page()
 
     def _on_next_page(self) -> None:
         pages = getattr(self, "_pages", [])
         if self._current_page_index < len(pages) - 1:
+            self._stash_current_page_strokes()
             self._current_page_index += 1
             self._show_current_page()
 
@@ -843,6 +928,7 @@ class MainWindow(QMainWindow):
         if self._scene._strokes:
             last_id = list(self._scene._strokes.keys())[-1]
             self._scene.remove_stroke(last_id)
+            self._page_strokes[self._current_page_index] = list(self._scene._strokes.values())
 
     def _on_clear_all(self) -> None:
         reply = QMessageBox.question(
@@ -852,6 +938,7 @@ class MainWindow(QMainWindow):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._scene.clear_all_strokes()
+            self._page_strokes[self._current_page_index] = []
 
     def _on_toggle_replay(self) -> None:
         """Toggle playback toolbar and load active strokes into the replayer."""
