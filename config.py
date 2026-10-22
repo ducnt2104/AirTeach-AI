@@ -6,8 +6,13 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Project root directory (2 levels up from this file: src/config.py -> root)
-ROOT_DIR = Path(__file__).parent.resolve()
+import sys
+
+# Project root directory (supports normal runtime and PyInstaller frozen bundle)
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    ROOT_DIR = Path(sys._MEIPASS)
+else:
+    ROOT_DIR = Path(__file__).parent.resolve()
 
 # Load .env from project root
 _env_path = ROOT_DIR / ".env"

@@ -556,6 +556,15 @@ class TestGeometricShapeSnapper:
                 f"Confidence {result.confidence} out of range for {result.shape_type.name}"
             )
 
+    def test_snap_with_3d_timestamped_points(self, snapper):
+        """Snap should gracefully accept (N, 3) timestamped points without broadcasting errors."""
+        # Horizontal line with timestamps
+        pts_3d = [(float(i * 10), 100.0, float(i * 16.6)) for i in range(30)]
+        result = snapper.snap(pts_3d)
+        assert result.shape_type == ShapeType.LINE
+        assert result.render_points is not None
+        assert result.render_points.shape[1] == 2
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. RMSE Metric Tests

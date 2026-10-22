@@ -92,6 +92,9 @@ class FaceAuthWorker(QObject):
         self._running = False
 
     def run(self) -> None:
+        if self._camera_index < 0:
+            return
+
         import cv2  # noqa: PLC0415
 
         cap = cv2.VideoCapture(self._camera_index, cv2.CAP_DSHOW)
@@ -339,6 +342,10 @@ class FaceAuthDialog(QDialog):
         self.reject()
 
     def _start_worker(self) -> None:
+        if self._camera_index < 0:
+            logger.info("Camera index is negative (%d); FaceAuthDialog worker not started.", self._camera_index)
+            return
+
         worker = FaceAuthWorker(
             service=self._service,
             mode=self._mode,
@@ -364,9 +371,19 @@ class FaceAuthDialog(QDialog):
             self._worker.stop()
         if self._thread is not None and self._thread.isRunning():
             self._thread.quit()
-            self._thread.wait(2000)
+            if not self._thread.wait(1000):
+                self._thread.terminate()
+                self._thread.wait(500)
         self._worker = None
         self._thread = None
+
+    def closeEvent(self, event) -> None:
+        self._stop_worker()
+        super().closeEvent(event)
+
+    def reject(self) -> None:
+        self._stop_worker()
+        super().reject()
 
     # ── Worker callbacks ──────────────────────────────────────────────────────
 

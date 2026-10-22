@@ -481,9 +481,11 @@ class HandTrackingWorker:
         self.on_error = on_error
         self._running = False
 
-        # MediaPipe Hands
-        self._mp_hands = mp.solutions.hands
-        self._hands_model: Optional[mp.solutions.hands.Hands] = None
+        # MediaPipe Hands: support both Tasks API (MediaPipe 1.x) and solutions (MediaPipe 0.10.x legacy)
+        self._use_tasks_api = hasattr(mp, "tasks") and hasattr(mp.tasks, "vision") and hasattr(mp.tasks.vision, "HandLandmarker")
+        self._landmarker = None
+        self._mp_hands = getattr(mp, "solutions", None).hands if hasattr(mp, "solutions") and hasattr(mp.solutions, "hands") else None
+        self._hands_model = None
 
         # CLAHE for anti-backlight
         self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -495,15 +497,35 @@ class HandTrackingWorker:
         )
 
     def _init_mediapipe(self) -> None:
-        """Initialize MediaPipe Hands model."""
-        self._hands_model = self._mp_hands.Hands(
-            model_complexity=1,
-            max_num_hands=1,
-            min_detection_confidence=0.6,
-            min_tracking_confidence=0.6,
-            static_image_mode=False,
-        )
-        logger.info("MediaPipe Hands initialized.")
+        """Initialize MediaPipe Hands model supporting both Tasks API and legacy solutions."""
+        if self._use_tasks_api:
+            from pathlib import Path
+            model_path = Path(__file__).resolve().parent.parent.parent / "models" / "hand_landmarker.task"
+            if model_path.exists():
+                options = mp.tasks.vision.HandLandmarkerOptions(
+                    base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
+                    running_mode=mp.tasks.vision.RunningMode.IMAGE,
+                    num_hands=1,
+                    min_hand_detection_confidence=0.6,
+                    min_tracking_confidence=0.6,
+                )
+                self._landmarker = mp.tasks.vision.HandLandmarker.create_from_options(options)
+                logger.info("MediaPipe HandLandmarker (Tasks API) initialized with %s.", model_path)
+                return
+            else:
+                logger.warning("hand_landmarker.task not found at %s; checking legacy solutions...", model_path)
+
+        if self._mp_hands is not None:
+            self._hands_model = self._mp_hands.Hands(
+                model_complexity=1,
+                max_num_hands=1,
+                min_detection_confidence=0.6,
+                min_tracking_confidence=0.6,
+                static_image_mode=False,
+            )
+            logger.info("MediaPipe Hands (Solutions API) initialized.")
+        else:
+            logger.error("No valid MediaPipe Hands backend available.")
 
     def _apply_clahe(self, bgr_frame: np.ndarray) -> np.ndarray:
         """
@@ -521,6 +543,10 @@ class HandTrackingWorker:
         Main loop: open camera, process frames until stop() is called.
         Call this method from within a QThread.run() override.
         """
+        if self.camera_index < 0:
+            logger.info("Camera index is negative (%d); skipping camera capture.", self.camera_index)
+            return
+
         cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
         if not cap.isOpened():
             # Fallback: try without DSHOW backend
@@ -560,24 +586,40 @@ class HandTrackingWorker:
                 # Convert BGR → RGB for MediaPipe
                 rgb = cv2.cvtColor(frame_corrected, cv2.COLOR_BGR2RGB)
                 rgb.flags.writeable = False
-                results = self._hands_model.process(rgb)
-                rgb.flags.writeable = True
 
                 state = GestureState.NONE
                 cx, cy = -1.0, -1.0
                 landmarks_out = None
 
-                if results.multi_hand_landmarks and results.multi_handedness:
-                    hand_lm = results.multi_hand_landmarks[0]
-                    hand_info = results.multi_handedness[0]
-                    confidence = hand_info.classification[0].score
-
-                    state, cx, cy = self.fsm.process_landmarks(
-                        hand_lm.landmark,
-                        confidence,
-                        t_ms,
-                    )
-                    landmarks_out = hand_lm.landmark
+                if self._landmarker is not None:
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                    results = self._landmarker.detect(mp_image)
+                    if results.hand_landmarks and results.handedness:
+                        hand_lm = results.hand_landmarks[0]
+                        hand_info = results.handedness[0]
+                        confidence = float(hand_info[0].score) if hand_info else 0.8
+                        state, cx, cy = self.fsm.process_landmarks(
+                            hand_lm,
+                            confidence,
+                            t_ms,
+                        )
+                        landmarks_out = hand_lm
+                    else:
+                        self.fsm._transition_to(GestureState.NONE, t_ms)
+                elif self._hands_model is not None:
+                    results = self._hands_model.process(rgb)
+                    if results.multi_hand_landmarks and results.multi_handedness:
+                        hand_lm = results.multi_hand_landmarks[0]
+                        hand_info = results.multi_handedness[0]
+                        confidence = hand_info.classification[0].score
+                        state, cx, cy = self.fsm.process_landmarks(
+                            hand_lm.landmark,
+                            confidence,
+                            t_ms,
+                        )
+                        landmarks_out = hand_lm.landmark
+                    else:
+                        self.fsm._transition_to(GestureState.NONE, t_ms)
                 else:
                     self.fsm._transition_to(GestureState.NONE, t_ms)
 
@@ -586,6 +628,8 @@ class HandTrackingWorker:
 
         finally:
             cap.release()
+            if self._landmarker is not None:
+                self._landmarker.close()
             if self._hands_model is not None:
                 self._hands_model.close()
             logger.info("Hand tracking stopped. Camera released.")

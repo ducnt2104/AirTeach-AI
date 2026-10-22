@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -27,12 +28,14 @@ from PySide6.QtWidgets import (
     QDialog,
     QFrame,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSizePolicy,
     QSplitter,
     QVBoxLayout,
@@ -59,6 +62,7 @@ class _LoginCameraWorker(QObject):
     face_authenticated      = Signal(object)              # sqlite3.Row
     enroll_sample_captured  = Signal(int, int)            # (current, total)
     enroll_finished         = Signal(list)                # list of 5 frames
+    status_updated          = Signal(str)
     error_occurred          = Signal(str)
 
     def __init__(
@@ -84,6 +88,9 @@ class _LoginCameraWorker(QObject):
         self._running = False
 
     def run(self) -> None:
+        if self._camera_index < 0:
+            return
+
         cap = cv2.VideoCapture(self._camera_index, cv2.CAP_DSHOW)
         if not cap.isOpened():
             cap = cv2.VideoCapture(self._camera_index)
@@ -95,55 +102,85 @@ class _LoginCameraWorker(QObject):
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        frame_counter = 0
 
-        while self._running:
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                continue
+        try:
+            while self._running:
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    time.sleep(0.01)
+                    continue
 
-            # Contrast enhancement for classrooms
-            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-            l_ch, a_ch, b_ch = cv2.split(lab)
-            l_ch = clahe.apply(l_ch)
-            enhanced = cv2.cvtColor(cv2.merge([l_ch, a_ch, b_ch]), cv2.COLOR_LAB2BGR)
+                # Contrast enhancement for classrooms
+                lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+                l_ch, a_ch, b_ch = cv2.split(lab)
+                l_ch = clahe.apply(l_ch)
+                enhanced = cv2.cvtColor(cv2.merge([l_ch, a_ch, b_ch]), cv2.COLOR_LAB2BGR)
 
-            # Detect faces
-            faces = self._service._models.detect_faces(enhanced)
+                # Detect faces
+                faces = self._service._models.detect_faces(enhanced)
 
-            self.frame_ready.emit(enhanced, faces)
+                self.frame_ready.emit(enhanced, faces)
 
-            if faces is not None and len(faces) > 0:
-                best_face = faces[np.argmax(faces[:, 14])]
-                confidence = float(best_face[14])
+                if faces is not None and len(faces) > 0:
+                    best_face = faces[np.argmax(faces[:, 14])]
+                    confidence = float(best_face[14])
 
-                if self._is_enrolling:
-                    if confidence >= 0.5:
-                        self._enroll_frames.append(enhanced.copy())
-                        self.enroll_sample_captured.emit(len(self._enroll_frames), ENROLL_FRAMES)
-                        if len(self._enroll_frames) >= ENROLL_FRAMES:
-                            self.enroll_finished.emit(list(self._enroll_frames))
-                            self._is_enrolling = False
+                    if self._is_enrolling:
+                        if confidence >= 0.45:
+                            self._enroll_frames.append(enhanced.copy())
+                            self.enroll_sample_captured.emit(len(self._enroll_frames), ENROLL_FRAMES)
+                            if len(self._enroll_frames) >= ENROLL_FRAMES:
+                                self.enroll_finished.emit(list(self._enroll_frames))
+                                self._is_enrolling = False
+                    else:
+                        # Auto login mode: check if any teachers exist
+                        has_teachers = len(self._service._get_all_teachers()) > 0
+                        if not has_teachers:
+                            if frame_counter % 30 == 0:
+                                self.status_updated.emit("ℹ Hệ thống chưa có hồ sơ giáo viên. Vui lòng bấm '➕ Đăng ký Giáo viên mới'.")
+                        else:
+                            self._liveness.update(best_face)
+                            frame_counter += 1
+                            if self._liveness.is_ready() and frame_counter % 5 == 0:
+                                matched_teacher = self._service.authenticate_by_face(enhanced, self._liveness)
+                                if matched_teacher is not None:
+                                    self.face_authenticated.emit(matched_teacher)
+                                    self._running = False
+                                else:
+                                    score = self._service.last_match_score
+                                    if score > 0:
+                                        self.status_updated.emit(f"🔍 Đang đối soát khuôn mặt... (Độ khớp: {score:.1%}, yêu cầu: {COSINE_THRESHOLD:.1%})")
                 else:
-                    # Auto login mode
-                    self._liveness.update(best_face)
-                    if self._liveness.is_ready():
-                        matched_teacher = self._service.authenticate_by_face(enhanced, self._liveness)
-                        if matched_teacher is not None:
-                            self.face_authenticated.emit(matched_teacher)
-                            self._running = False
-
-        cap.release()
+                    if not self._is_enrolling:
+                        if frame_counter % 30 == 0:
+                            has_teachers = len(self._service._get_all_teachers()) > 0
+                            if has_teachers:
+                                self.status_updated.emit("🔍 Đang quan sát... Hãy nhìn thẳng vào camera để tự động đăng nhập.")
+                            else:
+                                self.status_updated.emit("ℹ Chưa có tài khoản giáo viên. Hãy bấm '➕ Đăng ký Giáo viên mới'.")
+                frame_counter += 1
+        finally:
+            cap.release()
 
 
 # ─── Enrollment Sub-Dialog ────────────────────────────────────────────────────
 
 class TeacherEnrollDialog(QDialog):
-    """Dialog collecting teacher details and triggering frame capture."""
+    """Dialog collecting teacher details and supporting Face + PIN or PIN-only enrollment."""
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        service: Optional[TeacherProfileService] = None,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
+        self.service = service
+        self.enrolled_teacher_id: Optional[str] = None
+        self.is_pin_only: bool = False
+
         self.setWindowTitle("Đăng ký Giáo viên Mới")
-        self.setFixedSize(460, 320)
+        self.setFixedSize(500, 410)
         self.setModal(True)
 
         self._build_ui()
@@ -151,19 +188,26 @@ class TeacherEnrollDialog(QDialog):
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         header = QLabel("👤 Đăng ký Hồ sơ Giáo viên Mới")
-        header.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        header.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         header.setStyleSheet("color: #1a73e8;")
         layout.addWidget(header)
 
         # Name
-        layout.addWidget(QLabel("Họ và Tên Giáo viên:"))
+        layout.addWidget(QLabel("Họ và Tên Giáo viên (*):"))
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText("VD: Thầy Nguyễn Văn An")
         self._name_edit.setStyleSheet("padding: 7px; border: 1px solid #ccc; border-radius: 4px;")
         layout.addWidget(self._name_edit)
+
+        # Teacher ID / Code
+        layout.addWidget(QLabel("Mã Giáo viên / ID:"))
+        self._code_edit = QLineEdit()
+        self._code_edit.setPlaceholderText("VD: GV01 / GV-TOAN (để trống hệ thống tự tạo)")
+        self._code_edit.setStyleSheet("padding: 7px; border: 1px solid #ccc; border-radius: 4px;")
+        layout.addWidget(self._code_edit)
 
         # Subject
         layout.addWidget(QLabel("Môn học phụ trách:"))
@@ -173,7 +217,7 @@ class TeacherEnrollDialog(QDialog):
         layout.addWidget(self._subject_edit)
 
         # Backup PIN
-        layout.addWidget(QLabel("Mã PIN bảo mật dự phòng (4–6 số):"))
+        layout.addWidget(QLabel("Mã PIN bảo mật dự phòng (4–6 số) (*):"))
         self._pin_edit = QLineEdit()
         self._pin_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._pin_edit.setMaxLength(6)
@@ -181,11 +225,26 @@ class TeacherEnrollDialog(QDialog):
         self._pin_edit.setStyleSheet("padding: 7px; border: 1px solid #ccc; border-radius: 4px;")
         layout.addWidget(self._pin_edit)
 
-        # Instructions
-        info = QLabel("💡 Sau khi bấm 'Bắt đầu chụp', hãy nhìn thẳng vào camera và quay nhẹ sang hai bên để lấy 5 mẫu khuôn mặt.")
-        info.setWordWrap(True)
-        info.setStyleSheet("color: #5f6368; font-size: 11px;")
-        layout.addWidget(info)
+        # Enrollment mode selection
+        mode_box = QGroupBox("Phương thức xác thực:")
+        mode_box.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #dadce0; border-radius: 6px; margin-top: 6px; padding-top: 10px; }")
+        mode_layout = QVBoxLayout(mode_box)
+        mode_layout.setSpacing(6)
+
+        self._radio_face = QRadioButton("📸 Chụp mẫu Khuôn mặt + PIN (Khuyên dùng)")
+        self._radio_face.setChecked(True)
+        self._radio_face.toggled.connect(self._on_mode_toggled)
+        mode_layout.addWidget(self._radio_face)
+
+        self._radio_pin_only = QRadioButton("🔢 Chỉ tạo bằng mã PIN (Không cần camera / Phòng thiếu sáng)")
+        mode_layout.addWidget(self._radio_pin_only)
+        layout.addWidget(mode_box)
+
+        # Dynamic instruction
+        self._info_lbl = QLabel("💡 Khi bấm 'Bắt đầu chụp', hệ thống sẽ thu thập 5 mẫu góc mặt để tự động đăng nhập không cần chạm.")
+        self._info_lbl.setWordWrap(True)
+        self._info_lbl.setStyleSheet("color: #5f6368; font-size: 11px;")
+        layout.addWidget(self._info_lbl)
 
         layout.addStretch()
 
@@ -193,27 +252,71 @@ class TeacherEnrollDialog(QDialog):
         btn_box.addStretch()
         cancel_btn = QPushButton("Hủy")
         cancel_btn.clicked.connect(self.reject)
-        start_btn = QPushButton("Bắt đầu chụp")
-        start_btn.setStyleSheet("background: #1a73e8; color: white; font-weight: bold; padding: 7px 16px; border-radius: 4px;")
-        start_btn.clicked.connect(self._validate)
+
+        self._action_btn = QPushButton("Bắt đầu chụp")
+        self._action_btn.setStyleSheet("background: #1a73e8; color: white; font-weight: bold; padding: 8px 18px; border-radius: 4px;")
+        self._action_btn.clicked.connect(self._validate)
 
         btn_box.addWidget(cancel_btn)
-        btn_box.addWidget(start_btn)
+        btn_box.addWidget(self._action_btn)
         layout.addLayout(btn_box)
 
+    def _on_mode_toggled(self) -> None:
+        if self._radio_face.isChecked():
+            self._info_lbl.setText("💡 Khi bấm 'Bắt đầu chụp', hệ thống sẽ thu thập 5 mẫu góc mặt để tự động đăng nhập không cần chạm.")
+            self._action_btn.setText("Bắt đầu chụp")
+            self._action_btn.setStyleSheet("background: #1a73e8; color: white; font-weight: bold; padding: 8px 18px; border-radius: 4px;")
+        else:
+            self._info_lbl.setText("💡 Tài khoản sẽ được lưu an toàn với mã PIN băm PBKDF2 SHA-256. Bạn có thể đăng nhập ngay.")
+            self._action_btn.setText("✅ Hoàn tất Đăng ký PIN")
+            self._action_btn.setStyleSheet("background: #34a853; color: white; font-weight: bold; padding: 8px 18px; border-radius: 4px;")
+
     def _validate(self) -> None:
-        if not self._name_edit.text().strip():
+        name = self._name_edit.text().strip()
+        if not name:
             QMessageBox.warning(self, "Lỗi", "Vui lòng nhập Họ và Tên giáo viên.")
             return
         pin = self._pin_edit.text().strip()
         if not (pin.isdigit() and 4 <= len(pin) <= 6):
             QMessageBox.warning(self, "Lỗi", "Mã PIN phải từ 4 đến 6 chữ số.")
             return
-        self.accept()
+
+        code = self._code_edit.text().strip()
+        if self.service is not None and code:
+            existing = self.service.get_teacher_by_code(code)
+            if existing is not None:
+                QMessageBox.warning(
+                    self,
+                    "Trùng mã giáo viên",
+                    f"Mã giáo viên '{code}' đã tồn tại trong hệ thống. Vui lòng chọn mã khác.",
+                )
+                return
+
+        if self._radio_pin_only.isChecked():
+            self.is_pin_only = True
+            if self.service is not None:
+                try:
+                    self.enrolled_teacher_id = self.service.enroll_teacher_pin_only(
+                        full_name=name,
+                        subject=self._subject_edit.text().strip(),
+                        pin=pin,
+                        teacher_code=code or None,
+                    )
+                except Exception as exc:
+                    QMessageBox.critical(self, "Lỗi đăng ký PIN", str(exc))
+                    return
+            self.accept()
+        else:
+            self.is_pin_only = False
+            self.accept()
 
     @property
     def full_name(self) -> str:
         return self._name_edit.text().strip()
+
+    @property
+    def teacher_code(self) -> str:
+        return self._code_edit.text().strip()
 
     @property
     def subject(self) -> str:
@@ -251,6 +354,11 @@ class LoginWindow(QWidget):
         self._pin_buffer: str = ""
         self._cam_thread: Optional[QThread] = None
         self._cam_worker: Optional[_LoginCameraWorker] = None
+        self._pending_enroll_code: str = ""
+        self._pending_enroll_name: str = ""
+        self._pending_enroll_subject: str = ""
+        self._pending_enroll_pin: str = ""
+        self._last_frame_bgr: Optional[np.ndarray] = None
 
         self.setWindowTitle("AirTeach AI — Xác thực Giáo viên")
         self.setMinimumSize(960, 600)
@@ -328,6 +436,21 @@ class LoginWindow(QWidget):
         self._btn_enroll.clicked.connect(self._on_enroll_clicked)
         btn_row_left.addWidget(self._btn_enroll)
 
+        self._btn_scan_card = QPushButton("🪪 Quét thẻ Giáo viên")
+        self._btn_scan_card.setStyleSheet(
+            "background: #fbbc04; color: #202124; font-weight: bold; padding: 9px 14px; border-radius: 6px;"
+        )
+        self._btn_scan_card.clicked.connect(self._on_scan_card_clicked)
+        btn_row_left.addWidget(self._btn_scan_card)
+
+        self._btn_cancel_enroll = QPushButton("❌ Hủy chụp")
+        self._btn_cancel_enroll.setStyleSheet(
+            "background: #ea4335; color: white; font-weight: bold; padding: 9px 16px; border-radius: 6px;"
+        )
+        self._btn_cancel_enroll.clicked.connect(self._on_cancel_enroll)
+        self._btn_cancel_enroll.setVisible(False)
+        btn_row_left.addWidget(self._btn_cancel_enroll)
+
         left_layout.addLayout(btn_row_left)
         body.addWidget(left_card, stretch=3)
 
@@ -335,17 +458,35 @@ class LoginWindow(QWidget):
         right_card = QFrame()
         right_card.setStyleSheet("background: white; border: 1px solid #dadce0; border-radius: 10px; padding: 16px;")
         right_layout = QVBoxLayout(right_card)
-        right_layout.setSpacing(12)
+        right_layout.setSpacing(10)
 
-        right_title = QLabel("🔢 Đăng nhập bằng mã PIN")
+        right_title = QLabel("🔢 Đăng nhập bằng Mã GV & PIN")
         right_title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         right_title.setStyleSheet("color: #202124;")
         right_layout.addWidget(right_title)
 
-        right_layout.addWidget(QLabel("Chọn hồ sơ Giáo viên:"))
+        # Teacher ID input
+        id_lbl = QLabel("Mã Giáo viên (ID):")
+        id_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        right_layout.addWidget(id_lbl)
+
+        self._id_input = QLineEdit()
+        self._id_input.setPlaceholderText("VD: GV01 / GV-TOAN")
+        self._id_input.setStyleSheet("padding: 7px; border: 1px solid #dadce0; border-radius: 4px; font-weight: bold;")
+        self._id_input.textChanged.connect(self._on_id_input_changed)
+        right_layout.addWidget(self._id_input)
+
+        right_layout.addWidget(QLabel("Hoặc chọn nhanh từ danh sách:"))
         self._teacher_combo = QComboBox()
         self._teacher_combo.setStyleSheet("padding: 7px; border: 1px solid #dadce0; border-radius: 4px;")
+        self._teacher_combo.currentIndexChanged.connect(self._on_combo_changed)
         right_layout.addWidget(self._teacher_combo)
+
+        # Lockout indicator label
+        self._lock_info_lbl = QLabel("")
+        self._lock_info_lbl.setStyleSheet("color: #ea4335; font-size: 11px; font-weight: bold;")
+        self._lock_info_lbl.setVisible(False)
+        right_layout.addWidget(self._lock_info_lbl)
 
         # PIN display
         self._pin_display = QLineEdit()
@@ -372,7 +513,7 @@ class LoginWindow(QWidget):
 
         for text, r, c in buttons:
             btn = QPushButton(text)
-            btn.setFixedSize(68, 48)
+            btn.setFixedSize(68, 46)
             btn.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
             if text in ("Xóa", "⌫"):
                 btn.setStyleSheet(
@@ -388,7 +529,7 @@ class LoginWindow(QWidget):
         right_layout.addLayout(keypad_grid)
 
         # Submit PIN button
-        self._btn_submit_pin = QPushButton("Đăng nhập bằng PIN")
+        self._btn_submit_pin = QPushButton("🔑 Đăng nhập bằng PIN")
         self._btn_submit_pin.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self._btn_submit_pin.setStyleSheet(
             "background: #34a853; color: white; padding: 10px; border-radius: 6px;"
@@ -402,6 +543,11 @@ class LoginWindow(QWidget):
     # ── Camera stream lifecycle ───────────────────────────────────────────────
 
     def _start_camera(self) -> None:
+        if self.camera_index < 0:
+            logger.info("Camera index is negative (%d); LoginCameraWorker not started.", self.camera_index)
+            self._status_bar.setText("Camera offline.")
+            return
+
         worker = _LoginCameraWorker(self.service, self.camera_index)
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -410,6 +556,7 @@ class LoginWindow(QWidget):
         worker.face_authenticated.connect(self._on_face_auth_success)
         worker.enroll_sample_captured.connect(self._on_enroll_sample)
         worker.enroll_finished.connect(self._on_enroll_finished)
+        worker.status_updated.connect(self._status_bar.setText)
         worker.error_occurred.connect(lambda err: self._status_bar.setText(f"Lỗi: {err}"))
 
         thread.started.connect(worker.run)
@@ -423,7 +570,10 @@ class LoginWindow(QWidget):
             self._cam_worker.stop()
         if self._cam_thread and self._cam_thread.isRunning():
             self._cam_thread.quit()
-            self._cam_thread.wait(2000)
+            if not self._cam_thread.wait(1500):
+                logger.warning("Camera thread wait timed out; terminating.")
+                self._cam_thread.terminate()
+                self._cam_thread.wait(500)
         self._cam_worker = None
         self._cam_thread = None
 
@@ -432,6 +582,7 @@ class LoginWindow(QWidget):
     @Slot(np.ndarray, object)
     def _on_frame_ready(self, frame_bgr: np.ndarray, faces: Optional[np.ndarray]) -> None:
         """Draw face bounding boxes and render onto label."""
+        self._last_frame_bgr = frame_bgr.copy()
         canvas = frame_bgr.copy()
 
         if faces is not None and len(faces) > 0:
@@ -461,6 +612,85 @@ class LoginWindow(QWidget):
         )
         self._video_view.setPixmap(pix)
 
+    # ── Interactive ID & Keypad Controls ─────────────────────────────────────
+
+    def _on_combo_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        code = self._teacher_combo.itemData(index, Qt.ItemDataRole.UserRole + 1)
+        if code and self._id_input.text().strip() != code:
+            self._id_input.blockSignals(True)
+            self._id_input.setText(code)
+            self._id_input.blockSignals(False)
+
+    def _on_id_input_changed(self, text: str) -> None:
+        code = text.strip().upper()
+        if not code:
+            return
+        for i in range(self._teacher_combo.count()):
+            t_code = self._teacher_combo.itemData(i, Qt.ItemDataRole.UserRole + 1)
+            if t_code and t_code.upper() == code:
+                self._teacher_combo.blockSignals(True)
+                self._teacher_combo.setCurrentIndex(i)
+                self._teacher_combo.blockSignals(False)
+                break
+
+    def _on_scan_card_clicked(self) -> None:
+        """Scan webcam frame for teacher badge / printed ID code or QR."""
+        if self._last_frame_bgr is None:
+            self._status_bar.setText("⚠️ Camera chưa gửi khung hình. Hãy đợi camera khởi động.")
+            return
+
+        h, w = self._last_frame_bgr.shape[:2]
+        crop = self._last_frame_bgr[int(h * 0.15):int(h * 0.85), int(w * 0.15):int(w * 0.85)]
+
+        teachers = self.service.list_teachers()
+        found_code = None
+
+        try:
+            from src.services.smart_ink_ocr import _RAPIDOCR_AVAILABLE, _RapidOCR  # noqa: PLC0415
+            if _RAPIDOCR_AVAILABLE and _RapidOCR is not None:
+                ocr_engine = _RapidOCR()
+                res, _ = ocr_engine(crop)
+                if res:
+                    scanned_text = " ".join([line[1] for line in res]).upper()
+                    import re
+                    match = re.search(r"GV[-_\dA-Z]+", scanned_text)
+                    if match:
+                        found_code = match.group(0)
+                    else:
+                        for t in teachers:
+                            if t["teacher_code"].upper() in scanned_text or t["full_name"].upper() in scanned_text:
+                                found_code = t["teacher_code"]
+                                break
+        except Exception as exc:
+            logger.debug("Card scan OCR error: %s", exc)
+
+        if found_code:
+            self._id_input.setText(found_code)
+            self._status_bar.setText(f"🪪 Đã nhận diện thẻ: {found_code}. Nhập PIN để mở phiên.")
+            QMessageBox.information(self, "Quét thẻ thành công", f"Đã tìm thấy mã giáo viên: {found_code}\nVui lòng nhập mã PIN.")
+        else:
+            self._status_bar.setText("🔍 Chưa nhận diện được thẻ trong vùng ngắm. Hãy giơ thẻ rõ nét hơn hoặc nhập mã trực tiếp.")
+            QMessageBox.warning(self, "Quét thẻ", "Chưa nhận diện được mã thẻ trong khung hình.\nVui lòng giơ thẻ thẳng trước camera hoặc nhập mã giáo viên.")
+
+    def keyPressEvent(self, event) -> None:
+        text = event.text()
+        if text.isdigit() and len(self._pin_buffer) < 6:
+            self._on_keypad_press(text)
+            event.accept()
+            return
+        key = event.key()
+        if key in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+            self._on_keypad_press("⌫")
+            event.accept()
+            return
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._on_submit_pin()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     # ── Authentication events ─────────────────────────────────────────────────
 
     @Slot(object)
@@ -486,18 +716,44 @@ class LoginWindow(QWidget):
             QMessageBox.warning(self, "Lỗi", "Vui lòng nhập mã PIN.")
             return
 
+        code_entered = self._id_input.text().strip()
         t_id = self._teacher_combo.currentData()
-        if not t_id:
-            QMessageBox.warning(self, "Lỗi", "Chưa chọn hồ sơ giáo viên.")
+        target_key = code_entered if code_entered else (t_id or "")
+
+        if not target_key:
+            QMessageBox.warning(self, "Lỗi", "Vui lòng nhập Mã Giáo viên hoặc chọn hồ sơ.")
             return
 
-        row = self.service.authenticate_by_pin(t_id, self._pin_buffer)
+        locked, remaining = self.service.is_locked(target_key)
+        if locked:
+            msg = f"Tài khoản '{target_key}' đang bị tạm khóa sau 5 lần nhập sai liên tiếp.\nVui lòng đợi {remaining} giây trước khi thử lại."
+            self._lock_info_lbl.setText(f"🔒 Tạm khóa: còn {remaining}s")
+            self._lock_info_lbl.setVisible(True)
+            QMessageBox.warning(self, "Tài khoản bị tạm khóa", msg)
+            return
+
+        row = None
+        if code_entered:
+            row = self.service.authenticate_by_teacher_code_and_pin(code_entered, self._pin_buffer)
+        if row is None and t_id:
+            row = self.service.authenticate_by_pin(t_id, self._pin_buffer)
+
         if row is not None:
-            self._status_bar.setText(f"🎉 Đăng nhập thành công bằng PIN!")
+            self._lock_info_lbl.setVisible(False)
+            self._status_bar.setText("🎉 Đăng nhập thành công bằng PIN!")
             self._stop_camera()
             self.login_successful.emit(row)
         else:
-            QMessageBox.critical(self, "Thất bại", "Mã PIN không chính xác. Vui lòng thử lại.")
+            locked, remaining = self.service.is_locked(target_key)
+            if locked:
+                self._lock_info_lbl.setText(f"🔒 Tạm khóa: còn {remaining}s")
+                self._lock_info_lbl.setVisible(True)
+                QMessageBox.critical(
+                    self, "Tài khoản bị khóa",
+                    f"Bạn đã nhập sai mã PIN 5 lần liên tiếp.\nTài khoản bị tạm khóa {remaining} giây.",
+                )
+            else:
+                QMessageBox.critical(self, "Thất bại", "Mã PIN hoặc Mã Giáo viên không chính xác. Vui lòng thử lại.")
             self._pin_buffer = ""
             self._pin_display.clear()
 
@@ -508,17 +764,46 @@ class LoginWindow(QWidget):
     # ── Enrollment flow ───────────────────────────────────────────────────────
 
     def _on_enroll_clicked(self) -> None:
-        dlg = TeacherEnrollDialog(self)
+        dlg = TeacherEnrollDialog(service=self.service, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
+        if getattr(dlg, "is_pin_only", False) and getattr(dlg, "enrolled_teacher_id", None):
+            teacher_id = dlg.enrolled_teacher_id
+            QMessageBox.information(
+                self, "Đăng ký thành công",
+                f"Đã tạo hồ sơ cho giáo viên: {dlg.full_name}!\nHệ thống tự động đăng nhập."
+            )
+            self.refresh_teacher_dropdown()
+            cur = self.service._conn.execute("SELECT * FROM teachers WHERE id = ?", (teacher_id,))
+            row = cur.fetchone()
+            if row is not None:
+                self._stop_camera()
+                self.login_successful.emit(row)
+            return
+
+        self._pending_enroll_code = dlg.teacher_code
         self._pending_enroll_name = dlg.full_name
         self._pending_enroll_subject = dlg.subject
         self._pending_enroll_pin = dlg.pin
 
         self._status_bar.setText("📸 Đang chụp 5 mẫu khuôn mặt... Vui lòng nhìn thẳng và nghiêng nhẹ.")
+        if hasattr(self, "_btn_cancel_enroll"):
+            self._btn_cancel_enroll.setVisible(True)
         if self._cam_worker:
             self._cam_worker.set_enroll_mode(True)
+
+    def _on_cancel_enroll(self) -> None:
+        if self._cam_worker:
+            self._cam_worker.set_enroll_mode(False)
+        self._pending_enroll_code = ""
+        self._pending_enroll_name = ""
+        self._pending_enroll_subject = ""
+        self._pending_enroll_pin = ""
+        if hasattr(self, "_btn_cancel_enroll"):
+            self._btn_cancel_enroll.setVisible(False)
+        self._status_bar.setText("🔍 Đang quan sát... Hãy nhìn thẳng vào camera để tự động đăng nhập.")
+        self._liveness_bar.setValue(0)
 
     @Slot(int, int)
     def _on_enroll_sample(self, current: int, total: int) -> None:
@@ -527,12 +812,15 @@ class LoginWindow(QWidget):
 
     @Slot(list)
     def _on_enroll_finished(self, frames: list) -> None:
+        if hasattr(self, "_btn_cancel_enroll"):
+            self._btn_cancel_enroll.setVisible(False)
         try:
             teacher_id = self.service.enroll_from_frames(
                 frames=frames,
                 full_name=self._pending_enroll_name,
                 subject=self._pending_enroll_subject,
                 pin=self._pending_enroll_pin,
+                teacher_code=self._pending_enroll_code or None,
             )
             QMessageBox.information(
                 self, "Đăng ký thành công",
@@ -546,18 +834,55 @@ class LoginWindow(QWidget):
                 self._stop_camera()
                 self.login_successful.emit(row)
         except Exception as exc:
-            QMessageBox.critical(self, "Lỗi đăng ký", f"Không thể đăng ký:\n{exc}")
-            self._status_bar.setText("Đăng ký thất bại. Hãy thử lại.")
+            # Offer instant fallback to PIN registration so teacher is never locked out
+            res = QMessageBox.question(
+                self,
+                "Lỗi chụp khuôn mặt",
+                f"Không thể trích xuất đặc trưng khuôn mặt đủ rõ từ 5 ảnh:\n{exc}\n\n"
+                f"Bạn có muốn hoàn tất đăng ký cho giáo viên '{self._pending_enroll_name}' bằng mã PIN dự phòng ngay bây giờ?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if res == QMessageBox.StandardButton.Yes:
+                try:
+                    teacher_id = self.service.enroll_teacher_pin_only(
+                        full_name=self._pending_enroll_name,
+                        subject=self._pending_enroll_subject,
+                        pin=self._pending_enroll_pin,
+                        teacher_code=self._pending_enroll_code or None,
+                    )
+                    QMessageBox.information(
+                        self, "Đăng ký thành công",
+                        f"Đã tạo hồ sơ mã PIN cho giáo viên: {self._pending_enroll_name}!\nHệ thống tự động đăng nhập."
+                    )
+                    self.refresh_teacher_dropdown()
+                    cur = self.service._conn.execute("SELECT * FROM teachers WHERE id = ?", (teacher_id,))
+                    row = cur.fetchone()
+                    if row is not None:
+                        self._stop_camera()
+                        self.login_successful.emit(row)
+                    return
+                except Exception as pin_exc:
+                    QMessageBox.critical(self, "Lỗi đăng ký PIN", str(pin_exc))
+            self._status_bar.setText("Đăng ký thất bại. Hãy thử lại hoặc chọn 'Chỉ tạo bằng mã PIN'.")
 
     def refresh_teacher_dropdown(self) -> None:
+        self._teacher_combo.blockSignals(True)
         self._teacher_combo.clear()
         teachers = self.service.list_teachers()
         for t in teachers:
-            label = f"{t['full_name']} ({t['subject']})" if t['subject'] else t['full_name']
+            code_str = f"[{t['teacher_code']}] " if t.get("teacher_code") else ""
+            label = f"{code_str}{t['full_name']} ({t['subject']})" if t['subject'] else f"{code_str}{t['full_name']}"
             self._teacher_combo.addItem(label, t["id"])
+            self._teacher_combo.setItemData(self._teacher_combo.count() - 1, t.get("teacher_code", ""), Qt.ItemDataRole.UserRole + 1)
+
+        self._teacher_combo.blockSignals(False)
 
         has_teachers = len(teachers) > 0
         self._btn_submit_pin.setEnabled(has_teachers)
+        if has_teachers:
+            current_code = self._teacher_combo.itemData(0, Qt.ItemDataRole.UserRole + 1)
+            if current_code and not self._id_input.text().strip():
+                self._id_input.setText(current_code)
 
     def closeEvent(self, event) -> None:
         self._stop_camera()

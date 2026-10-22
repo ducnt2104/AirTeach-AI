@@ -43,6 +43,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QColor,
     QFont,
     QIcon,
@@ -53,6 +54,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QDockWidget,
     QFileDialog,
     QGraphicsView,
@@ -60,6 +62,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QSizePolicy,
     QSplitter,
     QStatusBar,
@@ -67,6 +70,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+_ASSETS_DIR = Path(__file__).resolve().parent.parent.parent / "assets"
+
+def _get_icon(name: str) -> QIcon:
+    path = _ASSETS_DIR / "icons" / f"{name}.svg"
+    return QIcon(str(path)) if path.exists() else QIcon()
 
 from src.core.hand_gesture_engine import (
     GestureState,
@@ -177,13 +186,19 @@ class _OcrRunnable(QRunnable):
 class MainWindow(QMainWindow):
     """AirTeach AI main application window."""
 
+    logout_requested = Signal()
+
     def __init__(
         self,
         teacher_row=None,           # sqlite3.Row from face auth (optional)
         camera_index: int = 0,
     ) -> None:
         super().__init__()
-        self._teacher   = teacher_row
+        if teacher_row:
+            from src.services.face_profile_service import TeacherProfileService  # noqa: PLC0415
+            self._teacher = TeacherProfileService.teacher_row_to_dict(teacher_row)
+        else:
+            self._teacher = None
         self._cam_index = camera_index
 
         # State
@@ -200,12 +215,14 @@ class MainWindow(QMainWindow):
         self._rdp_epsilon   = 2.5
         self._snapping_on   = True
         self._select_start: Optional[QPointF] = None
+        self._teaching_mode: str = "PEN"  # "PEN", "LASER", "ERASER", "SELECT"
+        self._redo_stack: list[InkStroke] = []
 
         # Services (lazy-init)
         _work_root = Path(__file__).resolve().parents[2] / "data" / "work"
         _work_root.mkdir(parents=True, exist_ok=True)
         self._doc_manager  = DocumentManager(_work_root)
-        if self._teacher and "workspace_dir" in self._teacher.keys() and self._teacher["workspace_dir"]:
+        if self._teacher and self._teacher.get("workspace_dir"):
             self._workspace_dir = Path(self._teacher["workspace_dir"])
         else:
             self._workspace_dir = Path(__file__).resolve().parents[2] / "data" / "workspaces" / "demo"
@@ -232,8 +249,14 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._connect_camera(camera_index)
 
+        # Initialize default crisp canvas background
+        from src.ui.library_and_prep_widget import BackgroundTemplateGenerator  # noqa: PLC0415
+        self._scene.set_background_page(BackgroundTemplateGenerator.render_plain_white())
+
         # Welcome state
-        self.setWindowTitle("AirTeach AI")
+        code_str = f"[{self._teacher['teacher_code']}] " if self._teacher and self._teacher.get("teacher_code") else ""
+        t_name = self._teacher.get("full_name") if self._teacher else "Dạy thử / Demo"
+        self.setWindowTitle(f"AirTeach AI — {code_str}{t_name}")
         self._update_status_bar()
 
     # ── Build UI ──────────────────────────────────────────────────────────────
@@ -331,26 +354,26 @@ class MainWindow(QMainWindow):
 
         # File
         file_menu = mb.addMenu("Tệp")
-        lib_act = QAction("📚 Thư viện bài giảng…", self)
+        lib_act = QAction(_get_icon("library"), "Thư viện bài giảng…", self)
         lib_act.triggered.connect(self._on_open_library)
         file_menu.addAction(lib_act)
 
-        open_act = QAction("Mở tài liệu…", self)
+        open_act = QAction(_get_icon("import_doc"), "Mở tài liệu (PDF, PPTX, DOCX)…", self)
         open_act.setShortcut(QKeySequence.StandardKey.Open)
         open_act.triggered.connect(self._on_open_document)
         file_menu.addAction(open_act)
 
-        open_at_act = QAction("Mở gói .airteach…", self)
+        open_at_act = QAction(_get_icon("new_lesson"), "Mở gói bài giảng .airteach…", self)
         open_at_act.triggered.connect(self._on_open_airteach)
         file_menu.addAction(open_at_act)
 
-        save_at_act = QAction("Lưu bài giảng (.airteach)…", self)
+        save_at_act = QAction(_get_icon("new_lesson"), "Lưu bài giảng (.airteach)…", self)
         save_at_act.setShortcut(QKeySequence.StandardKey.Save)
         save_at_act.triggered.connect(self._on_save_airteach)
         file_menu.addAction(save_at_act)
 
         file_menu.addSeparator()
-        export_act = QAction("Xuất PDF có chú thích…", self)
+        export_act = QAction(_get_icon("export_pdf"), "Xuất PDF có chú thích…", self)
         export_act.triggered.connect(self._on_export_pdf)
         file_menu.addAction(export_act)
 
@@ -362,71 +385,248 @@ class MainWindow(QMainWindow):
 
         # Edit
         edit_menu = mb.addMenu("Chỉnh sửa")
-        undo_act = QAction("Hoàn tác nét cuối", self)
+        undo_act = QAction(_get_icon("undo"), "Hoàn tác nét cuối", self)
         undo_act.setShortcut(QKeySequence.StandardKey.Undo)
         undo_act.triggered.connect(self._on_undo)
         edit_menu.addAction(undo_act)
 
-        clear_act = QAction("Xóa tất cả nét", self)
+        redo_act = QAction(_get_icon("redo"), "Làm lại", self)
+        redo_act.setShortcut(QKeySequence.StandardKey.Redo)
+        redo_act.triggered.connect(self._on_redo)
+        edit_menu.addAction(redo_act)
+
+        clear_act = QAction(_get_icon("clear"), "Xóa tất cả nét", self)
         clear_act.triggered.connect(self._on_clear_all)
         edit_menu.addAction(clear_act)
 
-        replay_act = QAction("⏱️ Phát lại nét vẽ (Replay)", self)
+        replay_act = QAction(_get_icon("replay"), "Phát lại nét vẽ (Replay)", self)
         replay_act.triggered.connect(self._on_toggle_replay)
         edit_menu.addAction(replay_act)
 
         # Tools
         tools_menu = mb.addMenu("Công cụ")
-        settings_act = QAction("Cài đặt…", self)
+        trainer_act = QAction(_get_icon("camera"), "Luyện tập & Hiệu chuẩn Cử chỉ…", self)
+        trainer_act.setShortcut(Qt.Key.Key_T)
+        trainer_act.triggered.connect(self._on_open_gesture_trainer)
+        tools_menu.addAction(trainer_act)
+
+        settings_act = QAction(_get_icon("settings"), "Cài đặt…", self)
         settings_act.triggered.connect(self._on_settings)
         tools_menu.addAction(settings_act)
 
-        download_act = QAction("Tải mô hình AI…", self)
+        download_act = QAction(_get_icon("camera"), "Tải mô hình AI…", self)
         download_act.triggered.connect(self._on_download_models)
         tools_menu.addAction(download_act)
 
-    # ── Toolbar ───────────────────────────────────────────────────────────────
+    # ── Toolbars ──────────────────────────────────────────────────────────────
 
     def _build_toolbar(self) -> None:
-        tb = QToolBar("Điều hướng")
-        tb.setMovable(False)
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tb)
+        # 1. Navigation & Document Toolbar
+        nav_tb = QToolBar("Điều hướng Bài giảng")
+        nav_tb.setMovable(False)
+        from PySide6.QtCore import QSize
+        nav_tb.setIconSize(QSize(20, 20))
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, nav_tb)
 
-        lib_tb_act = QAction("📚 Thư viện", self)
+        lib_tb_act = QAction(_get_icon("library"), "📂 Kho Bài giảng", self)
+        lib_tb_act.setToolTip("Mở kho bài giảng cá nhân của giáo viên (.airteach)")
         lib_tb_act.triggered.connect(self._on_open_library)
-        tb.addAction(lib_tb_act)
+        nav_tb.addAction(lib_tb_act)
 
-        tb.addSeparator()
+        open_tb_act = QAction(_get_icon("import_doc"), "Mở tài liệu", self)
+        open_tb_act.setToolTip("Nhập tệp PDF, PPTX hoặc Word DOCX")
+        open_tb_act.triggered.connect(self._on_open_document)
+        nav_tb.addAction(open_tb_act)
 
-        prev_act = QAction("◀ Trang trước", self)
+        save_tb_act = QAction(_get_icon("new_lesson"), "Lưu", self)
+        save_tb_act.setToolTip("Lưu gói bài giảng .airteach")
+        save_tb_act.triggered.connect(self._on_save_airteach)
+        nav_tb.addAction(save_tb_act)
+
+        export_tb_act = QAction(_get_icon("export_pdf"), "Xuất PDF", self)
+        export_tb_act.setToolTip("Xuất bài giảng kèm nét vẽ sang tệp PDF")
+        export_tb_act.triggered.connect(self._on_export_pdf)
+        nav_tb.addAction(export_tb_act)
+
+        nav_tb.addSeparator()
+
+        prev_act = QAction(_get_icon("page_prev"), "Trang trước", self)
         prev_act.setShortcut(Qt.Key.Key_Left)
+        prev_act.setToolTip("Lùi lại trang trước (Mũi tên Trái hoặc Gạt trái)")
         prev_act.triggered.connect(self._on_prev_page)
-        tb.addAction(prev_act)
+        nav_tb.addAction(prev_act)
 
-        next_act = QAction("Trang sau ▶", self)
+        next_act = QAction(_get_icon("page_next"), "Trang sau", self)
         next_act.setShortcut(Qt.Key.Key_Right)
+        next_act.setToolTip("Chuyển sang trang sau (Mũi tên Phải hoặc Gạt phải)")
         next_act.triggered.connect(self._on_next_page)
-        tb.addAction(next_act)
+        nav_tb.addAction(next_act)
 
-        tb.addSeparator()
+        nav_tb.addSeparator()
 
-        ocr_act = QAction("🔤 Nhận dạng chữ (OCR)", self)
+        ocr_act = QAction(_get_icon("ocr_text"), "Nhận dạng chữ", self)
+        ocr_act.setToolTip("Nhận dạng chữ viết tay sang văn bản")
         ocr_act.triggered.connect(self._on_manual_ocr)
-        tb.addAction(ocr_act)
+        nav_tb.addAction(ocr_act)
 
-        formula_act = QAction("∑ Nhận dạng công thức", self)
+        formula_act = QAction(_get_icon("ocr_math"), "Nhận dạng công thức", self)
+        formula_act.setToolTip("Nhận dạng công thức toán học viết tay sang LaTeX")
         formula_act.triggered.connect(self._on_manual_formula_ocr)
-        tb.addAction(formula_act)
+        nav_tb.addAction(formula_act)
 
-        tb.addSeparator()
+        nav_tb.addSeparator()
 
-        replay_tb_act = QAction("⏱️ Replay", self)
+        replay_tb_act = QAction(_get_icon("replay"), "Phát lại", self)
+        replay_tb_act.setToolTip("Bật thanh tua lại quá trình viết bài giảng (Replay)")
         replay_tb_act.triggered.connect(self._on_toggle_replay)
-        tb.addAction(replay_tb_act)
+        nav_tb.addAction(replay_tb_act)
 
-        clear_tb_act = QAction("🗑 Xóa nét", self)
+        clear_tb_act = QAction(_get_icon("clear"), "Xóa nét", self)
+        clear_tb_act.setToolTip("Xóa toàn bộ nét vẽ trên trang hiện tại")
         clear_tb_act.triggered.connect(self._on_clear_all)
-        tb.addAction(clear_tb_act)
+        nav_tb.addAction(clear_tb_act)
+
+        # Spacer to push profile badge and logout to right
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        nav_tb.addWidget(spacer)
+
+        code_tag = f"[{self._teacher['teacher_code']}] " if self._teacher and self._teacher.get("teacher_code") else ""
+        teacher_name = self._teacher["full_name"] if self._teacher and "full_name" in self._teacher.keys() else "Dạy thử / Demo"
+        subject_name = f" • {self._teacher['subject']}" if self._teacher and "subject" in self._teacher.keys() and self._teacher["subject"] else ""
+        profile_pill = QLabel(f"👤 {code_tag}{teacher_name}{subject_name}")
+        profile_pill.setStyleSheet("""
+            background: #e8f0fe;
+            color: #1a73e8;
+            font-weight: bold;
+            font-size: 11px;
+            padding: 4px 12px;
+            border-radius: 12px;
+            border: 1px solid #d2e3fc;
+            margin-right: 6px;
+        """)
+        self.teacher_badge = profile_pill
+        nav_tb.addWidget(profile_pill)
+
+        logout_act = QAction(_get_icon("settings"), "Đổi GV / Đăng xuất", self)
+        logout_act.setToolTip("Đăng xuất tài khoản hiện tại và trở về màn hình đăng nhập")
+        logout_act.triggered.connect(self._on_logout_requested)
+        self.logout_action = logout_act
+        nav_tb.addAction(logout_act)
+
+        # 2. Classroom Canvas Teaching Toolbar
+        canvas_tb = QToolBar("Công cụ Giảng dạy Bảng viết")
+        canvas_tb.setMovable(False)
+        canvas_tb.setIconSize(QSize(20, 20))
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, canvas_tb)
+
+        tool_grp = QActionGroup(self)
+        tool_grp.setExclusive(True)
+
+        pen_act = QAction(_get_icon("pen"), "Bút vẽ (P)", self)
+        pen_act.setCheckable(True)
+        pen_act.setChecked(True)
+        pen_act.setShortcut(Qt.Key.Key_P)
+        pen_act.triggered.connect(lambda: self._set_teaching_mode("PEN"))
+        tool_grp.addAction(pen_act)
+        canvas_tb.addAction(pen_act)
+
+        laser_act = QAction(_get_icon("laser"), "Tia Laser (L)", self)
+        laser_act.setCheckable(True)
+        laser_act.setShortcut(Qt.Key.Key_L)
+        laser_act.triggered.connect(lambda: self._set_teaching_mode("LASER"))
+        tool_grp.addAction(laser_act)
+        canvas_tb.addAction(laser_act)
+
+        eraser_act = QAction(_get_icon("eraser"), "Tẩy nét (E)", self)
+        eraser_act.setCheckable(True)
+        eraser_act.setShortcut(Qt.Key.Key_E)
+        eraser_act.triggered.connect(lambda: self._set_teaching_mode("ERASER"))
+        tool_grp.addAction(eraser_act)
+        canvas_tb.addAction(eraser_act)
+
+        select_act = QAction(_get_icon("select"), "Chọn vùng (S)", self)
+        select_act.setCheckable(True)
+        select_act.setShortcut(Qt.Key.Key_S)
+        select_act.triggered.connect(lambda: self._set_teaching_mode("SELECT"))
+        tool_grp.addAction(select_act)
+        canvas_tb.addAction(select_act)
+
+        canvas_tb.addSeparator()
+
+        snap_act = QAction(_get_icon("shape"), "Nắn hình học (G)", self)
+        snap_act.setCheckable(True)
+        snap_act.setChecked(self._snapping_on)
+        snap_act.setShortcut(Qt.Key.Key_G)
+        snap_act.triggered.connect(self._toggle_shape_snapping)
+        canvas_tb.addAction(snap_act)
+
+        canvas_tb.addSeparator()
+
+        undo_tb_act = QAction(_get_icon("undo"), "Hoàn tác", self)
+        undo_tb_act.setShortcut(QKeySequence.StandardKey.Undo)
+        undo_tb_act.triggered.connect(self._on_undo)
+        canvas_tb.addAction(undo_tb_act)
+
+        redo_tb_act = QAction(_get_icon("redo"), "Làm lại", self)
+        redo_tb_act.setShortcut(QKeySequence.StandardKey.Redo)
+        redo_tb_act.triggered.connect(self._on_redo)
+        canvas_tb.addAction(redo_tb_act)
+
+        canvas_tb.addSeparator()
+
+        # Preset Color buttons
+        colors = [
+            ("#202124", "Đen"),
+            ("#1a73e8", "Xanh"),
+            ("#d93025", "Đỏ"),
+            ("#137333", "Xanh lá"),
+            ("#8e24aa", "Tím"),
+        ]
+        color_container = QWidget()
+        c_layout = QHBoxLayout(color_container)
+        c_layout.setContentsMargins(4, 0, 4, 0)
+        c_layout.setSpacing(4)
+        for hex_code, tip in colors:
+            btn = QPushButton()
+            btn.setFixedSize(18, 18)
+            btn.setToolTip(f"Màu mực: {tip}")
+            btn.setStyleSheet(f"background: {hex_code}; border-radius: 9px; border: 1.5px solid #dadce0;")
+            btn.clicked.connect(lambda _, c=hex_code: self._set_ink_color(c))
+            c_layout.addWidget(btn)
+        canvas_tb.addWidget(color_container)
+
+        canvas_tb.addSeparator()
+
+        # Width selector
+        self._width_combo = QComboBox()
+        self._width_combo.addItem("Mảnh 1.5px", 1.5)
+        self._width_combo.addItem("Vừa 2.5px", 2.5)
+        self._width_combo.addItem("Đậm 4.5px", 4.5)
+        self._width_combo.addItem("Dạ quang 8.0px", 8.0)
+        self._width_combo.setCurrentIndex(1)
+        self._width_combo.currentIndexChanged.connect(self._on_width_changed)
+        canvas_tb.addWidget(self._width_combo)
+
+        canvas_tb.addSeparator()
+
+        # Gesture Trainer trigger
+        train_tb_act = QAction(_get_icon("camera"), "Hiệu chuẩn cử chỉ", self)
+        train_tb_act.setToolTip("Mở cửa sổ Luyện tập cử chỉ và Hiệu chuẩn góc camera")
+        train_tb_act.triggered.connect(self._on_open_gesture_trainer)
+        canvas_tb.addAction(train_tb_act)
+
+        canvas_tb.addSeparator()
+
+        # Background Template selector
+        self._tpl_combo = QComboBox()
+        self._tpl_combo.addItem("Nền: Trắng", "plain")
+        self._tpl_combo.addItem("Nền: Ô li học sinh", "oli")
+        self._tpl_combo.addItem("Nền: Dòng kẻ ngang", "lined")
+        self._tpl_combo.addItem("Nền: Hệ trục Oxy", "oxy")
+        self._tpl_combo.setToolTip("Thay đổi mẫu trang nền bảng viết kỹ thuật số")
+        self._tpl_combo.currentIndexChanged.connect(self._on_template_bg_changed)
+        canvas_tb.addWidget(self._tpl_combo)
 
     # ── Camera / Hand tracking ─────────────────────────────────────────────────
 
@@ -434,6 +634,11 @@ class MainWindow(QMainWindow):
         """Start the _QtCameraWorker on a background thread."""
         if self._cam_thread is not None:
             self._disconnect_camera()
+
+        if camera_index < 0:
+            logger.info("Camera index is negative (%d); camera thread not started.", camera_index)
+            self._cam_widget.setText("📷 Camera offline")
+            return
 
         worker = _QtCameraWorker(camera_index=camera_index)
         thread = QThread(self)
@@ -459,7 +664,9 @@ class MainWindow(QMainWindow):
             self._cam_worker.stop()
         if self._cam_thread is not None and self._cam_thread.isRunning():
             self._cam_thread.quit()
-            self._cam_thread.wait(3000)
+            if not self._cam_thread.wait(1000):
+                self._cam_thread.terminate()
+                self._cam_thread.wait(500)
         self._cam_worker = None
         self._cam_thread = None
 
@@ -486,6 +693,23 @@ class MainWindow(QMainWindow):
         mode_name = state.name
         self._gesture_hud.setText(f"Mode: {mode_name}")
         self._status_mode.setText(f"Mode: {mode_name}")
+
+        # Handle explicit manual teaching tool overrides
+        if self._teaching_mode == "LASER":
+            if state in (GestureState.POINT, GestureState.DRAW):
+                self._scene.move_laser(bx, by, visible=True)
+                if self._current_stroke_id is not None:
+                    self._finalize_stroke()
+            return
+        elif self._teaching_mode == "ERASER":
+            self._scene.move_laser(bx, by, visible=False)
+            if state == GestureState.DRAW:
+                erased = self._scene.erase_strokes_at(bx, by, radius=32.0)
+                if erased:
+                    self._page_strokes[self._current_page_index] = list(self._scene._strokes.values())
+            elif self._current_stroke_id is not None:
+                self._finalize_stroke()
+            return
 
         if state == GestureState.POINT:
             self._scene.move_laser(bx, by, visible=True)
@@ -629,33 +853,62 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_ocr_done(self, result) -> None:
-        x = getattr(result, "_board_x", 0)
-        y = getattr(result, "_board_y", 0)
+        x = getattr(result, "_board_x", 120.0)
+        y = getattr(result, "_board_y", 120.0)
 
-        if result.is_formula and result.render_image_rgba is not None:
-            self._scene.add_latex_overlay(result.render_image_rgba, x, y)
-        elif result.text:
-            self._scene.add_text_overlay(result.text, x, y)
+        # Open SmartInkReviewDialog so teacher can inspect, edit LaTeX, and confirm
+        from src.ui.smart_ink_review_dialog import SmartInkReviewDialog  # noqa: PLC0415
+        dlg = SmartInkReviewDialog(ocr_result=result, parent=self)
+
+        def _on_confirmed(latex_or_text: str, replace_ink: bool):
+            if replace_ink:
+                self._scene.erase_strokes_at(x, y, radius=120.0)
+                self._page_strokes[self._current_page_index] = list(self._scene._strokes.values())
+
+            if result.is_formula and result.render_image_rgba is not None:
+                self._scene.add_latex_overlay(result.render_image_rgba, x, y)
+            elif result.text or latex_or_text:
+                self._scene.add_text_overlay(latex_or_text or result.text, x, y)
+            self._status.showMessage("Đã chèn nội dung nhận dạng lên bảng.", 3000)
+
+        dlg.result_confirmed.connect(_on_confirmed)
+        dlg.exec()
 
     def _on_manual_ocr(self) -> None:
         sel_item = self._scene._select_rect_item
         if sel_item is None:
-            QMessageBox.information(
-                self, "Nhận dạng chữ",
-                "Vui lòng dùng cử chỉ SELECT (giơ 2 ngón) để khoanh vùng trước."
-            )
-            return
+            if not self._scene._strokes:
+                QMessageBox.information(
+                    self, "Nhận dạng chữ",
+                    "Chưa có nét vẽ nào trên bảng. Hãy vẽ chữ hoặc dùng cử chỉ SELECT để khoanh vùng."
+                )
+                return
+            # Auto-select all strokes on current page
+            all_pts = [seg.p0 for s in self._scene._strokes.values() for seg in s.segments]
+            if all_pts:
+                xs = [p[0] for p in all_pts]
+                ys = [p[1] for p in all_pts]
+                rect = QRectF(min(xs) - 15, min(ys) - 15, max(xs) - min(xs) + 30, max(ys) - min(ys) + 30)
+                self._scene.show_selection_rect(rect)
         self._trigger_ocr_on_selection()
 
     def _on_manual_formula_ocr(self) -> None:
         sel_item = self._scene._select_rect_item
         if sel_item is None:
-            QMessageBox.information(
-                self, "Nhận dạng công thức",
-                "Vui lòng dùng cử chỉ SELECT để khoanh vùng công thức trước."
-            )
-            return
-        rect = sel_item.rect()
+            if not self._scene._strokes:
+                QMessageBox.information(
+                    self, "Nhận dạng công thức",
+                    "Chưa có nét vẽ nào trên bảng. Hãy vẽ công thức hoặc dùng cử chỉ SELECT để khoanh vùng."
+                )
+                return
+            all_pts = [seg.p0 for s in self._scene._strokes.values() for seg in s.segments]
+            if all_pts:
+                xs = [p[0] for p in all_pts]
+                ys = [p[1] for p in all_pts]
+                rect = QRectF(min(xs) - 15, min(ys) - 15, max(xs) - min(xs) + 30, max(ys) - min(ys) + 30)
+                self._scene.show_selection_rect(rect)
+
+        rect = self._scene._select_rect_item.rect()
         ocr_strokes: list[Stroke] = []
         for ink in self._scene._strokes.values():
             for seg in ink.segments:
@@ -927,8 +1180,67 @@ class MainWindow(QMainWindow):
     def _on_undo(self) -> None:
         if self._scene._strokes:
             last_id = list(self._scene._strokes.keys())[-1]
+            stroke = self._scene._strokes.get(last_id)
+            if stroke is not None:
+                self._redo_stack.append(stroke)
             self._scene.remove_stroke(last_id)
             self._page_strokes[self._current_page_index] = list(self._scene._strokes.values())
+
+    def _on_redo(self) -> None:
+        if self._redo_stack:
+            stroke = self._redo_stack.pop()
+            self._scene.commit_stroke(stroke)
+            self._page_strokes[self._current_page_index] = list(self._scene._strokes.values())
+
+    def _set_teaching_mode(self, mode: str) -> None:
+        self._teaching_mode = mode
+        logger.info("Teaching mode changed to %s", mode)
+        self._status_mode.setText(f"Mode: {mode}")
+
+    def _set_ink_color(self, hex_color: str) -> None:
+        self._ink_color = QColor(hex_color)
+        self._status.showMessage(f"Đã chọn màu mực: {hex_color}", 2000)
+
+    def _on_width_changed(self, index: int) -> None:
+        val = float(self._width_combo.currentData())
+        self._ink_min_width = val
+        self._ink_max_width = val * 1.5
+        self._status.showMessage(f"Độ dày nét: {val:.1f} px", 2000)
+
+    def _toggle_shape_snapping(self, enabled: bool) -> None:
+        self._snapping_on = enabled
+        status_txt = "BẬT" if enabled else "TẮT"
+        self._status.showMessage(f"Nắn hình học tự động: {status_txt}", 2000)
+
+    def _on_template_bg_changed(self, index: int) -> None:
+        """Switch the board background template (Plain, Oli grid, Lined, Oxy)."""
+        from src.ui.library_and_prep_widget import BackgroundTemplateGenerator  # noqa: PLC0415
+        key = self._tpl_combo.currentData() if hasattr(self, "_tpl_combo") else "plain"
+        if key == "plain":
+            img = BackgroundTemplateGenerator.render_plain_white()
+        elif key == "oli":
+            img = BackgroundTemplateGenerator.render_oli_grid()
+        elif key == "lined":
+            img = BackgroundTemplateGenerator.render_lined_paper()
+        elif key == "oxy":
+            img = BackgroundTemplateGenerator.render_oxy_coordinates()
+        else:
+            img = BackgroundTemplateGenerator.render_plain_white()
+        self._scene.set_background_page(img)
+        self._status.showMessage(f"Đã chuyển nền bảng: {self._tpl_combo.currentText()}", 2500)
+
+    def _on_open_gesture_trainer(self) -> None:
+        from src.ui.gesture_trainer_dialog import GestureTrainerDialog  # noqa: PLC0415
+        dlg = GestureTrainerDialog(parent=self)
+        if self._cam_worker is not None:
+            prev_cb = self._cam_worker._on_frame_cb
+            def _trainer_frame_cb(frame, lm, st, cx, cy):
+                prev_cb(frame, lm, st, cx, cy)
+                dlg.update_frame(frame, lm, st, cx, cy)
+            self._cam_worker._worker.on_frame = _trainer_frame_cb
+        dlg.exec()
+        if self._cam_worker is not None:
+            self._cam_worker._worker.on_frame = self._cam_worker._on_frame_cb
 
     def _on_clear_all(self) -> None:
         reply = QMessageBox.question(
@@ -972,6 +1284,19 @@ class MainWindow(QMainWindow):
         lib_widget.open_lesson_requested.connect(_on_load)
         dlg_layout.addWidget(lib_widget)
         dlg.exec()
+
+    def _on_logout_requested(self) -> None:
+        """Confirm and cleanly transition back to the LoginWindow."""
+        reply = QMessageBox.question(
+            self,
+            "Đăng xuất Giáo viên",
+            "Bạn có chắc chắn muốn đăng xuất tài khoản hiện tại và trở về màn hình đăng nhập không?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._disconnect_camera()
+            self.logout_requested.emit()
+            self.close()
 
     def _load_airteach_package(self, pkg_path: Path) -> None:
         """Open and display an .airteach lesson package."""

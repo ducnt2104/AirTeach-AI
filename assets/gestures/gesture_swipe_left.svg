@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160">
+  <rect width="160" height="160" rx="16" fill="#f8f9fa" stroke="#dadce0"/>
+  <!-- Palm facing -->
+  <path d="M70 110V50a5 5 0 0 1 10 0v50M80 100V40a5 5 0 0 1 10 0v60M90 100V45a5 5 0 0 1 10 0v55M100 105V55a5 5 0 0 1 10 0v45" fill="none" stroke="#1a73e8" stroke-width="5" stroke-linecap="round"/>
+  <!-- Big Arrow Left -->
+  <path d="M55 75l-20 0m0 0l8-8m-8 8l8 8" fill="none" stroke="#137333" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="80" y="145" text-anchor="middle" font-family="Segoe UI, sans-serif" font-weight="bold" font-size="13" fill="#202124">5. GẠT TRÁI (LÙI TRANG)</text>
+</svg>

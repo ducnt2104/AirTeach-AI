@@ -421,6 +421,8 @@ class GeometricShapeSnapper:
             SnappedShape with shape_type, params, confidence, and render_points.
         """
         pts = np.asarray(points, dtype=np.float64)
+        if pts.ndim == 2 and pts.shape[1] > 2:
+            pts = pts[:, :2]
         if len(pts) < 3:
             return SnappedShape(ShapeType.FREEFORM, confidence=0.0)
 

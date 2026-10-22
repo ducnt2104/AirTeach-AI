@@ -362,8 +362,9 @@ class TestLoginWindow:
     def login_win(self, qapp):
         service = MagicMock(spec=TeacherProfileService)
         service.list_teachers.return_value = [
-            {"id": "t1", "full_name": "Cô Lan", "subject": "Văn", "workspace_dir": "/tmp/t1", "created_at": "now"}
+            {"id": "t1", "full_name": "Cô Lan", "teacher_code": "GV01", "subject": "Văn", "workspace_dir": "/tmp/t1", "created_at": "now"}
         ]
+        service.is_locked.return_value = (False, 0)
         # Avoid starting actual camera thread
         with patch.object(LoginWindow, "_start_camera"):
             win = LoginWindow(service=service, camera_index=99)
@@ -375,6 +376,7 @@ class TestLoginWindow:
     def test_teacher_dropdown_populated(self, login_win):
         assert login_win._teacher_combo.count() == 1
         assert "Cô Lan" in login_win._teacher_combo.currentText()
+        assert "[GV01]" in login_win._teacher_combo.currentText()
 
     def test_pin_keypad_input(self, login_win):
         login_win._on_keypad_press("1")
@@ -388,8 +390,152 @@ class TestLoginWindow:
         login_win._on_keypad_press("Xóa")
         assert login_win._pin_buffer == ""
 
+    def test_id_input_and_combo_sync(self, login_win):
+        # Initial state: first teacher code auto-filled
+        assert login_win._id_input.text() == "GV01"
+
+        # Type non-existing code
+        login_win._id_input.setText("GV99")
+        # Typing GV01 back auto selects combo index 0
+        login_win._id_input.setText("gv01")
+        assert login_win._teacher_combo.currentIndex() == 0
+
+    def test_physical_keyboard_keypad(self, login_win):
+        from PySide6.QtGui import QKeyEvent
+        from PySide6.QtCore import QEvent
+        login_win._id_input.clearFocus()
+        login_win._pin_buffer = ""
+        login_win._pin_display.clear()
+
+        # Press key '5'
+        ev5 = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_5, Qt.KeyboardModifier.NoModifier, "5")
+        login_win.keyPressEvent(ev5)
+        assert login_win._pin_buffer == "5"
+
+        # Press key '8'
+        ev8 = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_8, Qt.KeyboardModifier.NoModifier, "8")
+        login_win.keyPressEvent(ev8)
+        assert login_win._pin_buffer == "58"
+
+        # Press Backspace
+        ev_bs = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Backspace, Qt.KeyboardModifier.NoModifier)
+        login_win.keyPressEvent(ev_bs)
+        assert login_win._pin_buffer == "5"
+
+    def test_lockout_warning_display(self, login_win, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: None)
+        login_win.service.is_locked.return_value = (True, 25)
+        login_win._pin_buffer = "1234"
+        login_win._id_input.setText("GV01")
+
+        login_win._on_submit_pin()
+        assert not login_win._lock_info_lbl.isHidden()
+        assert "25s" in login_win._lock_info_lbl.text()
+
+    def test_scan_card_flow(self, login_win, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: None)
+        monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+
+        # 1. No frame captured yet
+        login_win._last_frame_bgr = None
+        login_win._on_scan_card_clicked()
+        assert "⚠️" in login_win._status_bar.text()
+
+        # 2. Blank frame without badge
+        login_win._last_frame_bgr = np.zeros((480, 640, 3), dtype=np.uint8)
+        login_win._on_scan_card_clicked()
+        assert "🔍" in login_win._status_bar.text()
+
     def test_demo_mode_signal_emitted(self, login_win):
         emitted = []
         login_win.demo_mode_requested.connect(lambda: emitted.append(True))
         login_win._on_demo_mode()
         assert len(emitted) == 1
+
+    def test_enroll_dialog_pin_only(self, qapp):
+        mock_svc = MagicMock()
+        mock_svc.get_teacher_by_code.return_value = None
+        mock_svc.enroll_teacher_pin_only.return_value = "new-teacher-uuid"
+        dlg = TeacherEnrollDialog(service=mock_svc)
+        dlg._name_edit.setText("Thầy Vũ Hoàng")
+        dlg._code_edit.setText("GV-TIN")
+        dlg._subject_edit.setText("Tin học")
+        dlg._pin_edit.setText("123456")
+        dlg._radio_pin_only.setChecked(True)
+
+        dlg._validate()
+        assert dlg.is_pin_only is True
+        assert dlg.enrolled_teacher_id == "new-teacher-uuid"
+        assert dlg.teacher_code == "GV-TIN"
+        mock_svc.enroll_teacher_pin_only.assert_called_once_with(
+            full_name="Thầy Vũ Hoàng",
+            subject="Tin học",
+            pin="123456",
+            teacher_code="GV-TIN",
+        )
+
+    def test_enroll_dialog_duplicate_code(self, qapp, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+        warned = []
+        monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: warned.append(True))
+        mock_svc = MagicMock()
+        mock_svc.get_teacher_by_code.return_value = {"id": "existing-t1", "teacher_code": "GV01"}
+        dlg = TeacherEnrollDialog(service=mock_svc)
+        dlg._name_edit.setText("Thầy Vũ")
+        dlg._code_edit.setText("GV01")
+        dlg._pin_edit.setText("1234")
+        dlg._radio_pin_only.setChecked(True)
+
+        dlg._validate()
+        assert len(warned) == 1
+        mock_svc.enroll_teacher_pin_only.assert_not_called()
+
+    def test_enroll_dialog_face_mode(self, qapp):
+        mock_svc = MagicMock()
+        mock_svc.get_teacher_by_code.return_value = None
+        dlg = TeacherEnrollDialog(service=mock_svc)
+        dlg._name_edit.setText("Cô Thu")
+        dlg._code_edit.setText("GV-LY")
+        dlg._subject_edit.setText("Vật lý")
+        dlg._pin_edit.setText("4321")
+        dlg._radio_face.setChecked(True)
+
+        dlg._validate()
+        assert dlg.is_pin_only is False
+        assert dlg.full_name == "Cô Thu"
+        assert dlg.teacher_code == "GV-LY"
+        assert dlg.subject == "Vật lý"
+        assert dlg.pin == "4321"
+
+    def test_login_window_cancel_enroll(self, login_win):
+        login_win._pending_enroll_name = "Thầy A"
+        login_win._btn_cancel_enroll.setVisible(True)
+        login_win._on_cancel_enroll()
+        assert login_win._pending_enroll_name == ""
+        assert login_win._btn_cancel_enroll.isVisible() is False
+
+    def test_main_window_logout_signal(self, qapp, monkeypatch):
+        from src.ui.main_window import MainWindow
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+        win = MainWindow(teacher_row={"full_name": "Thầy Nam", "subject": "Vật lý", "workspace_dir": ""}, camera_index=-1)
+        emitted = []
+        win.logout_requested.connect(lambda: emitted.append(True))
+        win._on_logout_requested()
+        assert len(emitted) == 1
+        win.close()
+
+    def test_main_window_template_bg_switch(self, qapp):
+        from src.ui.main_window import MainWindow
+        win = MainWindow(teacher_row=None, camera_index=-1)
+        assert hasattr(win, "_tpl_combo")
+        assert win._tpl_combo.count() == 4
+        # Switch to Oli
+        win._tpl_combo.setCurrentIndex(1)
+        assert win._scene._bg_item is not None
+        # Switch to Oxy
+        win._tpl_combo.setCurrentIndex(3)
+        assert win._scene._bg_item is not None
+        win.close()

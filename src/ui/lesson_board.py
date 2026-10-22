@@ -475,6 +475,27 @@ class LessonBoard(QGraphicsScene):
                 self.removeItem(item)
         return True
 
+    def erase_strokes_at(self, x: float, y: float, radius: float = 28.0) -> list[str]:
+        """Erase any strokes passing near (x, y). Returns list of removed stroke IDs."""
+        erased_ids = []
+        target = np.array([x, y], dtype=np.float64)
+        r2 = radius * radius
+
+        for sid, stroke in list(self._strokes.items()):
+            hit = False
+            for seg in stroke.segments:
+                for p in (seg.p0, seg.p1, seg.p2, seg.p3):
+                    if float(np.sum((p - target) ** 2)) <= r2:
+                        hit = True
+                        break
+                if hit:
+                    break
+            if hit:
+                self.remove_stroke(sid)
+                erased_ids.append(sid)
+
+        return erased_ids
+
     def clear_all_strokes(self) -> None:
         """Remove all ink strokes from the scene (keep background)."""
         for sid in list(self._strokes.keys()):

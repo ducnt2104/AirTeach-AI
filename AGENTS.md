@@ -26,7 +26,7 @@ Sản phẩm bàn giao phải là một ứng dụng Desktop hoàn chỉnh viế
   - Công thức toán học viết tay: Sử dụng `rapid-latex-ocr` hoặc `pix2tex` (**LaTeX-OCR** chạy trên `onnxruntime`) chuyển ảnh vùng nét viết thành chuỗi mã LaTeX thực tế, sau đó dựng thành hình vector sắc nét ngay trên `QGraphicsScene` thông qua `matplotlib.mathtext`.
 - **Trợ lý AI Trò chuyện & Hướng dẫn trực tuyến (Google AI Studio API):**
   - Sử dụng SDK chính thức `google-genai` (`from google import genai`).
-  - Đọc khóa API từ biến môi trường `GEMINI_API_KEY` trong tệp `.env` (mặc định khởi tạo với giá trị cấu hình: `your_gemini_api_key_here`, đồng thời cho phép người dùng cập nhật khóa API mới ngay trong hộp thoại Cài đặt của phần mềm).
+  - Đọc khóa API từ biến môi trường `GEMINI_API_KEY` trong tệp `.env` (khởi tạo từ `.env.example`, đồng thời cho phép người dùng cập nhật khóa API mới ngay trong hộp thoại Cài đặt của phần mềm).
   - Bắt buộc bọc lời gọi API trong khối `try...except` xử lý rõ ràng lỗi mạng hoặc lỗi định dạng khóa API, tự động chuyển sang chế độ hướng dẫn cục bộ khi mất mạng mà không làm gián đoạn việc giảng dạy.
 - **Nhập học liệu (PPTX, DOCX, PDF) & Gói bài giảng `.airteach`:**
   - Với tệp `.pdf`: Dựng trực tiếp từng trang thành ảnh độ phân giải cao bằng `pypdfium2` và trích xuất văn bản bằng `pypdf`.

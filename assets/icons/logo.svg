@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <linearGradient id="logoBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a73e8"/>
+      <stop offset="100%" stop-color="#0d47a1"/>
+    </linearGradient>
+    <linearGradient id="sparkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbc04"/>
+      <stop offset="100%" stop-color="#ea4335"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" rx="10" fill="url(#logoBg)"/>
+  <!-- Stylized Hand Contour -->
+  <path d="M16 28V15a2.5 2.5 0 0 1 5 0v7M21 13a2.5 2.5 0 0 1 5 0v9M26 14.5a2.5 2.5 0 0 1 5 0v8M31 18a2.5 2.5 0 0 1 5 0v10c0 6-4.5 10.5-10.5 10.5h-2C18 38.5 14 34.5 14 29.5V26a2.5 2.5 0 0 1 4.5-1.5L20 27" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- AI Sparkle -->
+  <path d="M38 8l1.5 3.5L43 13l-3.5 1.5L38 18l-1.5-3.5L33 13l3.5-1.5z" fill="url(#sparkGrad)"/>
+</svg>

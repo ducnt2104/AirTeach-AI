@@ -44,7 +44,7 @@ KEYSTORE_FILENAME = ".keystore"    # stored alongside profiles.db
 # ─── Database Setup ──────────────────────────────────────────────────────────
 
 def _get_connection(db_path: Path) -> sqlite3.Connection:
-    """Open (or create) the SQLite profiles database."""
+    """Open (or create) the SQLite profiles database with schema migrations."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -52,6 +52,7 @@ def _get_connection(db_path: Path) -> sqlite3.Connection:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS teachers (
             id                TEXT PRIMARY KEY,
+            teacher_code      TEXT UNIQUE,
             full_name         TEXT NOT NULL,
             subject           TEXT NOT NULL DEFAULT '',
             encrypted_embedding BLOB NOT NULL,
@@ -61,6 +62,19 @@ def _get_connection(db_path: Path) -> sqlite3.Connection:
             created_at        TEXT NOT NULL
         )
     """)
+    conn.commit()
+
+    # Migration: add teacher_code column if table existed without it
+    cur = conn.execute("PRAGMA table_info(teachers)")
+    existing_cols = {row["name"] for row in cur.fetchall()}
+    if "teacher_code" not in existing_cols:
+        conn.execute("ALTER TABLE teachers ADD COLUMN teacher_code TEXT")
+        conn.execute(
+            "UPDATE teachers SET teacher_code = 'GV-' || UPPER(SUBSTR(id, 1, 6)) WHERE teacher_code IS NULL"
+        )
+        conn.commit()
+
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_teachers_code ON teachers(teacher_code)")
     conn.commit()
     return conn
 
@@ -115,7 +129,7 @@ class FaceModels:
                     str(yunet_path),
                     config="",
                     input_size=(320, 320),
-                    score_threshold=0.6,
+                    score_threshold=0.5,
                     nms_threshold=0.3,
                     top_k=5,
                 )
@@ -221,6 +235,7 @@ class FaceModels:
         Align-crop the face region and extract a 128-D L2-normalized feature vector.
         Returns None if the recognizer model is unavailable.
         """
+        self.ensure_loaded()
         if self._recognizer is None:
             return None
         face_box = face_row[np.newaxis, :]  # shape (1, 15)
@@ -295,14 +310,74 @@ class TeacherProfileService:
         models_dir: Directory containing YuNet and SFace ONNX weights.
     """
 
+    MAX_FAILED_ATTEMPTS: int = 5
+    LOCKOUT_SECONDS: int = 30
+
     def __init__(self, db_path: Path, models_dir: Path) -> None:
         self.db_path = db_path
         self.models_dir = models_dir
         self._conn = _get_connection(db_path)
         self._keystore = _KeyStore(db_path.parent / KEYSTORE_FILENAME)
         self._models = FaceModels(models_dir)
+        self.last_match_score: float = -1.0
+        self.last_match_candidate: str = ""
+        self._failed_attempts: dict[str, int] = {}
+        self._locked_until: dict[str, float] = {}
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def normalize_teacher_code(code: Optional[str]) -> str:
+        """Strip and normalize teacher code to uppercase with clean dashes."""
+        if not code:
+            return ""
+        cleaned = code.strip().upper()
+        return "-".join(cleaned.split())
+
+    @staticmethod
+    def teacher_row_to_dict(row: Any) -> dict:
+        """Convert a sqlite3.Row or dict to a uniform dictionary."""
+        if row is None:
+            return {}
+        if isinstance(row, dict):
+            return dict(row)
+        keys = row.keys() if hasattr(row, "keys") else []
+        return {
+            "id": row["id"],
+            "teacher_code": row["teacher_code"] if "teacher_code" in keys and row["teacher_code"] else row["id"][:8].upper(),
+            "full_name": row["full_name"],
+            "subject": row["subject"] if "subject" in keys else "",
+            "workspace_dir": row["workspace_dir"] if "workspace_dir" in keys else "",
+            "created_at": row["created_at"] if "created_at" in keys else datetime.now(timezone.utc).isoformat(),
+        }
+
+    def is_locked(self, teacher_key: str) -> tuple[bool, int]:
+        """Check if an account/key is locked after too many failed attempts."""
+        key = self.normalize_teacher_code(teacher_key)
+        lock_until = self._locked_until.get(key, 0.0)
+        remaining = int(lock_until - time.time())
+        if remaining > 0:
+            return True, remaining
+        if key in self._locked_until:
+            del self._locked_until[key]
+        return False, 0
+
+    def record_failed_attempt(self, teacher_key: str) -> int:
+        """Record a failed PIN attempt and lock if threshold reached."""
+        key = self.normalize_teacher_code(teacher_key)
+        attempts = self._failed_attempts.get(key, 0) + 1
+        self._failed_attempts[key] = attempts
+        if attempts >= self.MAX_FAILED_ATTEMPTS:
+            self._locked_until[key] = time.time() + self.LOCKOUT_SECONDS
+            self._failed_attempts[key] = 0
+            logger.warning("Teacher '%s' locked for %d seconds due to %d failed attempts.", key, self.LOCKOUT_SECONDS, attempts)
+        return attempts
+
+    def reset_failed_attempts(self, teacher_key: str) -> None:
+        """Reset failed attempt counters upon successful login."""
+        key = self.normalize_teacher_code(teacher_key)
+        self._failed_attempts.pop(key, None)
+        self._locked_until.pop(key, None)
 
     def _encrypt_embedding(self, embedding: np.ndarray) -> bytes:
         fernet = self._keystore.get_fernet()
@@ -333,6 +408,26 @@ class TeacherProfileService:
         cur = self._conn.execute("SELECT * FROM teachers")
         return cur.fetchall()
 
+    def get_teacher_by_code(self, teacher_code: str) -> Optional[sqlite3.Row]:
+        """Lookup teacher by unique teacher code (case-insensitive) or UUID prefix."""
+        code = self.normalize_teacher_code(teacher_code)
+        if not code:
+            return None
+        cur = self._conn.execute("SELECT * FROM teachers WHERE teacher_code = ?", (code,))
+        row = cur.fetchone()
+        if row is None:
+            cur = self._conn.execute(
+                "SELECT * FROM teachers WHERE id = ? OR UPPER(id) LIKE ?",
+                (teacher_code, f"{code}%"),
+            )
+            row = cur.fetchone()
+        return row
+
+    def get_teacher_by_id(self, teacher_id: str) -> Optional[sqlite3.Row]:
+        """Lookup teacher by exact UUID id."""
+        cur = self._conn.execute("SELECT * FROM teachers WHERE id = ?", (teacher_id,))
+        return cur.fetchone()
+
     # ── Enrollment ────────────────────────────────────────────────────
 
     def enroll_from_frames(
@@ -341,25 +436,44 @@ class TeacherProfileService:
         full_name: str,
         subject: str,
         pin: str,
+        teacher_code: Optional[str] = None,
     ) -> str:
         """
         Register a new teacher from a list of face frames (at least ENROLL_FRAMES).
 
         Args:
-            frames:    List of BGR frames captured from webcam.
-            full_name: Teacher's display name.
-            subject:   Teaching subject.
-            pin:       4–6 digit backup PIN.
+            frames:       List of BGR frames captured from webcam.
+            full_name:    Teacher's display name.
+            subject:      Teaching subject.
+            pin:          4–6 digit backup PIN.
+            teacher_code: Optional custom teacher ID/code (e.g. 'GV01'). Auto-generated if omitted.
 
         Returns:
             The new teacher UUID string.
 
         Raises:
-            ValueError: If not enough valid face detections.
-            RuntimeError: If face recognizer model not available.
+            ValueError: If invalid fields, duplicate code, or insufficient faces.
+            RuntimeError: If database persistence verification fails.
         """
         if not (4 <= len(pin) <= 6 and pin.isdigit()):
-            raise ValueError("PIN must be 4–6 digits.")
+            raise ValueError("Mã PIN phải gồm từ 4 đến 6 chữ số.")
+        name = full_name.strip()
+        if not name:
+            raise ValueError("Họ và tên giáo viên không được để trống.")
+
+        code = self.normalize_teacher_code(teacher_code)
+        if code:
+            existing = self.get_teacher_by_code(code)
+            if existing is not None:
+                raise ValueError(f"Mã giáo viên '{code}' đã tồn tại trong hệ thống. Vui lòng chọn mã khác.")
+        else:
+            cur = self._conn.execute("SELECT COUNT(*) FROM teachers")
+            count = cur.fetchone()[0] + 1
+            candidate = f"GV{count:02d}"
+            while self.get_teacher_by_code(candidate) is not None:
+                count += 1
+                candidate = f"GV{count:02d}"
+            code = candidate
 
         embeddings: list[np.ndarray] = []
         for frame in frames:
@@ -373,11 +487,7 @@ class TeacherProfileService:
 
         if len(embeddings) < max(1, ENROLL_FRAMES // 2):
             if self._models._recognizer is None:
-                # Model unavailable — store a random placeholder embedding
-                # so the PIN-only fallback still works
-                logger.warning(
-                    "SFace not available; storing placeholder embedding for PIN-only auth."
-                )
+                logger.warning("SFace not available; storing placeholder embedding for PIN-only auth.")
                 embeddings = [np.zeros(128, dtype=np.float64)]
             else:
                 raise ValueError(
@@ -393,7 +503,14 @@ class TeacherProfileService:
 
         teacher_id = str(uuid.uuid4())
         workspace_dir = str(self.db_path.parent / "workspaces" / teacher_id)
-        Path(workspace_dir).mkdir(parents=True, exist_ok=True)
+        ws_path = Path(workspace_dir)
+        ws_path.mkdir(parents=True, exist_ok=True)
+        # Write marker file to verify filesystem access
+        init_marker = ws_path / ".workspace_init"
+        init_marker.write_text(
+            json.dumps({"teacher_id": teacher_id, "teacher_code": code, "name": name}),
+            encoding="utf-8",
+        )
 
         pin_salt = secrets.token_bytes(32)
         pin_hash = self._hash_pin(pin, pin_salt)
@@ -403,14 +520,87 @@ class TeacherProfileService:
         self._conn.execute(
             """
             INSERT INTO teachers
-                (id, full_name, subject, encrypted_embedding, pin_salt, pin_hash, workspace_dir, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, teacher_code, full_name, subject, encrypted_embedding, pin_salt, pin_hash, workspace_dir, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (teacher_id, full_name, subject, encrypted_blob, pin_salt, pin_hash,
+            (teacher_id, code, name, subject.strip(), encrypted_blob, pin_salt, pin_hash,
              workspace_dir, created_at),
         )
         self._conn.commit()
-        logger.info("Enrolled teacher '%s' (id=%s)", full_name, teacher_id)
+
+        # Strict read-back verification from storage
+        cur = self._conn.execute("SELECT * FROM teachers WHERE id = ?", (teacher_id,))
+        saved_row = cur.fetchone()
+        if saved_row is None:
+            raise RuntimeError("Lỗi xác thực lưu trữ: Không tìm thấy hồ sơ giáo viên vừa tạo trong cơ sở dữ liệu.")
+
+        logger.info("Enrolled teacher '%s' (code=%s, id=%s)", name, code, teacher_id)
+        return teacher_id
+
+    def enroll_teacher_pin_only(
+        self,
+        full_name: str,
+        subject: str,
+        pin: str,
+        teacher_code: Optional[str] = None,
+    ) -> str:
+        """
+        Register a new teacher profile using PIN-only authentication (no webcam required).
+        """
+        if not (4 <= len(pin) <= 6 and pin.isdigit()):
+            raise ValueError("Mã PIN phải gồm từ 4 đến 6 chữ số.")
+        name = full_name.strip()
+        if not name:
+            raise ValueError("Họ và tên giáo viên không được để trống.")
+
+        code = self.normalize_teacher_code(teacher_code)
+        if code:
+            existing = self.get_teacher_by_code(code)
+            if existing is not None:
+                raise ValueError(f"Mã giáo viên '{code}' đã tồn tại trong hệ thống. Vui lòng chọn mã khác.")
+        else:
+            cur = self._conn.execute("SELECT COUNT(*) FROM teachers")
+            count = cur.fetchone()[0] + 1
+            candidate = f"GV{count:02d}"
+            while self.get_teacher_by_code(candidate) is not None:
+                count += 1
+                candidate = f"GV{count:02d}"
+            code = candidate
+
+        placeholder_embedding = np.zeros(128, dtype=np.float64)
+        teacher_id = str(uuid.uuid4())
+        workspace_dir = str(self.db_path.parent / "workspaces" / teacher_id)
+        ws_path = Path(workspace_dir)
+        ws_path.mkdir(parents=True, exist_ok=True)
+        init_marker = ws_path / ".workspace_init"
+        init_marker.write_text(
+            json.dumps({"teacher_id": teacher_id, "teacher_code": code, "name": name}),
+            encoding="utf-8",
+        )
+
+        pin_salt = secrets.token_bytes(32)
+        pin_hash = self._hash_pin(pin, pin_salt)
+        encrypted_blob = self._encrypt_embedding(placeholder_embedding)
+        created_at = datetime.now(timezone.utc).isoformat()
+
+        self._conn.execute(
+            """
+            INSERT INTO teachers
+                (id, teacher_code, full_name, subject, encrypted_embedding, pin_salt, pin_hash, workspace_dir, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (teacher_id, code, name, subject.strip(), encrypted_blob, pin_salt, pin_hash,
+             workspace_dir, created_at),
+        )
+        self._conn.commit()
+
+        # Strict read-back verification from storage
+        cur = self._conn.execute("SELECT * FROM teachers WHERE id = ?", (teacher_id,))
+        saved_row = cur.fetchone()
+        if saved_row is None:
+            raise RuntimeError("Lỗi xác thực lưu trữ: Không tìm thấy hồ sơ giáo viên vừa tạo trong cơ sở dữ liệu.")
+
+        logger.info("Enrolled teacher (PIN-only) '%s' (code=%s, id=%s)", name, code, teacher_id)
         return teacher_id
 
     # ── Authentication ────────────────────────────────────────────────────────
@@ -431,6 +621,12 @@ class TeacherProfileService:
         Returns:
             Teacher DB row if authenticated, else None.
         """
+        teachers = self._get_all_teachers()
+        if not teachers:
+            self.last_match_score = -1.0
+            self.last_match_candidate = ""
+            return None
+
         if not liveness_checker.is_ready():
             logger.debug("Liveness check not yet ready.")
             return None
@@ -447,7 +643,6 @@ class TeacherProfileService:
             logger.debug("Feature extraction failed (model unavailable).")
             return None
 
-        teachers = self._get_all_teachers()
         best_match: Optional[sqlite3.Row] = None
         best_score = -1.0
 
@@ -461,6 +656,9 @@ class TeacherProfileService:
             except Exception as exc:
                 logger.warning("Embedding decrypt/compare failed for %s: %s", row["id"], exc)
 
+        self.last_match_score = best_score
+        self.last_match_candidate = best_match["full_name"] if best_match else ""
+
         if best_score >= COSINE_THRESHOLD and best_match is not None:
             logger.info(
                 "Face auth SUCCESS: %s (score=%.3f)", best_match["full_name"], best_score
@@ -470,24 +668,66 @@ class TeacherProfileService:
         logger.debug("Face auth failed. Best score=%.3f (threshold=%.3f)", best_score, COSINE_THRESHOLD)
         return None
 
+    def authenticate_by_teacher_code_and_pin(
+        self,
+        teacher_code: str,
+        pin: str,
+    ) -> Optional[sqlite3.Row]:
+        """
+        Authenticate by teacher code (e.g. 'GV01') and PIN with rate-limiting.
+        """
+        code = self.normalize_teacher_code(teacher_code)
+        if not code:
+            return None
+
+        locked, remaining = self.is_locked(code)
+        if locked:
+            logger.warning("Teacher '%s' is locked (%d s remaining).", code, remaining)
+            return None
+
+        row = self.get_teacher_by_code(code)
+        if row is None:
+            logger.warning("No teacher found with code '%s'.", code)
+            return None
+
+        if self._verify_pin(row, pin):
+            self.reset_failed_attempts(code)
+            logger.info("Code+PIN auth SUCCESS for teacher code=%s", code)
+            return row
+
+        self.record_failed_attempt(code)
+        return None
+
     def authenticate_by_pin(
         self,
         teacher_id: str,
         pin: str,
     ) -> Optional[sqlite3.Row]:
         """
-        Fallback PIN authentication.
+        Fallback PIN authentication by teacher id or code with rate-limiting.
 
         Returns:
             Teacher DB row if PIN matches, else None.
         """
+        locked, remaining = self.is_locked(teacher_id)
+        if locked:
+            logger.warning("Teacher id '%s' is locked (%d s remaining).", teacher_id, remaining)
+            return None
+
         cur = self._conn.execute("SELECT * FROM teachers WHERE id = ?", (teacher_id,))
         row = cur.fetchone()
         if row is None:
-            return None
+            # Fallback to teacher_code search
+            row = self.get_teacher_by_code(teacher_id)
+            if row is None:
+                return None
+
         if self._verify_pin(row, pin):
+            self.reset_failed_attempts(teacher_id)
             logger.info("PIN auth SUCCESS for teacher id=%s", teacher_id)
             return row
+
+        self.record_failed_attempt(teacher_id)
         return None
 
     def authenticate_by_name_and_pin(
@@ -496,32 +736,45 @@ class TeacherProfileService:
         pin: str,
     ) -> Optional[sqlite3.Row]:
         """
-        PIN-only authentication by full name (for when face recognition is unavailable).
+        PIN-only authentication by full name with rate-limiting.
         """
+        name_clean = full_name.strip()
+        locked, remaining = self.is_locked(name_clean)
+        if locked:
+            logger.warning("Teacher name '%s' is locked (%d s remaining).", name_clean, remaining)
+            return None
+
         cur = self._conn.execute(
-            "SELECT * FROM teachers WHERE full_name = ?", (full_name,)
+            "SELECT * FROM teachers WHERE LOWER(full_name) = LOWER(?)", (name_clean,)
         )
         rows = cur.fetchall()
         for row in rows:
             if self._verify_pin(row, pin):
-                logger.info("PIN-by-name auth SUCCESS for '%s'", full_name)
+                self.reset_failed_attempts(name_clean)
+                logger.info("PIN-by-name auth SUCCESS for '%s'", name_clean)
                 return row
+
+        self.record_failed_attempt(name_clean)
         return None
 
     # ── Profile Management ────────────────────────────────────────────────────
 
     def list_teachers(self) -> list[dict]:
-        """Return lightweight dicts of all enrolled teachers."""
-        return [
-            {
+        """Return lightweight dicts of all enrolled teachers including teacher_code."""
+        teachers = self._get_all_teachers()
+        res = []
+        for row in teachers:
+            keys = row.keys() if hasattr(row, "keys") else []
+            t_code = row["teacher_code"] if "teacher_code" in keys and row["teacher_code"] else row["id"][:8].upper()
+            res.append({
                 "id": row["id"],
+                "teacher_code": t_code,
                 "full_name": row["full_name"],
-                "subject": row["subject"],
-                "workspace_dir": row["workspace_dir"],
-                "created_at": row["created_at"],
-            }
-            for row in self._get_all_teachers()
-        ]
+                "subject": row["subject"] if "subject" in keys else "",
+                "workspace_dir": row["workspace_dir"] if "workspace_dir" in keys else "",
+                "created_at": row["created_at"] if "created_at" in keys else "",
+            })
+        return res
 
     def delete_teacher(self, teacher_id: str) -> bool:
         """Remove a teacher profile. Does NOT delete workspace files."""

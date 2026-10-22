@@ -23,7 +23,11 @@ from pathlib import Path
 from typing import Optional
 
 # ── Ensure project root is on sys.path ─────────────────────────────────────────
-_ROOT = Path(__file__).resolve().parent
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _ROOT = Path(sys._MEIPASS)
+else:
+    _ROOT = Path(__file__).resolve().parent
+
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
@@ -238,31 +242,58 @@ def main() -> int:
 
     splash.close()
 
-    # 3. Launch Login Window
+    app.setQuitOnLastWindowClosed(False)
+
+    # 3. Window Controllers
     from src.ui.login_window import LoginWindow  # noqa: PLC0415
     from src.ui.main_window import MainWindow    # noqa: PLC0415
 
     login_win: Optional[LoginWindow] = None
     main_win: Optional[MainWindow] = None
 
+    def _open_login_window() -> None:
+        nonlocal main_win, login_win
+        app.setQuitOnLastWindowClosed(False)
+        if main_win:
+            main_win.close()
+            main_win = None
+            import time
+            time.sleep(0.15)
+
+        app.processEvents()
+
+        login_win = LoginWindow(service=profile_svc, camera_index=0)
+        login_win.login_successful.connect(_open_main_window)
+        login_win.demo_mode_requested.connect(lambda: _open_main_window(None))
+        login_win.show()
+
     def _open_main_window(teacher_row=None) -> None:
         nonlocal main_win, login_win
         if login_win:
             login_win.close()
             login_win = None
+            import time
+            time.sleep(0.15)
+
+        app.processEvents()
 
         main_win = MainWindow(teacher_row=teacher_row, camera_index=0)
+        main_win.logout_requested.connect(_open_login_window)
         main_win.setMinimumSize(1200, 720)
         main_win.resize(1440, 900)
         main_win.show()
+        app.setQuitOnLastWindowClosed(True)
 
-        title_suffix = f" — {teacher_row['full_name']}" if teacher_row else " — Dạy thử / Demo"
+        if teacher_row:
+            from src.services.face_profile_service import TeacherProfileService  # noqa: PLC0415
+            t_dict = TeacherProfileService.teacher_row_to_dict(teacher_row)
+            code_str = f"[{t_dict.get('teacher_code')}] " if t_dict.get("teacher_code") else ""
+            title_suffix = f" — {code_str}{t_dict.get('full_name', '')}"
+        else:
+            title_suffix = " — Dạy thử / Demo"
         main_win.setWindowTitle(f"AirTeach AI{title_suffix}")
 
-    login_win = LoginWindow(service=profile_svc, camera_index=0)
-    login_win.login_successful.connect(_open_main_window)
-    login_win.demo_mode_requested.connect(lambda: _open_main_window(None))
-    login_win.show()
+    _open_login_window()
 
     ret = app.exec()
 

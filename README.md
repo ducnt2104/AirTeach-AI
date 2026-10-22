@@ -1,380 +1,304 @@
-# AirTeach AI 🎓✋
+# AIRTECH AI — AI-Powered Air Gesture Teaching Platform
+### Hệ thống dạy học thông minh tương tác không chạm bằng AI
 
-**Nền tảng giảng dạy tương tác không chạm** — Gesture-controlled interactive teaching platform powered by Computer Vision and AI.
-
-> **Yêu cầu:** Python 3.10 – 3.12 | PySide6 | OpenCV | MediaPipe | Google Gemini API
-
----
-
-## Mục lục / Table of Contents
-
-1. [Tính năng / Features](#tính-năng--features)
-2. [Yêu cầu hệ thống / System Requirements](#yêu-cầu-hệ-thống--system-requirements)
-3. [Cài đặt môi trường / Environment Setup](#cài-đặt-môi-trường--environment-setup)
-4. [Tải mô hình AI / Model Download](#tải-mô-hình-ai--model-download)
-5. [Khởi chạy phần mềm / Running the App](#khởi-chạy-phần-mềm--running-the-app)
-6. [Kiểm thử / Running Tests](#kiểm-thử--running-tests)
-7. [Đóng gói thành .exe / PyInstaller Packaging](#đóng-gói-thành-exe--pyinstaller-packaging)
-8. [Xuất số liệu CSV / Telemetry CSV Export](#xuất-số-liệu-csv--telemetry-csv-export)
-9. [Cấu trúc dự án / Project Structure](#cấu-trúc-dự-án--project-structure)
-10. [Xử lý sự cố / Troubleshooting](#xử-lý-sự-cố--troubleshooting)
+[![Python](https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
+[![PySide6](https://img.shields.io/badge/GUI-PySide6%20Qt6-brightgreen.svg)](https://www.qt.io/)
+[![Computer Vision](https://img.shields.io/badge/CV-OpenCV%20%2B%20MediaPipe-orange.svg)](https://opencv.org/)
+[![AI Assistant](https://img.shields.io/badge/AI-Google%20Gemini%20API-4285F4.svg)](https://aistudio.google.com/)
+[![Tests](https://img.shields.io/badge/Tests-250%20passed-success.svg)](tests/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue.svg)](https://microsoft.com/windows)
+[![License](https://img.shields.io/badge/License-Apache%202.0%20%2F%20LGPLv3-lightgrey.svg)](LICENSE)
 
 ---
 
-## Tính năng / Features
+## 📖 Tổng quan dự án / Project Overview
 
-| Tính năng | Mô tả |
-|-----------|-------|
-| ✋ **Cử chỉ tay không chạm** | MediaPipe Hand Landmarker (21 điểm 3D) → FSM 6 trạng thái: POINT, DRAW, PAUSE, SELECT, SWIPE, CONFIRM |
-| 🎨 **Nét vẽ vector 3 tầng** | 1€ Filter → RDP → Cubic Bézier C¹ + độ dày biến thiên theo vận tốc |
-| 📐 **Chuẩn hóa hình học** | Tự động nắn thành Đường thẳng, Mũi tên, Hình tròn/Elip, Hình chữ nhật, Tam giác |
-| 👤 **Đăng nhập khuôn mặt** | YuNet (phát hiện) + SFace (nhận diện) ONNX — mã hóa Fernet, lưu SQLite |
-| 🔤 **Nhận diện chữ viết tay** | RapidOCR offline (Tiếng Việt + Tiếng Anh) |
-| 🧮 **Nhận diện công thức toán** | rapid-latex-ocr / pix2tex → LaTeX → dựng PNG bằng matplotlib |
-| 🤖 **Trợ lý AI** | Google Gemini API (gemini-2.5-flash) + chế độ offline tự động |
-| 📚 **Nhập tài liệu** | PDF (pypdfium2), PPTX/DOCX (LibreOffice hoặc MS Office COM) |
-| 💾 **Định dạng .airteach** | ZIP bundle: trang PNG + nét Bézier JSON + timestamps thực + kết quả OCR |
-| ⏪ **Phát lại bài giảng** | Replay theo thời gian thực (1x/2x/4x), tuabin scrubber |
+**AirTeach AI** là nền tảng ứng dụng desktop giảng dạy thông minh thế hệ mới, cho phép giáo viên tương tác và viết vẽ trực tiếp lên bảng điện tử thông qua **cử chỉ tay trong không gian (Air Gesture)** thu nhận từ webcam thông thường mà không cần bảng tương tác đắt tiền, bảng vẽ cảm ứng, hay bất kỳ thiết bị đeo tay chuyên dụng nào.
+
+Hệ thống kết hợp kiến trúc **Local-First (ưu tiên xử lý cục bộ)**, thị giác máy tính thời gian thực độ trễ siêu thấp (<25 ms), xử lý làm mịn nét vẽ vector 3 tầng toán học, nắn hình học thông minh, nhận diện khuôn mặt sinh trắc học mở khóa hồ sơ giáo viên, nhận diện chữ viết tay & công thức toán học ngoại tuyến, cùng trợ lý sư phạm trực tuyến Google Gemini.
 
 ---
 
-## Yêu cầu hệ thống / System Requirements
+## 🎯 Vấn đề & Giải pháp / Problem & Solution
 
-- **OS:** Windows 10/11 (64-bit) _(macOS/Linux có thể chạy nhưng chưa được kiểm thử chính thức)_
-- **Python:** 3.10, 3.11, hoặc 3.12 (**khuyến nghị 3.11**). _Python 3.13+ chưa được hỗ trợ bởi MediaPipe._
-- **RAM:** ≥ 8 GB (khuyến nghị 16 GB)
-- **Webcam:** Camera USB hoặc tích hợp (độ phân giải ≥ 720p)
-- **GPU:** Tùy chọn (CPU inference đã đủ tốt)
-- **Kết nối Internet:** Chỉ cần khi dùng Gemini AI Assistant; phần mềm vẫn hoạt động offline
+### Vấn đề thực tế (The Problem)
+- **Chi phí thiết bị cao:** Các giải pháp bảng tương tác thông minh (Smart Board, Wacom Display) có giá thành rất cao, khó phổ cập tới mọi lớp học vùng sâu vùng xa hoặc trường học phổ thông.
+- **Ràng buộc vị trí:** Giáo viên khi sử dụng máy chiếu hoặc chuột thường bị cố định trước bàn phím/chuột máy tính, làm giảm tính tự nhiên và năng động trong tương tác lớp học.
+- **Phụ thuộc kết nối mạng:** Nhiều giải pháp phần mềm giáo dục hiện đại đòi hỏi kết nối Internet liên tục, dễ tê liệt khi đường truyền mạng học đường không ổn định.
+- **Chữ viết tay thô cứng:** Viết vẽ bằng cử chỉ qua webcam thường bị rung tay, nét vẽ giật cục, méo mó nếu thiếu bộ lọc toán học thích ứng tốc độ cao.
+
+### Giải pháp của AirTeach AI (The Solution)
+- **Tương tác hoàn toàn không chạm:** Chỉ cần webcam tiêu chuẩn (USB hoặc tích hợp sẵn trên laptop), nhận diện chính xác 21 điểm mốc 3D của bàn tay.
+- **Nét vẽ vector chuẩn xác và mượt mà:** Bộ xử lý nét vẽ 3 tầng: Bộ lọc thông thấp thích ứng vận tốc **1€ Filter** (Casiez et al., 2012) $\rightarrow$ Rút gọn điểm **Ramer–Douglas–Peucker (RDP)** $\rightarrow$ Nội suy đường cong **Cubic Bézier Spline $C^1$** với biến thiên độ dày tự nhiên theo vận tốc.
+- **Nắn hình học tự động (Shape Snapping):** Tự động nhận biết và biến đổi nét vẽ tay thành Đường thẳng, Mũi tên, Hình tròn, Hình elip, Hình chữ nhật, Tam giác vuông, Tam giác cân dựa trên phân tích hình học giải tích và bao lồi (Convex Hull).
+- **Kiến trúc Local-First & 100% Offline Capability:** Mọi mô hình suy luận (MediaPipe, YuNet, SFace, RapidOCR, công thức toán học) đều chạy trực tiếp trên CPU/GPU máy trạm cục bộ mà không cần truyền tải hình ảnh lên cloud. Trợ lý AI Gemini tự động kích hoạt chế độ fallback ngoại tuyến nếu mất mạng.
+- **Bảo mật sinh trắc học hồ sơ giáo viên:** Nhận diện khuôn mặt giáo viên bằng OpenCV DNN YuNet + SFace với kiểm tra cử động thực (liveness check), mã hóa vector đặc trưng bằng Fernet đối xứng và lưu trữ SQLite an toàn, có mã PIN dự phòng băm bằng PBKDF2-HMAC-SHA256.
 
 ---
 
-## Cài đặt môi trường / Environment Setup
+## ✨ Tính năng chính / Main Features
 
-### Bước 1 — Tạo môi trường ảo Python (Virtual Environment)
+| Tính năng | Chi tiết kỹ thuật |
+| :--- | :--- |
+| ✋ **Theo dõi cử chỉ không gian** | MediaPipe Hand Landmarker (21 điểm mốc 3D) qua máy trạng thái hữu hạn (FSM 6 trạng thái: POINT, DRAW, PAUSE, SELECT, SWIPE, CONFIRM) với thuật toán chống nhiễu debounce. |
+| ✒️ **Nét vẽ Vector 3 tầng** | Lọc tức thời 1€ Filter $\rightarrow$ Tối ưu hóa điểm RDP $\rightarrow$ Nội suy Spline Bézier bậc ba liên tục $C^1$ với biến thiên bề dày theo vận tốc di chuyển. |
+| 📐 **Nắn hình học thông minh** | Phân tích tỉ lệ khoảng cách đầu–cuối, góc nội tiếp, diện tích bao lồi và chỉ số độ tròn $C = \frac{4\pi \cdot \text{Area}}{\text{Perimeter}^2}$ để chuẩn hóa hình dạng tức thì. |
+| 👤 **Xác thực sinh trắc học Face ID** | Phát hiện khuôn mặt bằng YuNet ONNX, trích xuất vector đặc trưng 128 chiều bằng SFace ONNX. Kiểm tra độ chớp mắt / góc xoay để chống giả mạo ảnh tĩnh. |
+| 🔤 **Nhận diện chữ viết tay Offline** | Tích hợp RapidOCR ONNX siêu nhẹ hỗ trợ nhận diện chữ viết tay tiếng Việt và tiếng Anh ngoại tuyến 100%. |
+| 🧮 **Nhận diện công thức toán học** | Bộ phân tích hình học Geometric Math Parser & LaTeX-OCR chuyển đổi nét vẽ thành mã $\LaTeX$, hiển thị vector sắc nét qua `matplotlib.mathtext`. |
+| 📚 **Nhập học liệu đa định dạng** | Dựng trang PDF độ nét cao qua `pypdfium2`. Hỗ trợ chuyển đổi tự động tài liệu PPTX / DOCX qua Microsoft Office COM API hoặc LibreOffice Headless. |
+| 💾 **Định dạng bài giảng `.airteach`** | Định dạng gói ZIP chuyên dụng chứa siêu dữ liệu `manifest.json`, ảnh trang nền, dữ liệu nét vẽ vector Bézier kèm mảng `timestamps_ms` thực tế và kết quả OCR. |
+| ⏪ **Phát lại bài giảng (Lesson Replay)**| Tua và phát lại toàn bộ quá trình viết vẽ từng mili-giây với tốc độ tùy biến (1x, 2x, 4x, Pause) bằng bộ điều khiển trực quan. |
+| 🤖 **Trợ lý sư phạm AI** | Tích hợp SDK chính thức `google-genai` (mô hình `gemini-2.5-flash`), hỗ trợ giải đáp câu hỏi sư phạm, tóm tắt bài giảng và chế độ dự phòng thông minh khi mất mạng. |
+| 📊 **Đo đạc hiệu năng (Telemetry CSV)**| Ghi nhận và xuất dữ liệu hiệu năng thời gian thực (FPS camera, độ trễ lọc nét, độ trễ nhận diện, CPU) ra định dạng file CSV chuẩn hóa. |
 
-```powershell
-# Windows PowerShell — chạy từ thư mục gốc dự án
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+---
+
+## 🏗️ Kiến trúc công nghệ / Technology Stack
+
+```mermaid
+graph TD
+    A[Webcam 720p/1080p 30-60 FPS] --> B[Camera Acquisition Thread\nOpenCV VideoCapture]
+    B --> C[MediaPipe Hand Landmarker\n21 3D Landmarks]
+    B --> D[OpenCV DNN YuNet + SFace\nFace Detection & Embeddings]
+    
+    C --> E[Hand Gesture FSM Engine\nDebounce & Scale Normalization]
+    E --> F[Stroke Beautifier Pipeline\n1€ Filter -> RDP -> Cubic Bézier]
+    F --> G[Shape Snapping Engine\nConvexHull & Circularity]
+    
+    F --> H[PySide6 Layered Canvas\nQGraphicsScene / QGraphicsView]
+    G --> H
+    
+    H --> I[Smart Ink OCR Engine\nRapidOCR + LaTeX Parser]
+    I --> H
+    
+    D --> J[Face Profile Service\nFernet Encrypted SQLite profiles.db]
+    
+    K[Document Manager\nPDF / PPTX / DOCX] --> H
+    H --> L[.airteach Lesson Archive\nZIP Packaging Engine]
+    
+    M[Google Gemini API\ngemini-2.5-flash] <--> N[AI Pedagogy Assistant Panel]
 ```
 
-> **Lưu ý:** Nếu gặp lỗi `execution policy`, chạy: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
+### Chi tiết các công nghệ sử dụng
+- **Ngôn ngữ:** Python 3.10 – 3.12 (khuyến nghị 3.11)
+- **Giao diện & Đồ họa:** PySide6 (`QMainWindow`, `QGraphicsView`, `QGraphicsScene`, `QPainterPath`, Anti-aliasing)
+- **Thị giác máy tính & AI Cục bộ:**
+  - `opencv-python`: Thu hình webcam DirectShow, DNN YuNet & SFace
+  - `mediapipe`: Theo dõi bàn tay 21 điểm mốc 3D (Hands / HandLandmarker)
+  - `onnxruntime`: Chạy mô hình suy luận YuNet, SFace, RapidOCR
+- **Xử lý tín hiệu & Toán học:** `numpy`, `scipy` (ConvexHull, 1€ Filter, RDP)
+- **Bảo mật & Mã hóa:** `cryptography.fernet` (mã hóa vector đặc trưng khuôn mặt), `hashlib.pbkdf2_hmac` (băm mã PIN)
+- **Xử lý tài liệu & Toán học:** `pypdfium2`, `pypdf`, `matplotlib` (`matplotlib.mathtext`)
+- **Trợ lý AI Trực tuyến:** `google-genai` SDK (Google Gemini 2.5 Flash)
+- **Kiểm thử tự động:** `pytest`, `pytest-qt` (250 bài test hoàn chỉnh)
 
-### Bước 2 — Cài đặt thư viện
+---
+
+## 📁 Cấu trúc thư mục / Project Structure
+
+```text
+AirTeach AI/
+├── .agents/                        # Tài liệu hướng dẫn chuyên sâu theo kỹ năng Agent
+│   └── skills/                     # Các skill module đặc thù của dự án
+├── assets/                         # Tài nguyên đồ họa vector SVG và biểu tượng
+│   ├── diagrams/                   # Sơ đồ giải thuật pipeline
+│   ├── gestures/                   # Vector minh họa cử chỉ tay
+│   ├── icons/                      # Biểu tượng nút bấm thanh công cụ
+│   └── illustrations/              # Minh họa trạng thái giao diện
+├── data/                           # Dữ liệu cục bộ (Local Storage)
+│   ├── profiles.db                 # Cơ sở dữ liệu SQLite hồ sơ giáo viên
+│   └── workspaces/                 # Không gian làm việc riêng biệt của từng giáo viên
+├── docs/                           # Tài liệu kỹ thuật, kiến trúc và báo cáo kiểm thử
+│   ├── engineering/                # Tài liệu kỹ thuật chi tiết từng mô-đun
+│   ├── ARCHITECTURE.md             # Tài liệu kiến trúc toàn hệ thống
+│   ├── AI_PIPELINE.md              # Chi tiết đường ống AI thị giác & OCR
+│   ├── AUTH_FLOW.md                # Quy trình xác thực sinh trắc học Face ID
+│   ├── DESIGN_SYSTEM.md            # Hệ thống thiết kế UI/UX nhất quán
+│   ├── GESTURE_CATALOG.md          # Bảng mã cử chỉ tay và trạng thái
+│   └── QA_REPORT.md                # Báo cáo đảm bảo chất lượng phần mềm
+├── models/                         # Trọng số mô hình AI ONNX cục bộ
+│   ├── face_detection_yunet_2023mar.onnx
+│   ├── face_recognition_sface_2021dec.onnx
+│   └── hand_landmarker.task
+├── scripts/                        # Kịch bản tự động hóa và đóng gói
+│   ├── build_windows.py            # Kịch bản đóng gói PyInstaller cho Windows
+│   ├── run_benchmarks.py           # Kịch bản đo đạc hiệu năng thực tế
+│   └── verify_e2e_flow.py          # Kịch bản kiểm thử luồng hoạt động đầu-cuối
+├── src/                            # Toàn bộ mã nguồn chính của ứng dụng
+│   ├── core/                       # Lõi giải thuật toán học & thị giác máy tính
+│   │   ├── hand_gesture_engine.py  # FSM cử chỉ, chống nhiễu, chuẩn hóa tỉ lệ tay
+│   │   └── stroke_beautifier.py    # 1€ Filter, RDP, Bézier, Shape Snapping
+│   ├── services/                   # Dịch vụ nghiệp vụ và lưu trữ
+│   │   ├── document_manager.py     # Nhập PDF/Office & nén/giải nén .airteach
+│   │   ├── face_profile_service.py # Face ID YuNet/SFace, mã hóa Fernet & SQLite
+│   │   ├── gemini_assistant.py     # Kết nối Google Gemini & Offline Fallback
+│   │   └── smart_ink_ocr.py        # RapidOCR + Bộ phân tích công thức toán học
+│   ├── ui/                         # Giao diện người dùng đồ họa PySide6
+│   │   ├── camera_widget.py        # Widget hiển thị webcam và điểm mốc bàn tay
+│   │   ├── chat_panel.py           # Khung giao diện trò chuyện trợ lý AI
+│   │   ├── face_auth_dialog.py     # Hộp thoại xác thực khuôn mặt & mã PIN
+│   │   ├── gesture_trainer_dialog.py # Hướng dẫn và luyện tập cử chỉ trực quan
+│   │   ├── lesson_board.py         # QGraphicsScene phân tầng quản lý đối tượng vẽ
+│   │   ├── lesson_board_canvas.py  # QGraphicsView hiển thị mượt mà với khử răng cưa
+│   │   ├── library_and_prep_widget.py # Thư viện bài giảng và chuẩn bị học liệu
+│   │   ├── login_window.py         # Màn hình đăng nhập sinh trắc học
+│   │   ├── main_window.py          # Cửa sổ chính tích hợp toàn bộ tính năng
+│   │   ├── replay_controller.py    # Thanh điều khiển phát lại bài giảng
+│   │   ├── settings_dialog.py      # Hộp thoại cấu hình hệ thống và API key
+│   │   ├── side_panels.py          # Bảng điều khiển thanh công cụ bên lề
+│   │   └── smart_ink_review_dialog.py # Hộp thoại xác nhận văn bản/công thức OCR
+│   └── utils/                      # Tiện ích bổ trợ
+│       ├── model_downloader.py     # Tự động tải và kiểm tra mã băm SHA-256 mô hình
+│       └── telemetry_logger.py     # Ghi nhận và xuất dữ liệu hiệu năng ra CSV
+├── tests/                          # Bộ kiểm thử tự động toàn diện (250 tests)
+│   ├── test_core_algorithms.py     # Kiểm thử thuật toán 1€ Filter, RDP, Bézier, Snap
+│   ├── test_phase3_advanced_ui.py  # Kiểm thử tương tác canvas và điều khiển phát lại
+│   ├── test_services_and_storage.py# Kiểm thử Face ID, Document Manager, OCR, Gemini
+│   ├── test_svg_assets_and_trainer.py # Kiểm thử tài nguyên SVG và Trainer Dialog
+│   └── test_ui_components.py       # Kiểm thử giao diện và cấu trúc thành phần Qt
+├── .env.example                    # Tệp cấu hình môi trường mẫu
+├── .gitignore                      # Cấu hình loại trừ file nhạy cảm và cache
+├── airteach.spec                   # Tệp cấu hình đóng gói PyInstaller độc lập
+├── config.py                       # Quản lý cấu hình tập trung từ biến môi trường
+├── main.py                         # Điểm khởi chạy ứng dụng Desktop
+└── requirements.txt                # Danh sách thư viện phụ thuộc Python
+```
+
+---
+
+## 🚀 Hướng dẫn cài đặt & Khởi chạy / Installation & Quick Start
+
+### 1. Yêu cầu môi trường
+- **Hệ điều hành:** Windows 10/11 (64-bit).
+- **Phiên bản Python:** Python 3.10, 3.11 hoặc 3.12 (**khuyến nghị 3.11**).
+- **Phần cứng:** Webcam độ phân giải $\ge 720\text{p}$, RAM tối thiểu 8 GB.
+
+### 2. Thiết lập môi trường ảo (Virtual Environment)
+Mở PowerShell tại thư mục dự án:
 
 ```powershell
+# Tạo môi trường ảo
+python -m venv .venv
+
+# Kích hoạt môi trường ảo
+.\.venv\Scripts\Activate.ps1
+
+# Cập nhật pip và cài đặt dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-> **macOS/Linux:**
-> ```bash
-> python3 -m venv .venv && source .venv/bin/activate
-> pip install -r requirements.txt
-> ```
+### 3. Cấu hình biến môi trường (`.env`)
+Sao chép tệp cấu hình mẫu `.env.example` thành `.env`:
 
-### Bước 3 — Cấu hình Gemini API Key
+```powershell
+Copy-Item .env.example .env
+```
 
-Tạo (hoặc chỉnh sửa) tệp `.env` trong thư mục gốc:
-
-```env
+Mở `.env` và cấu hình khóa API Gemini của bạn:
+```ini
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-2.5-flash
 ```
+> **Ghi chú:** Khóa API Gemini hoàn toàn miễn phí tại [Google AI Studio](https://aistudio.google.com/). Nếu không cấu hình khóa API, phần mềm vẫn hoạt động đầy đủ ở chế độ ngoại tuyến (Offline Mode).
 
-Lấy API key miễn phí tại [Google AI Studio](https://aistudio.google.com/app/apikey).  
-Bạn cũng có thể cập nhật API key trực tiếp trong phần mềm qua **⚙ Cài đặt → Gemini API Key**.
-
----
-
-## Tải mô hình AI / Model Download
-
-Các mô hình ONNX (YuNet, SFace, MediaPipe Hand) sẽ **tự động tải** khi khởi chạy lần đầu.  
-Để tải thủ công hoặc kiểm tra tính toàn vẹn:
+### 4. Kiểm tra và tải mô hình AI
+Các mô hình AI cục bộ sẽ được tự động tải về khi khởi chạy lần đầu hoặc có thể chủ động kiểm tra bằng lệnh:
 
 ```powershell
-python -c "
-from pathlib import Path
-from src.utils.model_downloader import ensure_all_models
-results = ensure_all_models(Path('models'))
-for name, ok in results.items():
-    status = 'OK' if ok else 'FAILED'
-    print(f'  [{status}] {name}')
-"
+python -c "from pathlib import Path; from src.utils.model_downloader import ensure_all_models; print(ensure_all_models(Path('models')))"
 ```
 
-Các mô hình được tải về thư mục `models/`:
-
-| Mô hình | Nguồn | Kích thước |
-|---------|-------|------------|
-| `face_detection_yunet_2023mar.onnx` | opencv/opencv_zoo | ~230 KB |
-| `face_recognition_sface_2021dec.onnx` | opencv/opencv_zoo | ~37 MB |
-| `hand_landmarker.task` | MediaPipe Google Storage | ~8.3 MB |
-
----
-
-## Khởi chạy phần mềm / Running the App
-
+### 5. Khởi chạy ứng dụng
 ```powershell
-# Kích hoạt môi trường ảo trước
-.\.venv\Scripts\Activate.ps1
-
-# Khởi chạy AirTeach AI
 python main.py
 ```
 
-### Luồng sử dụng cơ bản
+---
 
-1. **Màn hình đăng nhập** → Nhìn vào webcam để nhận diện khuôn mặt **hoặc** nhập mã PIN
-2. **Lần đầu sử dụng** → Bấm **"Đăng ký Giáo viên mới"** → Nhìn vào webcam ở 5 góc khác nhau → Điền tên, môn dạy, mã PIN 4–6 số
-3. **Thư viện bài giảng** → Mở bài giảng cũ (`.airteach`) **hoặc** tạo bài mới / nhập PPTX/PDF
-4. **Bảng giảng dạy** → Giơ tay trước webcam:
-   - ☝️ **Trỏ** = Con trỏ laser đỏ
-   - ✍️ **Kẹp ngón cái + trỏ** = Viết nét
-   - ✊ **Nắm tay** = Nhấc bút (kết thúc nét)
-   - ✌️ **Trỏ + giữa** = Chọn vùng
-   - 🤚 **Lòng bàn tay** + quẹt = Lật trang
+## ✋ Bảng cử chỉ tay tương tác / Air Gesture Catalog
 
-### Tùy chọn Camera Index
-
-Nếu phần mềm dùng sai camera, chỉnh trong **⚙ Cài đặt → Camera Index** (0 = mặc định, 1 = camera ngoài).
+| Cử chỉ | Biểu tượng | Mô tả hành động |
+| :--- | :---: | :--- |
+| **POINT (Trỏ vị trí)** | ☝️ | Giơ ngón trỏ thẳng lên, các ngón khác gập. Tạo điểm laser ảo màu đỏ di chuyển theo ngón tay trên màn hình. |
+| **DRAW (Vẽ nét)** | ✍️ | Giữ ngón trỏ và ngón cái chạm/gần nhau ($< 0.34$ độ dài bàn tay). Tọa độ đầu ngón trỏ sẽ tạo thành nét vẽ vector theo thời gian thực. |
+| **PAUSE (Nhấc bút)** | ✊ | Nắm bàn tay lại hoặc tách ngón cái xa ngón trỏ. Hệ thống hoàn tất nét vẽ hiện tại, kích hoạt bộ lọc làm mịn và nắn hình. |
+| **SELECT (Chọn đối tượng)** | ✌️ | Giơ ngón trỏ và ngón giữa thẳng đứng hình chữ V. Kéo để tạo khung chọn hình chữ nhật để di chuyển hoặc xóa đối tượng. |
+| **SWIPE (Lật trang)** | 🤚 | Xòe rộng lòng bàn tay và di chuyển nhanh sang trái/phải ($> 0.35$ đơn vị/frame) để chuyển trang bài giảng tiếp theo/trước đó. |
+| **CONFIRM (Xác nhận)** | 👍 | Giơ ngón tay cái lên trên (Thumbs Up) giữ trong 300 ms để xác nhận thao tác nắn hình hoặc chuyển đổi OCR sang văn bản. |
 
 ---
 
-## Kiểm thử / Running Tests
+## 🧪 Kiểm thử tự động / Automated Testing
+
+Dự án được bảo vệ bởi **250 bài test tự động** bao phủ từ giải thuật toán học, mã hóa dữ liệu đến giao diện đồ họa.
+
+Để chạy toàn bộ kiểm thử trong môi trường không cần màn hình (Headless / CI):
 
 ```powershell
-# Headless (không cần màn hình thực — dùng cho CI/CD)
 $env:QT_QPA_PLATFORM = "offscreen"
 python -m pytest tests\ -v --tb=short
-
-# Kết quả thực tế (Phiên bản v1.0.0):
-# 238 passed, 1 warning in ~47s (100% pass rate)
-
-# Chạy kiểm thử luồng thực tế đầu-cuối (E2E smoke test):
-python scripts/verify_e2e_flow.py
 ```
 
-### Chạy từng nhóm test
+**Kết quả kiểm thử thực tế:**
+```text
+======================= 250 passed, 1 warning in 52.74s =======================
+```
 
+Chạy từng nhóm kiểm thử riêng lẻ:
 ```powershell
 # Kiểm thử thuật toán lõi (1€ Filter, RDP, Bézier, Shape Snapping, FSM)
 python -m pytest tests/test_core_algorithms.py -v
 
-# Kiểm thử dịch vụ, bảo mật & lưu trữ (YuNet, SFace, Fernet, PBKDF2, .airteach)
+# Kiểm thử dịch vụ, Face ID, OCR, Document Manager, Gemini Assistant
 python -m pytest tests/test_services_and_storage.py -v
 
-# Kiểm thử biểu tượng SVG & bộ tạo mẫu nền học tập
-python -m pytest tests/test_svg_assets_and_trainer.py -v
-
-# Kiểm thử giao diện & phân tầng đồ họa
+# Kiểm thử giao diện và tương tác đồ họa PySide6
 python -m pytest tests/test_ui_components.py tests/test_phase3_advanced_ui.py -v
 ```
 
+Kiểm tra luồng hoạt động đầu-cuối (E2E smoke test):
+```powershell
+python scripts/verify_e2e_flow.py
+```
+
 ---
 
-## Đóng gói thành .exe / Standalone Windows Packaging
+## 📦 Đóng gói thành ứng dụng Windows (.exe)
 
-### Đóng gói tự động bằng kịch bản build đã kiểm định:
+AirTeach AI hỗ trợ đóng gói thành tệp thực thi độc lập `.exe` không cần cài đặt Python trên máy người dùng cuối thông qua PyInstaller:
 
 ```powershell
-# Tự động kiểm tra điều kiện tiên quyết, mô hình, asset và gọi PyInstaller
+# Chạy kịch bản đóng gói tự động đã tích hợp kiểm tra tài nguyên
 python scripts/build_windows.py
 ```
 
-Hoặc sử dụng tệp đặc tả PyInstaller chính thức:
-
-```powershell
-pyinstaller --noconfirm airteach.spec
-```
-
-### Kết quả đóng gói:
-
-Thư mục `dist\AirTeachAI\` chứa toàn bộ ứng dụng độc lập bao gồm `AirTeachAI.exe` (29.03 MB), tất cả mô hình ONNX/MediaPipe và 33 biểu tượng SVG vector. Không cần cài đặt Python trên máy người dùng cuối.
-
-> **Lưu ý PyInstaller:**  
-> - Nếu thiếu DLL MediaPipe → thêm `--collect-all mediapipe`  
-> - Nếu thiếu font → thêm `--add-data "C:/Windows/Fonts/arial.ttf;fonts"`  
-> - File `.env` **không** được đóng gói; người dùng cần đặt `.env` cạnh file `.exe`
+Ứng dụng sau khi đóng gói nằm tại `dist/AirTeachAI/AirTeachAI.exe` bao gồm đầy đủ mô hình ONNX, MediaPipe runtime và bộ tài nguyên đồ họa vector.
 
 ---
 
-## Xuất số liệu CSV / Telemetry CSV Export
+## 🛣️ Lộ trình phát triển / Future Roadmap
 
-AirTeach AI ghi lại toàn bộ số liệu phiên giảng dạy (FPS thực tế, độ trễ nhận diện cử chỉ, số nét vẽ, tỷ lệ nhận diện OCR, v.v.)
-
-### Xuất từ giao diện
-
-1. Mở bảng **"📷 Camera & Telemetry"** ở góc phải
-2. Bấm nút **"Xuất báo cáo số liệu (.CSV)"**
-3. Chọn vị trí lưu → file `airteach_telemetry_<timestamp>.csv` được tạo
-
-### Xuất từ dòng lệnh (script)
-
-```python
-from src.utils.telemetry_logger import TelemetryLogger
-from pathlib import Path
-
-# Đọc log phiên hiện tại
-logger = TelemetryLogger()
-logger.start()
-# ... (sau khi chạy xong phiên)
-logger.stop()
-
-summary = logger.compute_summary()
-print(f"Avg FPS: {summary['fps_mean']:.1f}")
-print(f"Total strokes: {summary['stroke_count']}")
-
-csv_path = Path("telemetry_export.csv")
-logger.export_csv(csv_path)
-print(f"Exported to: {csv_path}")
-```
-
-### Các cột CSV
-
-| Cột | Mô tả |
-|-----|-------|
-| `timestamp_ms` | Thời điểm ghi nhận (ms từ epoch) |
-| `fps` | Tốc độ khung hình webcam thực tế |
-| `gesture_state` | Trạng thái cử chỉ tay (DRAW/POINT/…) |
-| `stroke_id` | ID nét vẽ đang xử lý |
-| `filter_latency_ms` | Độ trễ 1€ Filter |
-| `snap_type` | Loại hình học đã nắn chuẩn |
-| `ocr_confidence` | Độ tin cậy OCR (0.0–1.0) |
-| `gemini_latency_ms` | Độ trễ phản hồi Gemini API |
+- [x] Nhận diện cử chỉ tay 21 điểm mốc 3D và FSM 6 trạng thái.
+- [x] Bộ lọc nét vẽ 3 tầng (1€ Filter + RDP + Cubic Bézier) và nắn hình học tự động.
+- [x] Xác thực sinh trắc học Face ID ngoại tuyến (YuNet + SFace + Fernet).
+- [x] Nhận diện chữ viết tay và công thức toán học Offline.
+- [x] Nhập học liệu PDF, PPTX, DOCX và định dạng nén `.airteach`.
+- [x] Phát lại nét vẽ theo thời gian thực (Lesson Replay).
+- [x] Tích hợp Trợ lý Gemini AI kèm cơ chế Offline Fallback.
+- [ ] Tích hợp theo dõi 2 bàn tay đồng thời (Two-handed gestures: zoom/rotate bằng 2 tay).
+- [ ] Xuất video bài giảng kèm âm thanh giáo viên theo chuẩn MP4/H.264 thời gian thực.
+- [ ] Đồng bộ bài giảng không dây qua mạng nội bộ cho máy tính bảng học sinh (WebRTC Local Sync).
 
 ---
 
-## Cấu trúc dự án / Project Structure
+## 📄 Giấy phép / License
 
-```
-AirTeach AI/
-├── main.py                         # Điểm khởi chạy chính
-├── requirements.txt                # Danh sách thư viện Python
-├── .env                            # Cấu hình API key (KHÔNG commit lên git)
-├── README.md                       # Tài liệu này
-│
-├── src/
-│   ├── core/
-│   │   ├── hand_gesture_engine.py  # Webcam → MediaPipe → FSM → 1€ Filter
-│   │   ├── stroke_beautifier.py    # RDP + Cubic Bézier + ShapeSnapper
-│   │   └── liveness_checker.py    # Kiểm tra chống giả mạo khuôn mặt
-│   │
-│   ├── services/
-│   │   ├── face_profile_service.py # YuNet/SFace → Fernet → SQLite
-│   │   ├── document_manager.py     # PDF/PPTX/DOCX → .airteach
-│   │   ├── gemini_assistant.py     # Google Gemini AI chat + offline fallback
-│   │   └── smart_ink_ocr.py        # RapidOCR + LaTeX-OCR + matplotlib render
-│   │
-│   ├── ui/
-│   │   ├── main_window.py          # Cửa sổ chính với thanh công cụ
-│   │   ├── login_window.py         # Đăng nhập khuôn mặt + PIN
-│   │   ├── lesson_board.py         # QGraphicsScene (Bảng nét vẽ)
-│   │   ├── lesson_board_canvas.py  # QGraphicsView (Canvas tương tác)
-│   │   ├── library_and_prep_widget.py  # Thư viện bài giảng
-│   │   ├── replay_controller.py    # Điều khiển phát lại nét vẽ
-│   │   ├── side_panels.py          # AI Chat + Camera Telemetry tabs
-│   │   ├── chat_panel.py           # Panel chat Gemini AI
-│   │   ├── camera_widget.py        # Hiển thị webcam với landmarks
-│   │   ├── face_auth_dialog.py     # Dialog nhận diện/đăng ký khuôn mặt
-│   │   └── settings_dialog.py      # Hộp thoại cài đặt
-│   │
-│   └── utils/
-│       ├── model_downloader.py     # Tự động tải YuNet/SFace/Hand ONNX
-│       └── telemetry_logger.py     # Ghi số liệu phiên → CSV
-│
-├── tests/
-│   ├── test_core_algorithms.py     # 47 tests: 1€ Filter, RDP, Bézier, Snapper
-│   ├── test_services_and_storage.py# 62 tests: Face, OCR, Gemini, DocManager
-│   ├── test_ui_components.py       # 71 tests: Tất cả widget giao diện
-│   └── test_phase3_advanced_ui.py  # 28 tests: Canvas nâng cao, Replay
-│
-├── data/
-│   ├── profiles.db                 # SQLite: hồ sơ giáo viên (tự tạo)
-│   └── workspaces/
-│       └── <teacher_uuid>/         # Thư mục bài giảng của từng giáo viên
-│
-├── models/                         # Trọng số ONNX (tự tải về)
-│   ├── face_detection_yunet_2023mar.onnx
-│   ├── face_recognition_sface_2021dec.onnx
-│   └── hand_landmarker.task
-│
-└── assets/                         # Biểu tượng, font, hình ảnh giao diện
-```
-
----
-
-## Xử lý sự cố / Troubleshooting
-
-### Camera không nhận diện được
-
-```powershell
-# Kiểm tra camera index khả dụng
-python -c "
-import cv2
-for i in range(5):
-    cap = cv2.VideoCapture(i)
-    if cap.isOpened():
-        print(f'Camera {i}: OK')
-        cap.release()
-    else:
-        print(f'Camera {i}: Not found')
-"
-```
-
-Sau đó chỉnh **Camera Index** trong ⚙ Cài đặt.
-
-### Mô hình ONNX thiếu hoặc lỗi
-
-```powershell
-# Tải lại toàn bộ mô hình
-python -c "
-from pathlib import Path
-from src.utils.model_downloader import ensure_all_models
-ensure_all_models(Path('models'), force_download=True)
-"
-```
-
-### Lỗi `ImportError: mediapipe`
-
-MediaPipe **chưa hỗ trợ Python 3.13+**. Hãy dùng Python 3.11:
-
-```powershell
-# Kiểm tra phiên bản Python
-python --version
-
-# Cài Python 3.11 từ python.org nếu cần
-# Sau đó tạo lại venv với python3.11
-py -3.11 -m venv .venv
-```
-
-### Lỗi `QT_QPA_PLATFORM` khi chạy tests trên server không có màn hình
-
-```powershell
-$env:QT_QPA_PLATFORM = "offscreen"
-python -m pytest tests\ -v
-```
-
-### Gemini API trả về lỗi 403 / Invalid Key
-
-1. Kiểm tra `.env` có `GEMINI_API_KEY` hợp lệ
-2. Vào **⚙ Cài đặt → Gemini API Key** → nhập key mới
-3. Phần mềm tự động chuyển sang chế độ **offline** nếu không có mạng hoặc key sai — mọi tính năng giảng dạy vẫn hoạt động bình thường
-
-### Lỗi LibreOffice khi nhập PPTX/DOCX
-
-- **Windows:** Cài [LibreOffice](https://www.libreoffice.org/download/) hoặc Microsoft Office 365
-- Phần mềm tự động phát hiện và dùng LibreOffice hoặc MS Office COM tùy cái nào có sẵn
-
----
-
-## Giấy phép / License
-
-© 2024–2025 AirTeach AI Team. Mã nguồn phần mềm sử dụng các thư viện mã nguồn mở:
-- OpenCV (Apache 2.0), MediaPipe (Apache 2.0), PySide6 (LGPL v3), NumPy (BSD), SciPy (BSD)
-- YuNet & SFace models: [opencv/opencv_zoo](https://github.com/opencv/opencv_zoo) (Apache 2.0)
-- MediaPipe Hand Landmarker: [Google MediaPipe](https://developers.google.com/mediapipe) (Apache 2.0)
-# AirTeach-AI
-# AirTeach-AI
-# AirTeach-AI
+Dự án phát hành dưới sự bảo trợ của AirTeach AI Team.
+Mã nguồn dự án tuân thủ các giấy phép nguồn mở tương thích:
+- [PySide6](https://www.qt.io/licensing/) (LGPL v3)
+- [OpenCV](https://opencv.org/license/) (Apache 2.0)
+- [MediaPipe](https://developers.google.com/mediapipe) (Apache 2.0)
+- [NumPy](https://numpy.org/doc/stable/license.html) & [SciPy](https://scipy.org/scipylib/license.html) (BSD 3-Clause)
+- Mô hình nhận diện khuôn mặt YuNet & SFace thuộc [OpenCV Zoo](https://github.com/opencv/opencv_zoo) (Apache 2.0).

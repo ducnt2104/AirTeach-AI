@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160">
+  <rect width="160" height="160" rx="16" fill="#f8f9fa" stroke="#dadce0"/>
+  <!-- Thumbs Up -->
+  <path d="M80 40c0-15 15-15 15 5v25h20c10 0 12 12 5 20l-10 25c-3 5-10 5-15 5H60V70h15z" fill="#e6f4ea" stroke="#137333" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="125" cy="45" r="14" fill="#34a853"/>
+  <path d="M119 45l4 4 8-8" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="80" y="145" text-anchor="middle" font-family="Segoe UI, sans-serif" font-weight="bold" font-size="13" fill="#202124">7. LIKE ĐỂ XÁC NHẬN</text>
+</svg>

@@ -604,6 +604,16 @@ class LaTeXRenderer:
     DEFAULT_DPI = 300
     DEFAULT_FONTSIZE = 20
 
+    @classmethod
+    def render(
+        cls,
+        latex_str: str,
+        dpi: int = 120,
+        fontsize: int = 16,
+        color: str = "black",
+    ):
+        return cls.render_to_rgba(latex_str, fontsize=fontsize, dpi=dpi, color=color)
+
     @staticmethod
     def render_to_rgba(
         latex_str: str,
@@ -774,3 +784,7 @@ class SmartInkRecognizer:
             return True
 
         return False
+
+
+# Backward-compatible alias
+MathTextRenderer = LaTeXRenderer

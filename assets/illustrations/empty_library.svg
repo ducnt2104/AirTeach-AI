@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" width="320" height="220">
+  <rect width="320" height="220" rx="16" fill="#f8f9fa"/>
+  <!-- Stack of Books and Smart Stylus -->
+  <rect x="90" y="120" width="140" height="26" rx="4" fill="#1a73e8"/>
+  <rect x="80" y="146" width="160" height="28" rx="4" fill="#34a853"/>
+  <rect x="70" y="174" width="180" height="30" rx="4" fill="#ea4335"/>
+  <path d="M160 50l30 30-60 60-30-30z" fill="#fbbc04"/>
+  <polygon points="100 140 100 170 130 140" fill="#3c4043"/>
+  <circle cx="180" cy="40" r="6" fill="#1a73e8"/>
+  <circle cx="210" cy="55" r="4" fill="#fbbc04"/>
+  <circle cx="150" cy="30" r="3" fill="#ea4335"/>
+</svg>
