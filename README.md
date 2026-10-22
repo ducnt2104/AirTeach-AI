@@ -376,3 +376,4 @@ python -m pytest tests\ -v
 - YuNet & SFace models: [opencv/opencv_zoo](https://github.com/opencv/opencv_zoo) (Apache 2.0)
 - MediaPipe Hand Landmarker: [Google MediaPipe](https://developers.google.com/mediapipe) (Apache 2.0)
 # AirTeach-AI
+# AirTeach-AI
