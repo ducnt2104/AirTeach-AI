@@ -149,58 +149,49 @@ Nếu phần mềm dùng sai camera, chỉnh trong **⚙ Cài đặt → Camera 
 $env:QT_QPA_PLATFORM = "offscreen"
 python -m pytest tests\ -v --tb=short
 
-# Kết quả mong đợi:
-# 208 passed, 1 warning in ~36s
+# Kết quả thực tế (Phiên bản v1.0.0):
+# 238 passed, 1 warning in ~47s (100% pass rate)
+
+# Chạy kiểm thử luồng thực tế đầu-cuối (E2E smoke test):
+python scripts/verify_e2e_flow.py
 ```
 
 ### Chạy từng nhóm test
 
 ```powershell
-# Chỉ kiểm thử thuật toán lõi
+# Kiểm thử thuật toán lõi (1€ Filter, RDP, Bézier, Shape Snapping, FSM)
 python -m pytest tests/test_core_algorithms.py -v
 
-# Chỉ kiểm thử dịch vụ & lưu trữ
+# Kiểm thử dịch vụ, bảo mật & lưu trữ (YuNet, SFace, Fernet, PBKDF2, .airteach)
 python -m pytest tests/test_services_and_storage.py -v
 
-# Chỉ kiểm thử giao diện
+# Kiểm thử biểu tượng SVG & bộ tạo mẫu nền học tập
+python -m pytest tests/test_svg_assets_and_trainer.py -v
+
+# Kiểm thử giao diện & phân tầng đồ họa
 python -m pytest tests/test_ui_components.py tests/test_phase3_advanced_ui.py -v
 ```
 
 ---
 
-## Đóng gói thành .exe / PyInstaller Packaging
+## Đóng gói thành .exe / Standalone Windows Packaging
 
-### Cài đặt PyInstaller
-
-```powershell
-pip install pyinstaller
-```
-
-### Đóng gói ứng dụng
+### Đóng gói tự động bằng kịch bản build đã kiểm định:
 
 ```powershell
-pyinstaller `
-    --onedir `
-    --windowed `
-    --name AirTeachAI `
-    --icon assets\icon.ico `
-    --add-data "models;models" `
-    --add-data "assets;assets" `
-    --add-data "src;src" `
-    --hidden-import "rapidocr_onnxruntime" `
-    --hidden-import "rapid_latex_ocr" `
-    --hidden-import "pypdfium2" `
-    --hidden-import "mediapipe" `
-    --hidden-import "cv2" `
-    --collect-all mediapipe `
-    --collect-all rapidocr_onnxruntime `
-    main.py
+# Tự động kiểm tra điều kiện tiên quyết, mô hình, asset và gọi PyInstaller
+python scripts/build_windows.py
 ```
 
-### Kết quả
+Hoặc sử dụng tệp đặc tả PyInstaller chính thức:
 
-Thư mục `dist\AirTeachAI\` chứa toàn bộ ứng dụng đóng gói.  
-Chia sẻ thư mục này hoặc nén thành ZIP để phân phối.
+```powershell
+pyinstaller --noconfirm airteach.spec
+```
+
+### Kết quả đóng gói:
+
+Thư mục `dist\AirTeachAI\` chứa toàn bộ ứng dụng độc lập bao gồm `AirTeachAI.exe` (29.03 MB), tất cả mô hình ONNX/MediaPipe và 33 biểu tượng SVG vector. Không cần cài đặt Python trên máy người dùng cuối.
 
 > **Lưu ý PyInstaller:**  
 > - Nếu thiếu DLL MediaPipe → thêm `--collect-all mediapipe`  
@@ -384,3 +375,4 @@ python -m pytest tests\ -v
 - OpenCV (Apache 2.0), MediaPipe (Apache 2.0), PySide6 (LGPL v3), NumPy (BSD), SciPy (BSD)
 - YuNet & SFace models: [opencv/opencv_zoo](https://github.com/opencv/opencv_zoo) (Apache 2.0)
 - MediaPipe Hand Landmarker: [Google MediaPipe](https://developers.google.com/mediapipe) (Apache 2.0)
+# AirTeach-AI
