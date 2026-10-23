@@ -5,7 +5,7 @@
 **Thời điểm thực thi:** 23/10/2026 - 24/10/2026  
 **Môi trường thực thi:** Microsoft Windows 11 (AMD64), Python 3.15.0rc1, PySide6 6.12.0, OpenCV 5.0.0.93, MediaPipe 1.1.1, SciPy 1.18.1, Keyring 25.7.0  
 **Khung kiểm thử:** `pytest` 9.1.1 kết hợp `pytest-qt` 4.5.0  
-**Kết quả chung cuộc:** **594 / 594 BÀI TEST VƯỢT QUA THÀNH CÔNG (100% PASSED) TRÊN 41 BỘ KIỂM THỬ**
+**Kết quả chung cuộc:** **602 / 602 BÀI TEST VƯỢT QUA THÀNH CÔNG (100% PASSED) TRÊN 42 BỘ KIỂM THỬ**
 
 ---
 
@@ -54,7 +54,8 @@
 | **SUITE-39** | `tests/test_interactive_optics_refraction.py` | Khúc xạ ánh sáng & Phản xạ toàn phần (Interactive Snell's Law Optics), góc tới $i$, khúc xạ $r$, phản xạ $i'$, góc tới hạn $i_{gh}$, preset chiết suất $n_1/n_2$, hoán đổi môi trường, dập vector | 8 | **PASSED** | 7.92s | **100%** |
 | **SUITE-40** | `tests/test_interactive_standing_wave.py` | Sóng cơ & Sóng dừng cộng hưởng (Interactive Standing Wave), điều kiện 2 đầu cố định $L=k(\lambda/2)$ & 1 đầu tự do, nút N / bụng B, bao sóng đối xứng, hoạt họa 40 FPS, dập vector | 8 | **PASSED** | 7.83s | **100%** |
 | **SUITE-41** | `tests/test_interactive_vsepr_geometry.py` | Mô phỏng 3D hình học phân tử VSEPR & Lai hóa orbital (Interactive 3D VSEPR Geometry), xoay 3D Euler Pitch/Yaw, 8 mô hình AX₂-AX₆, thùy e tự do, dập vector | 7 | **PASSED** | 8.74s | **100%** |
-| **TỔNG KẾT** | **Toàn Bộ Hệ Thống** | **41 Bộ kiểm thử chuyên sâu toàn diện** | **594** | **ALL PASSED** | **387.2s** | **100.0%** |
+| **SUITE-42** | `tests/test_interactive_dna_replication.py` | Tự nhân đôi DNA & Nguyên tắc bổ sung (Interactive DNA Replication), $A=T$ (2 lk H), $G \equiv C$ (3 lk H), chạc ba tái bản, đột biến điểm, dập vector | 8 | **PASSED** | 7.81s | **100%** |
+| **TỔNG KẾT** | **Toàn Bộ Hệ Thống** | **42 Bộ kiểm thử chuyên sâu toàn diện** | **602** | **ALL PASSED** | **395.0s** | **100.0%** |
 
 ---
 
@@ -191,3 +192,16 @@
 - `test_touchless_air_gestures`: Hỗ trợ thao tác không chạm hoàn chỉnh: véo tay trong không trung (Air Pinch Drag) để xoay phân tử 3D theo cử chỉ bàn tay, vẫy chạm không chạm (Air Tap) vào các nút chọn mô hình $AX_2 \dots AX_6$ và nút đóng dấu.
 - `test_stamp_to_canvas_and_lessonboard`: Dập mô hình phân tử 3D vĩnh viễn lên bảng vẽ `LessonBoard` với thuật toán tô bóng hình cầu CPK `QRadialGradient`, liên kết ống trụ 3D và thẻ thông tin VSEPR thông qua `ChemistryTools.create_molecular_geometry`.
 - `test_lessonboard_and_main_window_integration`: Tích hợp vòng đời hiển thị trên `LessonBoard` (`show_vsepr_geometry`, `toggle_vsepr_geometry`), phím tắt `Ctrl+Shift+Y`, nút thanh công cụ `⚛️ Hình học VSEPR` và liên kết menu nổi không chạm.
+
+#### 2.11. Mô Phỏng Tự Nhân Đôi DNA & Nguyên Tắc Bổ Sung Watson-Crick (`tests/test_interactive_dna_replication.py`)
+- `test_dna_initialization_and_properties`: Khởi tạo chuỗi xoắn kép DNA với 12 cặp bazơ nitơ chuẩn, tự động sinh mạch bổ sung theo nguyên tắc $A-T, G-C$, tiến độ tháo xoắn ban đầu $40\%$, nhãn đầu $5'$ và $3'$ ngược chiều.
+- `test_watson_crick_base_pairing_and_hydrogen_bonds`: Kiểm chứng quy tắc liên kết hydro:
+  - Cặp $A - T$: 2 liên kết hydro ($A = T$).
+  - Cặp $G - C$: 3 liên kết hydro ($G \equiv C$).
+  - Chuỗi mẫu 12 cặp (6 cặp $A-T$ và 6 cặp $G-C$) tính toán chính xác tuyệt đối $6 \times 2 + 6 \times 3 = 30$ liên kết hydro.
+- `test_unzip_progress_and_fork_clamping`: Kéo thanh trượt tháo xoắn chạc ba tái bản (Replication Fork) từ $0.0$ (chuỗi xoắn kép nguyên vẹn) đến $1.0$ (tách đôi hoàn toàn 2 mạch đơn), giới hạn nghiêm ngặt $[0.0, 1.0]$.
+- `test_auto_replication_animation`: Bật/tắt chế độ tự động nhân đôi DNA `[▶ Nhân đôi]` bằng `QTimer` ~28 FPS, mô phỏng enzyme Helicase tách mạch mẹ kết hợp DNA Polymerase tổng hợp liên tục mạch mới con theo nguyên tắc bán bảo tồn.
+- `test_point_mutation_and_reset`: Thử nghiệm đột biến điểm `[🧬 Thử đột biến điểm]` (thay thế cặp nucleotit thứ 6), phát hiện sai hỏng cấu trúc và nút `[↺ Khôi phục]` đưa về chuỗi hoang dại ban đầu.
+- `test_touchless_air_gestures`: Hỗ trợ thao tác không chạm: véo tay trượt chạc ba tái bản (Air Drag Fork), vẫy chạm không chạm (Air Tap) vào các nút đột biến, khôi phục và tự nhân đôi.
+- `test_stamp_to_canvas_and_lessonboard`: Dập chuỗi xoắn kép vector lên bảng vẽ `LessonBoard` thông qua `BiologyTools.create_dna_double_helix`.
+- `test_lessonboard_and_main_window_integration`: Tích hợp vòng đời hiển thị trên `LessonBoard` (`show_dna_replication`, `toggle_dna_replication`), phím tắt `Ctrl+Shift+D`, nút thanh công cụ `🧬 Tự nhân đôi DNA` và liên kết menu nổi không chạm.

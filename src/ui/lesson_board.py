@@ -305,6 +305,9 @@ class LessonBoard(QGraphicsScene):
         # Interactive Chemistry Molecular 3D VSEPR Geometry Inspector
         self._vsepr_geometry_item: Optional[QGraphicsItem] = None
 
+        # Interactive Biology DNA Double Helix Replication Simulator
+        self._dna_replication_item: Optional[QGraphicsItem] = None
+
         # Laser pointer dot
         self._init_laser()
 
@@ -1173,6 +1176,42 @@ class LessonBoard(QGraphicsScene):
         """Return interactive VSEPR geometry instance if created."""
         return self._vsepr_geometry_item
 
+    # ── Interactive Biology DNA Double Helix Replication Simulator ─────────────
+
+    def show_dna_replication(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> None:
+        """Show or hide the interactive biology DNA replication simulation item."""
+        if self._dna_replication_item is None:
+            from src.ui.interactive_dna_replication import InteractiveDnaReplicationItem
+            spawn_pos = pos if pos is not None else (500.0, 320.0)
+            self._dna_replication_item = InteractiveDnaReplicationItem(pos=spawn_pos)
+            self.addItem(self._dna_replication_item)
+
+        self._dna_replication_item.setVisible(visible)
+        if visible and pos is not None:
+            self._dna_replication_item.setPos(pos[0], pos[1])
+        self.update()
+
+    def toggle_dna_replication(self) -> bool:
+        """Toggle interactive DNA replication simulator visibility; returns new state."""
+        if self._dna_replication_item is None or not self._dna_replication_item.isVisible():
+            self.show_dna_replication(True)
+            return True
+        else:
+            self.show_dna_replication(False)
+            return False
+
+    def is_dna_replication_visible(self) -> bool:
+        """Return True if interactive DNA replication simulator is active on board."""
+        return self._dna_replication_item is not None and self._dna_replication_item.isVisible()
+
+    def get_dna_replication_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive DNA replication instance if created."""
+        return self._dna_replication_item
+
     def set_grid_spacing(self, spacing: int) -> None:
         """Set grid spacing in pixels (clamped between 15 and 200)."""
         self._grid_spacing = max(15, min(200, int(spacing)))
@@ -1960,6 +1999,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),
             getattr(self, "_vsepr_geometry_item", None),
+            getattr(self, "_dna_replication_item", None),
         }
         for item in getattr(self, "_eraser_items", {}).values():
             excluded.add(item)

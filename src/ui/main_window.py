@@ -984,6 +984,11 @@ class MainWindow(QMainWindow):
         vsepr_act.triggered.connect(self._on_toggle_vsepr_geometry)
         view_menu.addAction(vsepr_act)
 
+        dna_act = QAction("🧬 Tự nhân đôi DNA (DNA Replication & Base Pairing)", self)
+        dna_act.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        dna_act.triggered.connect(self._on_toggle_dna_replication)
+        view_menu.addAction(dna_act)
+
         laser_color_act = QAction("🔴 Đổi màu tia Laser (Laser Color)", self)
         laser_color_act.setShortcut(QKeySequence("Ctrl+L"))
         laser_color_act.triggered.connect(self._on_cycle_laser_color)
@@ -1196,6 +1201,12 @@ class MainWindow(QMainWindow):
         vsepr_tb_act.setShortcut(QKeySequence("Ctrl+Shift+Y"))
         vsepr_tb_act.triggered.connect(self._on_toggle_vsepr_geometry)
         nav_tb.addAction(vsepr_tb_act)
+
+        dna_tb_act = QAction("🧬 Tự nhân đôi DNA", self)
+        dna_tb_act.setToolTip("Bật/Tắt mô phỏng cơ chế tự nhân đôi DNA & nguyên tắc bổ sung (Ctrl+Shift+D)")
+        dna_tb_act.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        dna_tb_act.triggered.connect(self._on_toggle_dna_replication)
+        nav_tb.addAction(dna_tb_act)
 
         desktop_tb_act = QAction("🖥️ Vẽ Desktop", self)
         desktop_tb_act.setToolTip("Chuyển đổi Chế độ vẽ đè màn hình Desktop trong suốt (Phím F11)")
@@ -2440,6 +2451,14 @@ class MainWindow(QMainWindow):
                                     self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#8b5cf6", radius=9.0)
                                     self._finalize_hand_stroke(h.track_id)
                                     break
+                        elif item.__class__.__name__ == "InteractiveDnaReplicationItem":
+                            if item.isVisible() and hasattr(item, "handle_air_tap"):
+                                if item.handle_air_tap(QPointF(bx, by), board=self._scene):
+                                    item_consumed_tap = True
+                                    tapped_hand_ids.add(h.track_id)
+                                    self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#ec4899", radius=9.0)
+                                    self._finalize_hand_stroke(h.track_id)
+                                    break
 
                     # Also check floating view overlays (Mini-Map)
                     if not item_consumed_tap and hasattr(self, "_zoom_ctrl") and self._zoom_ctrl is not None:
@@ -2755,6 +2774,8 @@ class MainWindow(QMainWindow):
                 self._on_toggle_standing_wave()
             elif val in ("vsepr_geometry", "vsepr", "molecular_geometry"):
                 self._on_toggle_vsepr_geometry()
+            elif val in ("dna_replication", "dna_double_helix", "dna"):
+                self._on_toggle_dna_replication()
             elif val == "timer":
                 self._on_toggle_timer()
             elif val == "metronome":
@@ -3976,6 +3997,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_vsepr_geometry()
         self._status.showMessage(
             f"Hình học phân tử 3D VSEPR: {'Hiển thị (Ctrl+Shift+Y)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_dna_replication(self) -> bool:
+        """Toggle interactive biology DNA replication & base pairing simulator on LessonBoard."""
+        is_visible = self._scene.toggle_dna_replication()
+        self._status.showMessage(
+            f"Tự nhân đôi DNA (Nguyên tắc bổ sung): {'Hiển thị (Ctrl+Shift+D)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible
