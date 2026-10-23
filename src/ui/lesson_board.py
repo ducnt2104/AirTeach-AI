@@ -299,6 +299,9 @@ class LessonBoard(QGraphicsScene):
         # Interactive Physics Optics Snell's Law & Refraction Simulator
         self._optics_refraction_item: Optional[QGraphicsItem] = None
 
+        # Interactive Physics Wave Motion & Standing Wave Resonance Simulator
+        self._standing_wave_item: Optional[QGraphicsItem] = None
+
         # Laser pointer dot
         self._init_laser()
 
@@ -1081,6 +1084,48 @@ class LessonBoard(QGraphicsScene):
     def get_optics_refraction_item(self) -> Optional[QGraphicsItem]:
         """Return interactive optics refraction instance if created."""
         return self._optics_refraction_item
+
+    # ── Interactive Physics Wave Motion & Standing Wave Resonance Simulator ───
+
+    def show_standing_wave(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+        harmonic_k: int = 3,
+        amplitude: float = 35.0,
+    ) -> None:
+        """Show or hide the interactive physics standing wave simulation item."""
+        if self._standing_wave_item is None:
+            from src.ui.interactive_standing_wave import InteractiveStandingWaveItem
+            spawn_pos = pos if pos is not None else (520.0, 340.0)
+            self._standing_wave_item = InteractiveStandingWaveItem(
+                pos=spawn_pos,
+                harmonic_k=harmonic_k,
+                amplitude=amplitude,
+            )
+            self.addItem(self._standing_wave_item)
+
+        self._standing_wave_item.setVisible(visible)
+        if visible and pos is not None:
+            self._standing_wave_item.setPos(pos[0], pos[1])
+        self.update()
+
+    def toggle_standing_wave(self) -> bool:
+        """Toggle interactive standing wave simulator visibility; returns new state."""
+        if self._standing_wave_item is None or not self._standing_wave_item.isVisible():
+            self.show_standing_wave(True)
+            return True
+        else:
+            self.show_standing_wave(False)
+            return False
+
+    def is_standing_wave_visible(self) -> bool:
+        """Return True if interactive standing wave simulator is active on board."""
+        return self._standing_wave_item is not None and self._standing_wave_item.isVisible()
+
+    def get_standing_wave_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive standing wave instance if created."""
+        return self._standing_wave_item
 
     def set_grid_spacing(self, spacing: int) -> None:
         """Set grid spacing in pixels (clamped between 15 and 200)."""
@@ -1867,6 +1912,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_function_plotter_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
+            getattr(self, "_standing_wave_item", None),
         }
         for item in getattr(self, "_eraser_items", {}).values():
             excluded.add(item)

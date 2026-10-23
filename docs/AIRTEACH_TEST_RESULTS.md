@@ -5,7 +5,7 @@
 **Thời điểm thực thi:** 23/10/2026 - 24/10/2026  
 **Môi trường thực thi:** Microsoft Windows 11 (AMD64), Python 3.15.0rc1, PySide6 6.12.0, OpenCV 5.0.0.93, MediaPipe 1.1.1, SciPy 1.18.1, Keyring 25.7.0  
 **Khung kiểm thử:** `pytest` 9.1.1 kết hợp `pytest-qt` 4.5.0  
-**Kết quả chung cuộc:** **579 / 579 BÀI TEST VƯỢT QUA THÀNH CÔNG (100% PASSED) TRÊN 39 BỘ KIỂM THỬ**
+**Kết quả chung cuộc:** **587 / 587 BÀI TEST VƯỢT QUA THÀNH CÔNG (100% PASSED) TRÊN 40 BỘ KIỂM THỬ**
 
 ---
 
@@ -52,7 +52,8 @@
 | **SUITE-37** | `tests/test_interactive_function_plotter.py` | Đồ thị hàm số & Tiếp tuyến đạo hàm động (Interactive Function Plotter), tính đạo hàm giải tích số $f'(x_0)$, tiếp tuyến động, thẻ HUD giải tích (đồng biến/nghịch biến/cực trị), dập vector | 8 | **PASSED** | 8.62s | **100%** |
 | **SUITE-38** | `tests/test_interactive_physics_incline.py` | Phân tích hệ lực mặt phẳng nghiêng (Interactive Inclined Plane), góc dốc $\alpha$, trọng lực $\vec{P}$, phản lực $\vec{N}$, ma sát $\vec{F}_{ms}$, lực kéo $\vec{F}_{net}$, gia tốc $a$, trượt/cân bằng, dập vector | 8 | **PASSED** | 9.15s | **100%** |
 | **SUITE-39** | `tests/test_interactive_optics_refraction.py` | Khúc xạ ánh sáng & Phản xạ toàn phần (Interactive Snell's Law Optics), góc tới $i$, khúc xạ $r$, phản xạ $i'$, góc tới hạn $i_{gh}$, preset chiết suất $n_1/n_2$, hoán đổi môi trường, dập vector | 8 | **PASSED** | 7.92s | **100%** |
-| **TỔNG KẾT** | **Toàn Bộ Hệ Thống** | **39 Bộ kiểm thử chuyên sâu toàn diện** | **579** | **ALL PASSED** | **370.7s** | **100.0%** |
+| **SUITE-40** | `tests/test_interactive_standing_wave.py` | Sóng cơ & Sóng dừng cộng hưởng (Interactive Standing Wave), điều kiện 2 đầu cố định $L=k(\lambda/2)$ & 1 đầu tự do, nút N / bụng B, bao sóng đối xứng, hoạt họa 40 FPS, dập vector | 8 | **PASSED** | 7.83s | **100%** |
+| **TỔNG KẾT** | **Toàn Bộ Hệ Thống** | **40 Bộ kiểm thử chuyên sâu toàn diện** | **587** | **ALL PASSED** | **378.5s** | **100.0%** |
 
 ---
 
@@ -154,3 +155,21 @@
 - `test_touchless_air_gestures`: Hỗ trợ thao tác không chạm hoàn chỉnh: kéo nguồn sáng $S$ để thay đổi góc tới $i$, dịch chuyển điểm tới $I$, và vẫy chạm ngón tay (Air Tap) để đảo môi trường hoặc dập vector.
 - `test_stamp_to_canvas_and_lessonboard`: Dập vĩnh viễn sơ đồ quang học véctơ chuẩn xác cao lên bảng vẽ `LessonBoard` với các tia sáng mũi tên, vạch góc, nhãn môi trường và công thức Snell.
 - `test_lessonboard_and_main_window_integration`: Tích hợp vòng đời hiển thị trên `LessonBoard` (`show_optics_refraction`, `toggle_optics_refraction`), phím tắt `Ctrl+Shift+O`, nút thanh công cụ `🌈 Khúc xạ ánh sáng` và liên kết menu nổi không chạm.
+
+#### 2.9. Sóng Cơ Học & Hiện Tượng Sóng Dừng Trên Sợi Dây Đàn Hồi (`tests/test_interactive_standing_wave.py`)
+- `test_standing_wave_initialization_and_geometry`: Khởi tạo sợi dây sóng dừng với chiều dài $L = 480\text{ px}$, họa âm $k = 3$, biên độ $A = 30\text{ px}$, tần số $f = 2.0\text{ Hz}$, vị trí cân bằng và ngàm cố định hai đầu.
+- `test_standing_wave_fixed_fixed_resonance`: Kiểm chứng điều kiện sóng dừng trên dây hai đầu cố định:
+  - Công thức cộng hưởng: $L = k \frac{\lambda}{2} \implies \lambda = \frac{2L}{k}$.
+  - Vận tốc truyền sóng: $v = \lambda \cdot f$.
+  - Số nút sóng: $N = k + 1 = 4$ nút ($u=0$ cố định tại $x = 0, L/3, 2L/3, L$).
+  - Số bụng sóng: $B = k = 3$ bụng sóng (dao động với biên độ cực đại $2A$).
+- `test_standing_wave_fixed_free_resonance`: Kiểm chứng điều kiện sóng dừng một đầu cố định, một đầu tự do (ngàm trượt vòng nhẫn):
+  - Công thức cộng hưởng: $L = (2k + 1) \frac{\lambda}{4} \implies \lambda = \frac{4L}{2k + 1}$.
+  - Số nút sóng = số bụng sóng = $k + 1 = 3$ (với $k = 2$).
+- `test_wave_displacement_and_envelope`: Kiểm tra hàm độ dời tức thời $u(x, t) = 2A \sin(kx) \cos(\omega t)$:
+  - Tại mọi nút sóng $x_n$, độ dời triệt tiêu hoàn toàn $u(x_n, t) \equiv 0$ với mọi thời điểm $t$.
+  - Tại các bụng sóng $x_b$, đường bao biên độ đạt cực đại đối xứng $\pm A$.
+- `test_harmonic_and_amplitude_mutators`: Thay đổi linh hoạt họa âm $k \in [1, 6]$, tự động tái tính toán bước sóng $\lambda$, vị trí các nút và bụng, điều chỉnh biên độ $A$ và tần số $f$.
+- `test_play_pause_and_animation_timer`: Bật/tắt hoạt họa dao động sợi dây 40 FPS bằng `QTimer`, kiểm tra dừng mượt mà và chạy tiếp mà không lệch pha.
+- `test_mouse_and_touchless_air_gestures`: Kéo thả tay cầm biên độ $A$ ở đỉnh bụng sóng bằng chuột hoặc cử chỉ chụm tay không chạm (Air Pinch), vẫy chạm không chạm (Air Tap) vào các nút chọn họa âm $k=1..6$, nút chuyển chế độ ngàm và nút tạm dừng.
+- `test_stamp_to_canvas_and_main_window_integration`: Dập sơ đồ vector sóng dừng vĩnh viễn lên bảng vẽ `LessonBoard` (đường vị trí cân bằng, 2 đường bao đối xứng, ảnh chụp sợi dây dao động, điểm nút/bụng, thước đo bước sóng $\lambda$ và thẻ công thức), tích hợp phím tắt `Ctrl+Shift+W`, nút thanh công cụ `🌊 Sóng dừng` và liên kết menu nổi không chạm.
