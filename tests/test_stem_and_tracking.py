@@ -267,3 +267,98 @@ class TestGestureFsmFingerCurl:
         state, _, _ = fsm.process_landmarks(lm, handedness_score=0.95, t_ms=0.0)
         assert state != GestureState.DRAW
         assert state != GestureState.POINT
+
+
+# ─── 5. CLI Flags, Single-Instance IPC & Smart Ink Curve Sampling ─────────────
+
+class TestLauncherCliAndIpc:
+    def test_main_cli_version_flag(self):
+        import subprocess
+        import sys
+        res = subprocess.run(
+            [sys.executable, "main.py", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert res.returncode == 0
+        assert "AirTeach AI v2.5.0-Release" in res.stdout
+
+    def test_main_cli_check_flag(self):
+        import subprocess
+        import sys
+        res = subprocess.run(
+            [sys.executable, "main.py", "--check"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert res.returncode == 0
+        assert "All systems operational" in res.stdout
+
+    def test_single_instance_ipc_protocol(self, qapp):
+        from PySide6.QtNetwork import QLocalServer, QLocalSocket
+        test_pipe_name = "airteach_ai_test_ipc_socket"
+        QLocalServer.removeServer(test_pipe_name)
+
+        server = QLocalServer()
+        assert server.listen(test_pipe_name)
+
+        client = QLocalSocket()
+        client.connectToServer(test_pipe_name)
+        assert client.waitForConnected(1000)
+
+        assert server.waitForNewConnection(1000)
+        assert server.hasPendingConnections()
+        conn = server.nextPendingConnection()
+        assert conn is not None
+
+        client.write(b"WAKEUP\n")
+        assert client.waitForBytesWritten(1000)
+
+        assert conn.waitForReadyRead(1000)
+        msg = bytes(conn.readAll()).decode("utf-8")
+        assert "WAKEUP" in msg
+
+        client.disconnectFromServer()
+        server.close()
+        QLocalServer.removeServer(test_pipe_name)
+
+    def test_get_strokes_in_rect_bezier_sampling(self, qapp):
+        from src.ui.main_window import MainWindow
+        from src.ui.lesson_board import InkStroke
+        from src.core.stroke_beautifier import BezierSegment
+
+        win = MainWindow(camera_index=-1)
+        scene = win._scene
+
+        seg = BezierSegment(
+            p0=(100.0, 100.0),
+            p1=(120.0, 150.0),
+            p2=(180.0, 150.0),
+            p3=(200.0, 100.0),
+        )
+        ink = InkStroke(
+            stroke_id="test_ink_01",
+            color=QColor("#202124"),
+            segments=[seg],
+            widths=[2.5],
+        )
+        scene._strokes["test_ink_01"] = ink
+
+        # Query region containing the stroke
+        rect = QRectF(50, 50, 200, 200)
+        strokes = win._get_strokes_in_rect(rect)
+        assert len(strokes) == 1
+        # Expect 4 sampled points: t = 0.0, 0.33, 0.67, 1.0
+        assert len(strokes[0].points) == 4
+        assert math.isclose(strokes[0].points[0].x, 100.0, rel_tol=1e-3)
+        assert math.isclose(strokes[0].points[-1].x, 200.0, rel_tol=1e-3)
+
+        # Query non-overlapping region
+        empty_rect = QRectF(500, 500, 50, 50)
+        empty_strokes = win._get_strokes_in_rect(empty_rect)
+        assert len(empty_strokes) == 0
+
+        win.close()
+

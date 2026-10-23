@@ -25,8 +25,8 @@ Hệ thống kiểm thử của AirTeach AI áp dụng nguyên tắc **Zero Mock
 | **SUITE-03** | `tests/test_phase3_advanced_ui.py` | **33** | Cửa sổ Đăng nhập Giáo viên (`LoginWindow`), hiển thị hồ sơ cá nhân (`TeacherProfile`), bàn phím số mã PIN ảo (`PinPad`), cơ chế khóa an toàn khi nhập sai mã PIN nhiều lần (Lockout security). |
 | **SUITE-04** | `tests/test_services_and_storage.py` | **44** | Dịch vụ hồ sơ sinh trắc học khuôn mặt (`FaceProfileService`), mã hóa vector đặc trưng bằng Fernet, băm PIN bằng PBKDF2-SHA256, đóng gói và giải nén bài giảng `.airteach` (`AirTeachPackager`), trợ lý `GeminiAssistant` (kèm cơ chế tự động chuyển hướng ngoại tuyến khi mất mạng). |
 | **SUITE-05** | `tests/test_svg_assets_and_trainer.py` | **14** | Tính toàn vẹn của 33 tệp tài nguyên đồ họa vector SVG (`assets/`), vòng đời tương tác của Hộp thoại Huấn luyện Cử chỉ (`GestureTrainerDialog`), Hộp thoại Kiểm duyệt và kết xuất công thức toán học (`SmartInkReviewDialog`). |
-| **SUITE-06** | `tests/test_stem_and_tracking.py` | **25** | Bộ công cụ chuyên đề STEM (Toán Oxy/Hàm số, Vật lý Lực/Phân tích trực giao/Mạch điện, Hóa học Công thức Unicode/Phản ứng/Benzen, Sinh học Ghim định vị, Tin học Sơ đồ khối/Code IDE), Bộ bảo vệ tọa độ chống nhân đôi (Anti-Double-Scaling) và thuật toán ngón gập (Finger Curl). |
-| **TỔNG CỘNG** | **6 Bộ Kiểm Thử** | **275** | **Bao phủ 100% các mô-đun chức năng cốt lõi của ứng dụng.** |
+| **SUITE-06** | `tests/test_stem_and_tracking.py` | **29** | Bộ công cụ chuyên đề STEM (Toán Oxy/Hàm số, Vật lý Lực/Phân tích trực giao/Mạch điện, Hóa học Công thức Unicode/Phản ứng/Benzen, Sinh học Ghim định vị, Tin học Sơ đồ khối/Code IDE), Bộ bảo vệ tọa độ chống nhân đôi (Anti-Double-Scaling), thuật toán ngón gập (Finger Curl), cờ dòng lệnh CLI (`--version`, `--check`), bộ khóa IPC Mutex đơn phiên và lấy mẫu đường cong Bézier. |
+| **TỔNG CỘNG** | **6 Bộ Kiểm Thử** | **279** | **Bao phủ 100% các mô-đun chức năng cốt lõi của ứng dụng.** |
 
 ---
 

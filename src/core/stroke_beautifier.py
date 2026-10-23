@@ -234,6 +234,12 @@ class BezierSegment:
     width_start: float = 2.0   # pen width at p0 (px)
     width_end: float = 2.0     # pen width at p3 (px)
 
+    def __post_init__(self) -> None:
+        self.p0 = np.asarray(self.p0, dtype=np.float64)
+        self.p1 = np.asarray(self.p1, dtype=np.float64)
+        self.p2 = np.asarray(self.p2, dtype=np.float64)
+        self.p3 = np.asarray(self.p3, dtype=np.float64)
+
     def evaluate(self, t: float) -> np.ndarray:
         """Evaluate the curve at parameter t ∈ [0, 1]."""
         u = 1.0 - t

@@ -5,7 +5,7 @@
 **Thời điểm thực thi:** 23/10/2026  
 **Môi trường thực thi:** Microsoft Windows 11 (AMD64), Python 3.15.0rc1, PySide6 6.12.0, OpenCV 5.0.0.93, MediaPipe 1.1.0  
 **Khung kiểm thử:** `pytest` 9.1.1 kết hợp `pytest-cov` và `QtTest`  
-**Kết quả chung cuộc:** **275 / 275 BÀI TEST VƯỢT QUA THÀNH CÔNG (100% PASSED) TRONG 51.21s**
+**Kết quả chung cuộc:** **279 / 279 BÀI TEST VƯỢT QUA THÀNH CÔNG (100% PASSED) TRONG 55s**
 
 ---
 
@@ -16,10 +16,10 @@
 | **SUITE-01** | `tests/test_core_algorithms.py` | 48 | **PASSED** | 8.12s | **100%** |
 | **SUITE-02** | `tests/test_phase3_advanced_ui.py` | 33 | **PASSED** | 7.45s | **100%** |
 | **SUITE-03** | `tests/test_services_and_storage.py` | 44 | **PASSED** | 12.80s | **100%** |
-| **SUITE-04** | `tests/test_stem_and_tracking.py` | 25 | **PASSED** | 5.34s | **100%** |
+| **SUITE-04** | `tests/test_stem_and_tracking.py` | 29 | **PASSED** | 8.96s | **100%** |
 | **SUITE-05** | `tests/test_svg_assets_and_trainer.py` | 14 | **PASSED** | 3.20s | **100%** |
 | **SUITE-06** | `tests/test_ui_components.py` | 111 | **PASSED** | 14.30s | **100%** |
-| **TỔNG KẾT** | **Toàn Bộ Hệ Thống** | **275** | **ALL PASSED** | **51.21s** | **100.0%** |
+| **TỔNG KẾT** | **Toàn Bộ Hệ Thống** | **279** | **ALL PASSED** | **55.00s** | **100.0%** |
 
 ---
 
