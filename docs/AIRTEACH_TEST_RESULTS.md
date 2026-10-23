@@ -5,7 +5,7 @@
 **Thời điểm thực thi:** 23/10/2026 - 24/10/2026  
 **Môi trường thực thi:** Microsoft Windows 11 (AMD64), Python 3.15.0rc1, PySide6 6.12.0, OpenCV 5.0.0.93, MediaPipe 1.1.1, SciPy 1.18.1, Keyring 25.7.0  
 **Khung kiểm thử:** `pytest` 9.1.1 kết hợp `pytest-qt` 4.5.0  
-**Kết quả chung cuộc:** **587 / 587 BÀI TEST VƯỢT QUA THÀNH CÔNG (100% PASSED) TRÊN 40 BỘ KIỂM THỬ**
+**Kết quả chung cuộc:** **594 / 594 BÀI TEST VƯỢT QUA THÀNH CÔNG (100% PASSED) TRÊN 41 BỘ KIỂM THỬ**
 
 ---
 
@@ -53,7 +53,8 @@
 | **SUITE-38** | `tests/test_interactive_physics_incline.py` | Phân tích hệ lực mặt phẳng nghiêng (Interactive Inclined Plane), góc dốc $\alpha$, trọng lực $\vec{P}$, phản lực $\vec{N}$, ma sát $\vec{F}_{ms}$, lực kéo $\vec{F}_{net}$, gia tốc $a$, trượt/cân bằng, dập vector | 8 | **PASSED** | 9.15s | **100%** |
 | **SUITE-39** | `tests/test_interactive_optics_refraction.py` | Khúc xạ ánh sáng & Phản xạ toàn phần (Interactive Snell's Law Optics), góc tới $i$, khúc xạ $r$, phản xạ $i'$, góc tới hạn $i_{gh}$, preset chiết suất $n_1/n_2$, hoán đổi môi trường, dập vector | 8 | **PASSED** | 7.92s | **100%** |
 | **SUITE-40** | `tests/test_interactive_standing_wave.py` | Sóng cơ & Sóng dừng cộng hưởng (Interactive Standing Wave), điều kiện 2 đầu cố định $L=k(\lambda/2)$ & 1 đầu tự do, nút N / bụng B, bao sóng đối xứng, hoạt họa 40 FPS, dập vector | 8 | **PASSED** | 7.83s | **100%** |
-| **TỔNG KẾT** | **Toàn Bộ Hệ Thống** | **40 Bộ kiểm thử chuyên sâu toàn diện** | **587** | **ALL PASSED** | **378.5s** | **100.0%** |
+| **SUITE-41** | `tests/test_interactive_vsepr_geometry.py` | Mô phỏng 3D hình học phân tử VSEPR & Lai hóa orbital (Interactive 3D VSEPR Geometry), xoay 3D Euler Pitch/Yaw, 8 mô hình AX₂-AX₆, thùy e tự do, dập vector | 7 | **PASSED** | 8.74s | **100%** |
+| **TỔNG KẾT** | **Toàn Bộ Hệ Thống** | **41 Bộ kiểm thử chuyên sâu toàn diện** | **594** | **ALL PASSED** | **387.2s** | **100.0%** |
 
 ---
 
@@ -173,3 +174,20 @@
 - `test_play_pause_and_animation_timer`: Bật/tắt hoạt họa dao động sợi dây 40 FPS bằng `QTimer`, kiểm tra dừng mượt mà và chạy tiếp mà không lệch pha.
 - `test_mouse_and_touchless_air_gestures`: Kéo thả tay cầm biên độ $A$ ở đỉnh bụng sóng bằng chuột hoặc cử chỉ chụm tay không chạm (Air Pinch), vẫy chạm không chạm (Air Tap) vào các nút chọn họa âm $k=1..6$, nút chuyển chế độ ngàm và nút tạm dừng.
 - `test_stamp_to_canvas_and_main_window_integration`: Dập sơ đồ vector sóng dừng vĩnh viễn lên bảng vẽ `LessonBoard` (đường vị trí cân bằng, 2 đường bao đối xứng, ảnh chụp sợi dây dao động, điểm nút/bụng, thước đo bước sóng $\lambda$ và thẻ công thức), tích hợp phím tắt `Ctrl+Shift+W`, nút thanh công cụ `🌊 Sóng dừng` và liên kết menu nổi không chạm.
+
+#### 2.10. Mô Phỏng 3D Hình Học Phân Tử VSEPR & Lai Hóa Orbital Hóa Học (`tests/test_interactive_vsepr_geometry.py`)
+- `test_vsepr_initialization_and_models`: Khởi tạo mô phỏng hình học phân tử 3D tương tác với cấu hình chuẩn $AX_4$ (Tứ diện đều, Metan $CH_4$, góc $109.5^\circ$, lai hóa $sp^3$, 4 liên kết, 0 cặp electron tự do).
+- `test_vsepr_model_selection_and_properties`: Kiểm chứng đầy đủ 8 cấu hình hình học kinh điển của thuyết đẩy cặp electron hóa trị (VSEPR):
+  1. $AX_2$: Tuyến tính ($180^\circ$, $sp$, $CO_2$)
+  2. $AX_3$: Tam giác phẳng ($120^\circ$, $sp^2$, $BF_3$)
+  3. $AX_2E$: Gấp khúc ($\approx 119^\circ$, $sp^2$, 1 cặp e tự do, $SO_2$)
+  4. $AX_4$: Tứ diện đều ($109.5^\circ$, $sp^3$, $CH_4$)
+  5. $AX_3E$: Chóp tam giác ($\approx 107.3^\circ$, $sp^3$, 1 cặp e tự do đẩy các liên kết ép nhỏ lại, $NH_3$)
+  6. $AX_2E_2$: Gấp khúc kiểu nước ($\approx 104.5^\circ$, $sp^3$, 2 cặp e tự do tạo lực đẩy mạnh nhất, $H_2O$)
+  7. $AX_5$: Lưỡng tháp tam giác ($90^\circ$ và $120^\circ$, $sp^3d$, $PCl_5$)
+  8. $AX_6$: Bát diện đều ($90^\circ$, $sp^3d^2$, $SF_6$)
+- `test_3d_rotation_and_projection`: Kiểm chứng thuật toán quay Euler 3D hai góc Pitch $\theta_x$ và Yaw $\theta_y$ kết hợp phép chiếu phối cảnh ảo ($d = 450\text{ px}$) không gây biến dạng tọa độ, bao gói góc quay $[-180^\circ, 180^\circ]$.
+- `test_auto_spin_animation`: Bật/tắt chế độ tự xoay 3D mượt mà `[🔄 Tự xoay]` bằng `QTimer` ~33 FPS, tự động quay quanh trục Y giúp học sinh hình dung không gian 3 chiều trực quan.
+- `test_touchless_air_gestures`: Hỗ trợ thao tác không chạm hoàn chỉnh: véo tay trong không trung (Air Pinch Drag) để xoay phân tử 3D theo cử chỉ bàn tay, vẫy chạm không chạm (Air Tap) vào các nút chọn mô hình $AX_2 \dots AX_6$ và nút đóng dấu.
+- `test_stamp_to_canvas_and_lessonboard`: Dập mô hình phân tử 3D vĩnh viễn lên bảng vẽ `LessonBoard` với thuật toán tô bóng hình cầu CPK `QRadialGradient`, liên kết ống trụ 3D và thẻ thông tin VSEPR thông qua `ChemistryTools.create_molecular_geometry`.
+- `test_lessonboard_and_main_window_integration`: Tích hợp vòng đời hiển thị trên `LessonBoard` (`show_vsepr_geometry`, `toggle_vsepr_geometry`), phím tắt `Ctrl+Shift+Y`, nút thanh công cụ `⚛️ Hình học VSEPR` và liên kết menu nổi không chạm.

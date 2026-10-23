@@ -302,6 +302,9 @@ class LessonBoard(QGraphicsScene):
         # Interactive Physics Wave Motion & Standing Wave Resonance Simulator
         self._standing_wave_item: Optional[QGraphicsItem] = None
 
+        # Interactive Chemistry Molecular 3D VSEPR Geometry Inspector
+        self._vsepr_geometry_item: Optional[QGraphicsItem] = None
+
         # Laser pointer dot
         self._init_laser()
 
@@ -1127,6 +1130,49 @@ class LessonBoard(QGraphicsScene):
         """Return interactive standing wave instance if created."""
         return self._standing_wave_item
 
+    # ── Interactive Chemistry Molecular 3D VSEPR Geometry Inspector ────────────
+
+    def show_vsepr_geometry(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+        model_key: str = "AX4",
+    ) -> None:
+        """Show or hide the interactive chemistry 3D VSEPR molecular geometry item."""
+        if self._vsepr_geometry_item is None:
+            from src.ui.interactive_vsepr_geometry import InteractiveVseprGeometryItem
+            spawn_pos = pos if pos is not None else (500.0, 330.0)
+            self._vsepr_geometry_item = InteractiveVseprGeometryItem(
+                pos=spawn_pos,
+                model_key=model_key,
+            )
+            self.addItem(self._vsepr_geometry_item)
+
+        self._vsepr_geometry_item.setVisible(visible)
+        if visible:
+            if pos is not None:
+                self._vsepr_geometry_item.setPos(pos[0], pos[1])
+            if hasattr(self._vsepr_geometry_item, "set_model"):
+                self._vsepr_geometry_item.set_model(model_key)
+        self.update()
+
+    def toggle_vsepr_geometry(self) -> bool:
+        """Toggle interactive VSEPR molecular geometry visibility; returns new state."""
+        if self._vsepr_geometry_item is None or not self._vsepr_geometry_item.isVisible():
+            self.show_vsepr_geometry(True)
+            return True
+        else:
+            self.show_vsepr_geometry(False)
+            return False
+
+    def is_vsepr_geometry_visible(self) -> bool:
+        """Return True if interactive 3D VSEPR geometry simulator is active on board."""
+        return self._vsepr_geometry_item is not None and self._vsepr_geometry_item.isVisible()
+
+    def get_vsepr_geometry_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive VSEPR geometry instance if created."""
+        return self._vsepr_geometry_item
+
     def set_grid_spacing(self, spacing: int) -> None:
         """Set grid spacing in pixels (clamped between 15 and 200)."""
         self._grid_spacing = max(15, min(200, int(spacing)))
@@ -1913,6 +1959,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),
+            getattr(self, "_vsepr_geometry_item", None),
         }
         for item in getattr(self, "_eraser_items", {}).values():
             excluded.add(item)

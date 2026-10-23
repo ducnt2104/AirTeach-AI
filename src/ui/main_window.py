@@ -979,6 +979,11 @@ class MainWindow(QMainWindow):
         wave_act.triggered.connect(self._on_toggle_standing_wave)
         view_menu.addAction(wave_act)
 
+        vsepr_act = QAction("⚛️ Hình học phân tử 3D VSEPR (VSEPR Molecular Geometry)", self)
+        vsepr_act.setShortcut(QKeySequence("Ctrl+Shift+Y"))
+        vsepr_act.triggered.connect(self._on_toggle_vsepr_geometry)
+        view_menu.addAction(vsepr_act)
+
         laser_color_act = QAction("🔴 Đổi màu tia Laser (Laser Color)", self)
         laser_color_act.setShortcut(QKeySequence("Ctrl+L"))
         laser_color_act.triggered.connect(self._on_cycle_laser_color)
@@ -1185,6 +1190,12 @@ class MainWindow(QMainWindow):
         wave_tb_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_tb_act.triggered.connect(self._on_toggle_standing_wave)
         nav_tb.addAction(wave_tb_act)
+
+        vsepr_tb_act = QAction("⚛️ Hình học VSEPR", self)
+        vsepr_tb_act.setToolTip("Bật/Tắt mô phỏng 3D hình học phân tử VSEPR & Lai hóa orbital (Ctrl+Shift+Y)")
+        vsepr_tb_act.setShortcut(QKeySequence("Ctrl+Shift+Y"))
+        vsepr_tb_act.triggered.connect(self._on_toggle_vsepr_geometry)
+        nav_tb.addAction(vsepr_tb_act)
 
         desktop_tb_act = QAction("🖥️ Vẽ Desktop", self)
         desktop_tb_act.setToolTip("Chuyển đổi Chế độ vẽ đè màn hình Desktop trong suốt (Phím F11)")
@@ -2421,6 +2432,14 @@ class MainWindow(QMainWindow):
                                     self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#38bdf8", radius=9.0)
                                     self._finalize_hand_stroke(h.track_id)
                                     break
+                        elif item.__class__.__name__ == "InteractiveVseprGeometryItem":
+                            if item.isVisible() and hasattr(item, "handle_air_tap"):
+                                if item.handle_air_tap(QPointF(bx, by), board=self._scene):
+                                    item_consumed_tap = True
+                                    tapped_hand_ids.add(h.track_id)
+                                    self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#8b5cf6", radius=9.0)
+                                    self._finalize_hand_stroke(h.track_id)
+                                    break
 
                     # Also check floating view overlays (Mini-Map)
                     if not item_consumed_tap and hasattr(self, "_zoom_ctrl") and self._zoom_ctrl is not None:
@@ -2734,6 +2753,8 @@ class MainWindow(QMainWindow):
                 self._on_toggle_optics_refraction()
             elif val in ("standing_wave", "wave"):
                 self._on_toggle_standing_wave()
+            elif val in ("vsepr_geometry", "vsepr", "molecular_geometry"):
+                self._on_toggle_vsepr_geometry()
             elif val == "timer":
                 self._on_toggle_timer()
             elif val == "metronome":
@@ -3945,6 +3966,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_standing_wave()
         self._status.showMessage(
             f"Sóng cơ & Sóng dừng: {'Hiển thị (Ctrl+Shift+W)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_vsepr_geometry(self) -> bool:
+        """Toggle interactive 3D VSEPR molecular geometry simulator on LessonBoard."""
+        is_visible = self._scene.toggle_vsepr_geometry()
+        self._status.showMessage(
+            f"Hình học phân tử 3D VSEPR: {'Hiển thị (Ctrl+Shift+Y)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible
