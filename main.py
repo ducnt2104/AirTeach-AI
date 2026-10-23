@@ -47,6 +47,7 @@ except ImportError:
 # ── Qt imports ────────────────────────────────────────────────────────────────
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QIcon, QPixmap
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication,
     QMessageBox,
@@ -244,6 +245,22 @@ def main() -> int:
     app.setFont(QFont("Segoe UI", 10))
     app.setStyleSheet(ACADEMIC_THEME)
 
+    # ── Single-Instance Guard (Prevent Camera Contention) ──────────────────────
+    ipc_server_name = "airteach_ai_single_instance_ipc"
+    probe_socket = QLocalSocket()
+    probe_socket.connectToServer(ipc_server_name)
+    if probe_socket.waitForConnected(400):
+        probe_socket.write(b"WAKEUP\n")
+        probe_socket.waitForBytesWritten(400)
+        probe_socket.disconnectFromServer()
+        print("[INFO] AirTeach AI is already running. Existing window activated.")
+        return 0
+
+    ipc_server = QLocalServer()
+    QLocalServer.removeServer(ipc_server_name)
+    if not ipc_server.listen(ipc_server_name):
+        logger.warning("Could not start single-instance IPC server on %s", ipc_server_name)
+
     splash = _make_splash(app)
 
     # 1. Model integrity check
@@ -310,6 +327,24 @@ def main() -> int:
 
     _open_login_window()
 
+    def _on_ipc_connection() -> None:
+        client = ipc_server.nextPendingConnection()
+        if client:
+            if client.waitForReadyRead(400):
+                msg = bytes(client.readAll()).decode("utf-8", errors="ignore")
+                if "WAKEUP" in msg:
+                    target = main_win if main_win and main_win.isVisible() else login_win
+                    if target:
+                        target.setWindowState(
+                            (target.windowState() & ~Qt.WindowState.WindowMinimized)
+                            | Qt.WindowState.WindowActive
+                        )
+                        target.raise_()
+                        target.activateWindow()
+            client.disconnectFromServer()
+
+    ipc_server.newConnection.connect(_on_ipc_connection)
+
     ret = app.exec()
 
     # Cleanup
@@ -318,6 +353,8 @@ def main() -> int:
     if main_win:
         main_win.close()
     profile_svc.close()
+    ipc_server.close()
+    QLocalServer.removeServer(ipc_server_name)
 
     return ret
 

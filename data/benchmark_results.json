@@ -1,0 +1,80 @@
+{
+  "timestamp": "2026-10-23 15:45:18",
+  "platform": "win32",
+  "python_version": "3.15.0rc1",
+  "one_euro_filter": {
+    "iterations": 10000,
+    "elapsed_sec": 0.0557,
+    "per_point_latency_us": 5.57,
+    "throughput_pts_sec": 179373.0
+  },
+  "rdp_simplification": {
+    "100_points": {
+      "input_points": 100,
+      "output_points": 24,
+      "reduction_percent": 76.0,
+      "latency_ms": 4.031
+    },
+    "500_points": {
+      "input_points": 500,
+      "output_points": 52,
+      "reduction_percent": 89.6,
+      "latency_ms": 35.082
+    },
+    "1000_points": {
+      "input_points": 1000,
+      "output_points": 121,
+      "reduction_percent": 87.9,
+      "latency_ms": 81.609
+    }
+  },
+  "cubic_bezier_spline": {
+    "50_knots": {
+      "knots": 50,
+      "segments_generated": 49,
+      "latency_ms": 1.372
+    },
+    "150_knots": {
+      "knots": 150,
+      "segments_generated": 149,
+      "latency_ms": 3.755
+    },
+    "300_knots": {
+      "knots": 300,
+      "segments_generated": 299,
+      "latency_ms": 10.227
+    }
+  },
+  "geometric_shape_snapper": {
+    "line": {
+      "detected": "LINE",
+      "expected": "LINE",
+      "confidence": 1.0,
+      "angle_snapped": true,
+      "latency_ms": 0.563
+    },
+    "circle": {
+      "detected": "CIRCLE",
+      "expected": "CIRCLE",
+      "confidence": 1.0,
+      "latency_ms": 1.074
+    },
+    "rectangle": {
+      "detected": "RECTANGLE",
+      "expected": "RECTANGLE",
+      "confidence": 1.0,
+      "latency_ms": 0.431
+    }
+  },
+  "jitter_reduction_rmse": {
+    "raw_noisy_rmse_px": 4.269,
+    "filtered_1euro_rmse_px": 3.814,
+    "bezier_spline_rmse_px": 2.518,
+    "jitter_reduction_percent": 10.6
+  },
+  "face_models": {
+    "yunet_detection_ms": 5.27,
+    "yunet_fps": 189.9,
+    "sface_feature_extraction_ms": 15.25
+  }
+}

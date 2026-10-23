@@ -1167,24 +1167,36 @@ class MainWindow(QMainWindow):
 
     # ── OCR ───────────────────────────────────────────────────────────────────
 
+    def _get_strokes_in_rect(self, rect: QRectF) -> list[Stroke]:
+        """Convert InkStrokes intersecting rect into sampled Stroke objects with complete trajectory for OCR."""
+        ocr_strokes: list[Stroke] = []
+        for ink in self._scene._strokes.values():
+            stroke_pts: list[StrokePoint] = []
+            intersects = False
+            for seg in ink.segments:
+                p0 = QPointF(seg.p0[0], seg.p0[1])
+                p3 = QPointF(seg.p3[0], seg.p3[1])
+                if rect.contains(p0) or rect.contains(p3):
+                    intersects = True
+                for t in (0.0, 0.33, 0.67):
+                    pt = seg.evaluate(t)
+                    stroke_pts.append(StrokePoint(float(pt[0]), float(pt[1]), 0.0))
+            if ink.segments:
+                last_pt = ink.segments[-1].evaluate(1.0)
+                stroke_pts.append(StrokePoint(float(last_pt[0]), float(last_pt[1]), 0.0))
+
+            if intersects and stroke_pts:
+                w = getattr(ink, "widths", [2.5])[0] if getattr(ink, "widths", None) else 2.5
+                ocr_strokes.append(Stroke(points=stroke_pts, color_bgr=(0, 0, 0), width=float(w)))
+        return ocr_strokes
+
     def _trigger_ocr_on_selection(self) -> None:
         """Run OCR on strokes within the selected region."""
         sel_item = self._scene._select_rect_item
         if sel_item is None:
             return
         rect = sel_item.rect()
-        # Convert InkStroke → Stroke (smart_ink_ocr format) for strokes in region
-        ocr_strokes: list[Stroke] = []
-        for ink in self._scene._strokes.values():
-            for seg in ink.segments:
-                if rect.contains(QPointF(seg.p0[0], seg.p0[1])):
-                    stroke = Stroke(
-                        points=[StrokePoint(seg.p0[0], seg.p0[1], 0)],
-                        color_bgr=(0, 0, 0),
-                        width=2.5,
-                    )
-                    ocr_strokes.append(stroke)
-                    break
+        ocr_strokes = self._get_strokes_in_rect(rect)
 
         if not ocr_strokes:
             return
@@ -1256,16 +1268,7 @@ class MainWindow(QMainWindow):
                 self._scene.show_selection_rect(rect)
 
         rect = self._scene._select_rect_item.rect()
-        ocr_strokes: list[Stroke] = []
-        for ink in self._scene._strokes.values():
-            for seg in ink.segments:
-                if rect.contains(QPointF(seg.p0[0], seg.p0[1])):
-                    stroke = Stroke(
-                        points=[StrokePoint(seg.p0[0], seg.p0[1], 0)],
-                        color_bgr=(0, 0, 0),
-                    )
-                    ocr_strokes.append(stroke)
-                    break
+        ocr_strokes = self._get_strokes_in_rect(rect)
         if not ocr_strokes:
             return
         runnable = _OcrRunnable(
