@@ -77,10 +77,12 @@ def _get_icon(name: str) -> QIcon:
     path = _ASSETS_DIR / "icons" / f"{name}.svg"
     return QIcon(str(path)) if path.exists() else QIcon()
 
+import cv2
 from src.core.hand_gesture_engine import (
     GestureState,
     HandTrackingWorker,
     PerspectiveMapper,
+    LM,
 )
 from src.core.stroke_beautifier import (
     BezierSegment,
@@ -99,6 +101,16 @@ from src.ui.chat_panel import ChatPanel
 from src.ui.lesson_board import InkStroke, LessonBoard, BOARD_WIDTH, BOARD_HEIGHT
 from src.ui.replay_controller import ReplayController
 from src.ui.settings_dialog import SettingsDialog
+from src.ui.stem_tools import (
+    BiologyTools,
+    ChemistryTools,
+    InformaticsTools,
+    MathTools,
+    PhysicsTools,
+    StemSubject,
+    StemToolDialog,
+    format_chemical_formula,
+)
 from src.utils.telemetry_logger import TelemetryLogger
 
 logger = logging.getLogger(__name__)
@@ -113,9 +125,10 @@ class _QtCameraWorker(QObject):
     those callbacks into Qt Signals so UI slots can safely receive them.
     """
 
-    frame_ready    = Signal(np.ndarray)          # BGR frame
-    gesture_event  = Signal(GestureState, float, float)  # (state, cx_norm, cy_norm)
-    error_occurred = Signal(str)
+    frame_ready          = Signal(np.ndarray)          # BGR frame
+    gesture_event        = Signal(GestureState, float, float)  # (state, cx_norm, cy_norm)
+    trainer_frame_ready  = Signal(np.ndarray, object, object, float, float) # (frame, lm, state, cx, cy)
+    error_occurred       = Signal(str)
 
     def __init__(self, camera_index: int = 0) -> None:
         super().__init__()
@@ -126,9 +139,39 @@ class _QtCameraWorker(QObject):
         )
 
     def _on_frame_cb(self, frame_bgr, landmarks, state: GestureState, cx: float, cy: float) -> None:
-        self.frame_ready.emit(frame_bgr)
-        if state != GestureState.NONE:
-            self.gesture_event.emit(state, cx, cy)
+        annotated_frame = frame_bgr.copy()
+        if landmarks:
+            h, w = annotated_frame.shape[:2]
+            connections = [
+                (LM.WRIST, LM.THUMB_CMC), (LM.THUMB_CMC, LM.THUMB_MCP), (LM.THUMB_MCP, LM.THUMB_IP), (LM.THUMB_IP, LM.THUMB_TIP),
+                (LM.WRIST, LM.INDEX_MCP), (LM.INDEX_MCP, LM.INDEX_PIP), (LM.INDEX_PIP, LM.INDEX_DIP), (LM.INDEX_DIP, LM.INDEX_TIP),
+                (LM.WRIST, LM.MIDDLE_MCP), (LM.MIDDLE_MCP, LM.MIDDLE_PIP), (LM.MIDDLE_PIP, LM.MIDDLE_DIP), (LM.MIDDLE_DIP, LM.MIDDLE_TIP),
+                (LM.WRIST, LM.RING_MCP), (LM.RING_MCP, LM.RING_PIP), (LM.RING_PIP, LM.RING_DIP), (LM.RING_DIP, LM.RING_TIP),
+                (LM.WRIST, LM.PINKY_MCP), (LM.PINKY_MCP, LM.PINKY_PIP), (LM.PINKY_PIP, LM.PINKY_DIP), (LM.PINKY_DIP, LM.PINKY_TIP),
+            ]
+            for p1_idx, p2_idx in connections:
+                pt1 = (int(landmarks[p1_idx].x * w), int(landmarks[p1_idx].y * h))
+                pt2 = (int(landmarks[p2_idx].x * w), int(landmarks[p2_idx].y * h))
+                cv2.line(annotated_frame, pt1, pt2, (0, 220, 255), 2, cv2.LINE_AA)
+
+            for lm_pt in landmarks:
+                px = int(lm_pt.x * w)
+                py = int(lm_pt.y * h)
+                cv2.circle(annotated_frame, (px, py), 3, (0, 140, 255), -1, cv2.LINE_AA)
+
+            tip_x = int(landmarks[LM.INDEX_TIP].x * w)
+            tip_y = int(landmarks[LM.INDEX_TIP].y * h)
+            ring_color = (0, 0, 255) if state == GestureState.DRAW else ((0, 255, 0) if state == GestureState.POINT else (255, 200, 0))
+            cv2.circle(annotated_frame, (tip_x, tip_y), 8, ring_color, 2, cv2.LINE_AA)
+            cv2.circle(annotated_frame, (tip_x, tip_y), 3, (255, 255, 255), -1, cv2.LINE_AA)
+
+            badge_text = f"Mode: {state.name}"
+            cv2.rectangle(annotated_frame, (8, 8), (170, 36), (20, 20, 30), -1)
+            cv2.putText(annotated_frame, badge_text, (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, ring_color, 1, cv2.LINE_AA)
+
+        self.frame_ready.emit(annotated_frame)
+        self.gesture_event.emit(state, cx, cy)
+        self.trainer_frame_ready.emit(frame_bgr, landmarks, state, cx, cy)
 
     def _on_error_cb(self, msg: str) -> None:
         self.error_occurred.emit(msg)
@@ -628,6 +671,293 @@ class MainWindow(QMainWindow):
         self._tpl_combo.currentIndexChanged.connect(self._on_template_bg_changed)
         canvas_tb.addWidget(self._tpl_combo)
 
+        # 3. STEM Subject Tools Toolbar
+        stem_tb = QToolBar("Bộ công cụ Chuyên đề STEM")
+        stem_tb.setMovable(False)
+        stem_tb.setIconSize(QSize(20, 20))
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, stem_tb)
+
+        stem_tb.addWidget(QLabel(" 🎓 Chuyên đề STEM: "))
+
+        self._stem_subject_combo = QComboBox()
+        self._stem_subject_combo.addItem("📐 Toán học", "math")
+        self._stem_subject_combo.addItem("⚡ Vật lý", "physics")
+        self._stem_subject_combo.addItem("🧪 Hóa học", "chemistry")
+        self._stem_subject_combo.addItem("🧬 Sinh học", "biology")
+        self._stem_subject_combo.addItem("💻 Tin học", "informatics")
+        self._stem_subject_combo.currentIndexChanged.connect(self._on_stem_subject_changed)
+        stem_tb.addWidget(self._stem_subject_combo)
+
+        stem_tb.addSeparator()
+
+        # Math Actions
+        self._stem_oxy_act = QAction("📐 Hệ Oxy", self)
+        self._stem_oxy_act.setToolTip("Chèn hệ trục tọa độ vuông góc Oxy chuẩn vào bài giảng")
+        self._stem_oxy_act.triggered.connect(self._on_insert_stem_oxy)
+        stem_tb.addAction(self._stem_oxy_act)
+
+        self._stem_func_act = QAction("📈 Đồ thị f(x)", self)
+        self._stem_func_act.setToolTip("Vẽ đồ thị hàm số (x^2, sin, cos, exp...)")
+        self._stem_func_act.triggered.connect(self._on_insert_stem_function)
+        stem_tb.addAction(self._stem_func_act)
+
+        # Physics Actions
+        self._stem_force_act = QAction("➡️ Vectơ Lực F⃗", self)
+        self._stem_force_act.setToolTip("Chèn vectơ lực có phương, chiều và độ lớn")
+        self._stem_force_act.triggered.connect(self._on_insert_stem_force)
+        stem_tb.addAction(self._stem_force_act)
+
+        self._stem_decomp_act = QAction("🔲 Phân tích Lực", self)
+        self._stem_decomp_act.setToolTip("Phân tích vectơ lực thành 2 thành phần Fx và Fy vuông góc")
+        self._stem_decomp_act.triggered.connect(self._on_insert_stem_force_decomp)
+        stem_tb.addAction(self._stem_decomp_act)
+
+        self._stem_circuit_act = QAction("⚡ Mạch điện", self)
+        self._stem_circuit_act.setToolTip("Chèn linh kiện mạch điện (Điện trở, Tụ điện, Nguồn, Công tắc)")
+        self._stem_circuit_act.triggered.connect(self._on_insert_stem_circuit)
+        stem_tb.addAction(self._stem_circuit_act)
+
+        # Chemistry Actions
+        self._stem_chem_act = QAction("🧪 Công thức Hóa", self)
+        self._stem_chem_act.setToolTip("Định dạng và chèn công thức hóa học tự động (H2SO4 -> H₂SO₄)")
+        self._stem_chem_act.triggered.connect(self._on_insert_stem_chem_formula)
+        stem_tb.addAction(self._stem_chem_act)
+
+        self._stem_arrow_act = QAction("⇄ Mũi tên Phản ứng", self)
+        self._stem_arrow_act.setToolTip("Chèn mũi tên phản ứng 1 chiều hoặc thuận nghịch có kèm điều kiện nhiệt độ/xúc tác")
+        self._stem_arrow_act.triggered.connect(self._on_insert_stem_reaction_arrow)
+        stem_tb.addAction(self._stem_arrow_act)
+
+        self._stem_benzene_act = QAction("⬡ Vòng Benzen", self)
+        self._stem_benzene_act.setToolTip("Chèn vòng nhân thơm Benzen chuẩn")
+        self._stem_benzene_act.triggered.connect(self._on_insert_stem_benzene)
+        stem_tb.addAction(self._stem_benzene_act)
+
+        # Biology Actions
+        self._stem_bio_act = QAction("📍 Ghim Chú thích", self)
+        self._stem_bio_act.setToolTip("Chèn kim chỉ dẫn chú thích bộ phận giải phẫu hoặc tế bào")
+        self._stem_bio_act.triggered.connect(self._on_insert_stem_biology_callout)
+        stem_tb.addAction(self._stem_bio_act)
+
+        # Informatics Actions
+        self._stem_flow_act = QAction("🔄 Khối Thuật toán", self)
+        self._stem_flow_act.setToolTip("Chèn khối sơ đồ thuật toán (Thực thi, Điều kiện, Vào/Ra, Bắt đầu/Kết thúc)")
+        self._stem_flow_act.triggered.connect(self._on_insert_stem_flowchart)
+        stem_tb.addAction(self._stem_flow_act)
+
+        self._stem_code_act = QAction("💻 Khối Code", self)
+        self._stem_code_act.setToolTip("Chèn khung hiển thị mã nguồn lập trình monospaced")
+        self._stem_code_act.triggered.connect(self._on_insert_stem_code_block)
+        stem_tb.addAction(self._stem_code_act)
+
+        self._on_stem_subject_changed(0)
+
+    # ── STEM Subject Tools Slots ──────────────────────────────────────────────
+
+    @Slot(int)
+    def _on_stem_subject_changed(self, index: int) -> None:
+        """Toggle visibility of STEM tool actions based on selected subject workspace."""
+        is_math = (index == 0)
+        is_phys = (index == 1)
+        is_chem = (index == 2)
+        is_bio  = (index == 3)
+        is_info = (index == 4)
+
+        self._stem_oxy_act.setVisible(is_math)
+        self._stem_func_act.setVisible(is_math)
+
+        self._stem_force_act.setVisible(is_phys)
+        self._stem_decomp_act.setVisible(is_phys)
+        self._stem_circuit_act.setVisible(is_phys)
+
+        self._stem_chem_act.setVisible(is_chem)
+        self._stem_arrow_act.setVisible(is_chem)
+        self._stem_benzene_act.setVisible(is_chem)
+
+        self._stem_bio_act.setVisible(is_bio)
+
+        self._stem_flow_act.setVisible(is_info)
+        self._stem_code_act.setVisible(is_info)
+
+    @Slot()
+    def _on_insert_stem_oxy(self) -> None:
+        """Insert Cartesian Oxy coordinate system with grid and axis labels."""
+        dlg = StemToolDialog("Thiết lập Hệ trục Oxy", "math_oxy", self)
+        if dlg.exec():
+            try:
+                x_r = float(dlg.inp_x_range.text().strip() or "8")
+                y_r = float(dlg.inp_y_range.text().strip() or "5")
+            except ValueError:
+                x_r, y_r = 8.0, 5.0
+            items = MathTools.create_cartesian_axes(
+                origin_x=960.0, origin_y=540.0,
+                x_min=-x_r, x_max=x_r,
+                y_min=-y_r, y_max=y_r,
+                grid_step_px=60.0,
+                show_grid=True,
+                pen_color=self._ink_color,
+            )
+            for itm in items:
+                self._scene.addItem(itm)
+            self._status.showMessage("Đã chèn hệ trục tọa độ Oxy chuẩn", 3000)
+
+    @Slot()
+    def _on_insert_stem_function(self) -> None:
+        """Insert mathematical function graph."""
+        dlg = StemToolDialog("Vẽ đồ thị hàm số f(x)", "math_func", self)
+        if dlg.exec():
+            expr = dlg.inp_expr.text().strip() or "x**2 - 2"
+            item = MathTools.create_function_graph(
+                expr=expr,
+                origin_x=960.0, origin_y=540.0,
+                x_min=-6.0, x_max=6.0,
+                grid_step_px=60.0,
+                line_color=self._ink_color,
+            )
+            if item is not None:
+                self._scene.addItem(item)
+                self._status.showMessage(f"Đã vẽ đồ thị hàm số y = {expr}", 3000)
+            else:
+                QMessageBox.warning(self, "Lỗi biểu thức", f"Không thể vẽ hàm số: {expr}")
+
+    @Slot()
+    def _on_insert_stem_force(self) -> None:
+        """Insert physics force vector with magnitude, angle and label."""
+        dlg = StemToolDialog("Vectơ Lực F⃗", "physics_force", self)
+        if dlg.exec():
+            label = dlg.inp_label.text().strip() or "F⃗"
+            try:
+                mag = float(dlg.inp_mag.text().strip() or "120")
+                angle = float(dlg.inp_angle.text().strip() or "45")
+            except ValueError:
+                mag, angle = 120.0, 45.0
+            rad = math.radians(angle)
+            p0 = (960.0, 540.0)
+            p1 = (960.0 + mag * math.cos(rad), 540.0 - mag * math.sin(rad))
+            items = PhysicsTools.create_force_vector(p0, p1, label=label, color=self._ink_color)
+            for itm in items:
+                self._scene.addItem(itm)
+            self._status.showMessage(f"Đã chèn vectơ lực {label}", 3000)
+
+    @Slot()
+    def _on_insert_stem_force_decomp(self) -> None:
+        """Insert physics vector orthogonal decomposition (Fx, Fy)."""
+        origin = (860.0, 600.0)
+        vec_end = (1080.0, 420.0)
+        items = PhysicsTools.create_vector_decomposition(
+            origin=origin,
+            vector_end=vec_end,
+            label="F⃗",
+            color_main=self._ink_color,
+            color_comp=QColor("#1a73e8"),
+        )
+        for itm in items:
+            self._scene.addItem(itm)
+        self._status.showMessage("Đã chèn phân tích vectơ lực Fx, Fy", 3000)
+
+    @Slot()
+    def _on_insert_stem_circuit(self) -> None:
+        """Insert standard electrical schematic component."""
+        items = PhysicsTools.create_circuit_component(
+            component="resistor",
+            start=(820.0, 540.0),
+            end=(1100.0, 540.0),
+            label="R = 50Ω",
+            color=self._ink_color,
+        )
+        for itm in items:
+            self._scene.addItem(itm)
+        self._status.showMessage("Đã chèn linh kiện điện trở R", 3000)
+
+    @Slot()
+    def _on_insert_stem_chem_formula(self) -> None:
+        """Insert auto-formatted chemical equation or formula."""
+        dlg = StemToolDialog("Công thức & Phương trình Hóa học", "chem_formula", self)
+        if dlg.exec():
+            raw = dlg.inp_chem.text().strip() or "H2SO4 + 2NaOH -> Na2SO4 + 2H2O"
+            formatted = format_chemical_formula(raw)
+            txt = QGraphicsTextItem(formatted)
+            txt.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+            txt.setDefaultTextColor(self._ink_color)
+            txt.setPos(760.0, 500.0)
+            txt.setZValue(12.0)
+            self._scene.addItem(txt)
+            self._status.showMessage(f"Đã chèn công thức hóa học: {formatted}", 3000)
+
+    @Slot()
+    def _on_insert_stem_reaction_arrow(self) -> None:
+        """Insert chemical reaction reversible/irreversible arrow with conditions."""
+        items = ChemistryTools.create_reaction_arrow(
+            start=(820.0, 540.0),
+            end=(1100.0, 540.0),
+            reversible=True,
+            condition_top="t°, V₂O₅",
+            condition_bottom="p",
+            color=self._ink_color,
+        )
+        for itm in items:
+            self._scene.addItem(itm)
+        self._status.showMessage("Đã chèn mũi tên phản ứng thuận nghịch ⇄", 3000)
+
+    @Slot()
+    def _on_insert_stem_benzene(self) -> None:
+        """Insert standard benzene organic ring."""
+        items = ChemistryTools.create_benzene_ring(
+            center=(960.0, 540.0),
+            radius=60.0,
+            color=self._ink_color,
+        )
+        for itm in items:
+            self._scene.addItem(itm)
+        self._status.showMessage("Đã chèn vòng thơm Benzen C₆H₆", 3000)
+
+    @Slot()
+    def _on_insert_stem_biology_callout(self) -> None:
+        """Insert anatomical pointer leader line with circular pin and callout text."""
+        items = BiologyTools.create_callout_pin(
+            target_pt=(900.0, 520.0),
+            label_pt=(1060.0, 460.0),
+            text="Nhân tế bào (Nucleus)",
+            color=self._ink_color,
+        )
+        for itm in items:
+            self._scene.addItem(itm)
+        self._status.showMessage("Đã chèn ghim chú thích Sinh học", 3000)
+
+    @Slot()
+    def _on_insert_stem_flowchart(self) -> None:
+        """Insert algorithm flowchart shape."""
+        dlg = StemToolDialog("Khối Sơ đồ Thuật toán", "info_flowchart", self)
+        if dlg.exec():
+            shape_type = dlg.combo_type.currentText()
+            label = dlg.inp_text.text().strip() or "Bước xử lý"
+            items = InformaticsTools.create_flowchart_shape(
+                shape_type=shape_type,
+                center=(960.0, 540.0),
+                width=160.0,
+                height=76.0,
+                label=label,
+                color=self._ink_color,
+            )
+            for itm in items:
+                self._scene.addItem(itm)
+            self._status.showMessage(f"Đã chèn khối thuật toán {shape_type.split()[0]}", 3000)
+
+    @Slot()
+    def _on_insert_stem_code_block(self) -> None:
+        """Insert professional styled dark IDE code block."""
+        default_code = "def binary_search(arr, target):\n    low, high = 0, len(arr) - 1\n    while low <= high:\n        mid = (low + high) // 2\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            low = mid + 1\n        else:\n            high = mid - 1\n    return -1"
+        items = InformaticsTools.create_code_block(
+            top_left=(720.0, 420.0),
+            width=520.0,
+            height=260.0,
+            code_text=default_code,
+            title="binary_search.py",
+        )
+        for itm in items:
+            self._scene.addItem(itm)
+        self._status.showMessage("Đã chèn khung mã nguồn Python", 3000)
+
     # ── Camera / Hand tracking ─────────────────────────────────────────────────
 
     def _connect_camera(self, camera_index: int) -> None:
@@ -686,8 +1016,16 @@ class MainWindow(QMainWindow):
     def _on_gesture_event(self, state: GestureState, cx: float, cy: float) -> None:
         """
         Handle gesture state changes from the camera worker.
-        cx, cy are normalized [0,1] canvas coordinates of the index fingertip.
+        cx, cy are canvas coordinates of the index fingertip.
         """
+        if state == GestureState.NONE:
+            self._gesture_hud.setText("Mode: NO HAND")
+            self._status_mode.setText("Mode: NO HAND")
+            self._scene.move_laser(0.0, 0.0, visible=False)
+            if self._current_stroke_id is not None:
+                self._finalize_stroke()
+            return
+
         bx, by = self._scene_coords(cx, cy)
 
         mode_name = state.name
@@ -746,9 +1084,18 @@ class MainWindow(QMainWindow):
             self._select_start = None
             self._trigger_ocr_on_selection()
 
-    def _scene_coords(self, norm_x: float, norm_y: float) -> tuple[float, float]:
-        """Convert normalized [0,1] gesture coords to board scene coords."""
-        return norm_x * BOARD_WIDTH, norm_y * BOARD_HEIGHT
+    def _scene_coords(self, x: float, y: float) -> tuple[float, float]:
+        """
+        Convert gesture coordinates to board scene coordinates.
+        Supports normalized [0, 1] input and pixel-space coordinates within [0, BOARD_WIDTH/HEIGHT].
+        """
+        if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+            sx = x * BOARD_WIDTH
+            sy = y * BOARD_HEIGHT
+        else:
+            sx = x
+            sy = y
+        return max(0.0, min(float(BOARD_WIDTH), sx)), max(0.0, min(float(BOARD_HEIGHT), sy))
 
     # ── Stroke building ───────────────────────────────────────────────────────
 
@@ -1233,14 +1580,16 @@ class MainWindow(QMainWindow):
         from src.ui.gesture_trainer_dialog import GestureTrainerDialog  # noqa: PLC0415
         dlg = GestureTrainerDialog(parent=self)
         if self._cam_worker is not None:
-            prev_cb = self._cam_worker._on_frame_cb
-            def _trainer_frame_cb(frame, lm, st, cx, cy):
-                prev_cb(frame, lm, st, cx, cy)
-                dlg.update_frame(frame, lm, st, cx, cy)
-            self._cam_worker._worker.on_frame = _trainer_frame_cb
+            self._cam_worker.trainer_frame_ready.connect(
+                dlg.update_frame, Qt.ConnectionType.QueuedConnection
+            )
+            dlg.calibration_updated.connect(self._cam_worker._worker.fsm.calibrate_perspective)
         dlg.exec()
         if self._cam_worker is not None:
-            self._cam_worker._worker.on_frame = self._cam_worker._on_frame_cb
+            try:
+                self._cam_worker.trainer_frame_ready.disconnect(dlg.update_frame)
+            except Exception:
+                pass
 
     def _on_clear_all(self) -> None:
         reply = QMessageBox.question(

@@ -65,3 +65,25 @@
    - Tạo thành công tệp thực thi độc lập `dist/AirTeachAI/AirTeachAI.exe` (29.03 MB).
    - Xác minh tự động 100%: 3 mô hình ONNX / MediaPipe task bundle đầy đủ trong `_internal/models/`, 33 tệp vector SVG hiện diện đầy đủ trong `_internal/assets/`.
    - Chụp ảnh Visual QA trên Windows DirectWrite: `screen_main_v2_win.png`, `screen_gesture_trainer_win.png`, `screen_smart_ink_review_win.png`.
+
+### [23/10/2026 14:10] — Chiến Dịch Kỹ Thuật Tự Trị: Khắc Phục Triệt Để Lỗi Vẽ Không Chạm P0 & Bộ Công Cụ STEM
+1. **Khắc phục lỗi chặn tương tác P0 (Air Drawing Defect):**
+   - *Nguyên nhân 1 (Double-Scaling):* `_scene_coords` trong `src/ui/main_window.py` nhân đôi tọa độ pixel `(cx, cy)` với `BOARD_WIDTH` (1920) và `BOARD_HEIGHT` (1080), làm văng tọa độ lên $(1.843.200, 583.200)$. Đã khắc phục bằng bộ lọc bảo vệ và kẹp tọa độ $[0, 1920] \times [0, 1080]$.
+   - *Nguyên nhân 2 (Dead-Zone & Tilt Flaw):* Ngưỡng ngón cái cũ tạo vùng chết $0.35 - 0.41$ gây rớt cử chỉ về `NONE`. Thuật toán vươn ngón phụ thuộc trục Y màn hình làm hỏng cử chỉ khi bàn tay nghiêng. Đã khắc phục bằng khoảng cách cổ tay - khớp gốc ngón tay và thuật toán kiểm tra ngón gập (curl).
+   - *Nguyên nhân 3 (NONE Event Dropping):* `_QtCameraWorker` không phát tín hiệu `NONE` khi hạ tay, khiến nét vẽ không kết thúc và tạo đường nối chéo khổng lồ khi đưa tay lên lại. Đã sửa để luôn phát `NONE` và gọi `_finalize_stroke()`.
+   - *Hiển thị chẩn đoán (Diagnostic Skeleton Overlay):* Vẽ trực tiếp 21 khớp, đoạn xương, vòng trạng thái đầu ngón tay (Đỏ = DRAW, Xanh = POINT) và huy hiệu HUD thời gian thực lên khung hình camera.
+2. **Xây dựng Bộ Công cụ Chuyên đề STEM (`src/ui/stem_tools.py`):**
+   - *Toán học:* Hệ trục tọa độ vuông góc Oxy (lưới, mũi tên, vạch chia, nhãn) và bộ vẽ đồ thị hàm số $f(x)$ liên tục (`numpy.linspace` + `eval` an toàn).
+   - *Vật lý:* Vectơ lực $\vec{F}$, phân tích lực trực giao $F_x, F_y$ kèm đường dóng nét đứt, linh kiện sơ đồ mạch điện (Điện trở, Tụ điện, Nguồn DC).
+   - *Hóa học:* Tự động định dạng công thức hóa học Unicode ($H_2SO_4 \to H_2SO_4$, $Cu^{2+} \to Cu^{2+}$, $Fe^{3+} \to Fe^{3+}$), mũi tên phản ứng thuận nghịch $\rightleftharpoons$ kèm điều kiện nhiệt độ/xúc tác/áp suất, vòng thơm Benzen $C_6H_6$.
+   - *Sinh học:* Ghim định vị và đường chỉ dẫn chú thích giải phẫu/tế bào.
+   - *Tin học:* Khối sơ đồ thuật toán (Thực thi, Điều kiện, Vào/Ra, Bắt đầu/Kết thúc) và khung hiển thị code IDE tối màu.
+   - Tích hợp thanh công cụ STEM chuyên biệt vào `MainWindow` chuyển đổi động theo môn học.
+3. **Trình khởi chạy 1-Click Windows (`Run_AirTeach_AI.bat`):**
+   - Thiết kế kịch bản batch chuẩn Windows với ngắt dòng CRLF và UTF-8 Code Page 65001.
+   - Tự động nhận diện `.venv` hoặc Python hệ thống, kiểm tra phiên bản $\ge 3.10$.
+   - Tự động kiểm tra và cài đặt thiếu phụ thuộc từ `requirements.txt`.
+   - Hỗ trợ tham số `--version`, `--check`, `--dry-run`, bẫy mã lỗi và ghi log vào `logs/launcher.log`.
+4. **Kiểm thử hồi quy toàn diện:**
+   - Bổ sung 25 ca kiểm thử chuyên sâu trong `tests/test_stem_and_tracking.py`.
+   - Toàn bộ test suite đạt **275 / 275 tests PASSED (100%)**, không có bất kỳ lỗi hồi quy nào.

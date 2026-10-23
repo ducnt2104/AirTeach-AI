@@ -1,0 +1,409 @@
+BẢN THUYẾT MINH HỒ SƠ DỰ ÁN KHOA HỌC KỸ THUẬT & SÁNG TẠO
+
+AIRTEACH AI – NỀN TẢNG GIẢNG DẠY TƯƠNG TÁC KHÔNG CHẠM
+
+Tích hợp Công cụ làm nét Vector đa tầng, Chuẩn hóa Hình học và Nhận diện Chữ viết – Công thức – Khuôn mặt Cục bộ (100% Offline)
+
+Lưu ý hướng dẫn hoàn thiện số liệu: Các mục đánh dấu [CẦN ĐO THỰC NGHIỆM: ...] là vị trí nhóm tác giả điền kết quả đo đạc thực tế trên máy tính thử nghiệm theo quy trình tại Mục VI.3. Tuyệt đối không điền số liệu ước lượng chưa qua kiểm chứng.
+
+I. Ý TƯỞNG VÀ LÝ DO CHỌN ĐỀ TÀI
+
+1. Thực trạng và vấn đề đặt ra trong lớp học
+
+Trong hoạt động giảng dạy tại các trường phổ thông và trung tâm đào tạo hiện nay, giáo viên thường xuyên trình chiếu bài giảng điện tử (PowerPoint, PDF, Word) qua máy chiếu hoặc tivi màn hình lớn. Tuy nhiên, việc tương tác trực tiếp với bài giảng vẫn gặp ba rào cản lớn:
+
+Giới hạn không gian di chuyển của giáo viên: Giáo viên thường phải đứng cố định cạnh bàn máy tính để dùng chuột, bấm phím chuyển slide hoặc đứng sát bảng truyền thống. Việc liên tục quay lại bàn máy tính để khoanh vùng chú thích hay chỉ vào sơ đồ làm gián đoạn nhịp giảng bài và giảm tương tác trực tiếp với học sinh.
+
+Thiếu công cụ làm nét và chú thích trực tiếp trên học liệu sẵn có: Giáo viên đã tích lũy kho bài giảng PPTX, DOCX, PDF qua nhiều năm nhưng khi cần viết thêm công thức, vẽ nhanh đường phụ hình học hay khoanh tròn từ khóa ngay trong tiết học, thao tác bằng chuột thường nguệch ngoạc, khó đọc và không tách lớp để tái sử dụng cho các lớp học sau.
+
+Rào cản chi phí của thiết bị tương tác chuyên dụng: Bảng tương tác thông minh giải quyết tốt bài toán viết vẽ trực tiếp nhưng chi phí đầu tư rất cao (từ vài chục đến hàng trăm triệu đồng mỗi phòng), vượt quá điều kiện của nhiều trường học. Trong khi đó, các giải pháp như phần mềm vẽ màn hình Epic Pen hay bảng vẽ điện tử One by Wacom vẫn buộc giáo viên phải cầm thiết bị vật lý hoặc ngồi tại bàn máy tính.
+
+2. Giải pháp đề xuất: AirTeach AI
+
+Xuất phát từ thực tế đó, nhóm xây dựng AirTeach AI — phần mềm giảng dạy tương tác không chạm chạy trên máy tính thông thường kèm webcam sẵn có. Hệ thống biến vùng không gian trước camera thành bảng tương tác ảo, cho phép giáo viên dùng ngón tay như cây bút thông minh để điều khiển bài giảng, chỉ trỏ laser, viết vẽ với Công cụ làm nét tự động (Stroke Beautifier & Shape Snapper) và nhận diện chữ viết, công thức toán học hoàn toàn offline.
+
+Thông qua AirTeach AI, giáo viên có thể:
+
+Điều khiển và chú thích không chạm: Dùng cử chỉ tay trước webcam để di chuyển con trỏ laser, lật trang, viết, vẽ, khoanh vùng và gạch chân trực tiếp trên trang bài giảng mà không cần chạm vào thiết bị.
+
+Làm nét chữ viết và chuẩn hóa hình học tự động (Tool làm nét): Khắc phục triệt để hiện tượng rung tay khi viết trên không nhờ bộ lọc thích ứng tốc độ kết hợp thuật toán làm mịn đường cong vector Bézier và tự động nắn chuẩn các hình cơ bản (đường thẳng, mũi tên, hình tròn, hình chữ nhật, tam giác).
+
+Nhận diện chữ viết tay và công thức toán học cục bộ (Offline Smart Ink): Chuyển đổi nhanh nét viết tay hoặc công thức toán học viết trên không thành văn bản chuẩn và ký hiệu toán học (LaTeX) sắc nét ngay trên slide mà không cần kết nối Internet.
+
+Tận dụng nguyên vẹn kho học liệu sẵn có: Nhập trực tiếp tệp PPTX, DOCX, PDF thành lớp nền; tách biệt hoàn toàn lớp tài liệu gốc và lớp nét viết vector để xóa hoặc sửa chú thích mà không làm hỏng nội dung gốc.
+
+Đăng nhập nhanh bằng nhận diện khuôn mặt cục bộ: Mở kho bài giảng riêng của từng giáo viên trên máy tính dùng chung của lớp học bằng vector đặc trưng khuôn mặt đã mã hóa (kèm mã PIN dự phòng).
+
+Lưu trữ vector có mốc thời gian và phát lại (Stroke Replay): Lưu toàn bộ bài giảng vào định dạng gói .airteach, cho phép xuất PDF kèm chú thích hoặc phát lại từng bước vẽ hình, giải toán để học sinh ôn tập.
+
+Triết lý thiết kế: Nguyên tắc cốt lõi: AirTeach AI tập trung tối đa vào độ chính xác của thao tác viết vẽ và nhận diện trực quan, không tích hợp các mô hình ngôn ngữ lớn (LLM) tự động sinh bài tập nhằm đảm bảo phần mềm nhẹ, không phụ thuộc mạng và giữ trọn vai trò chủ đạo của người giáo viên.
+
+II. MÔ TẢ CẤU TẠO VÀ GIẢI PHÁP KỸ THUẬT CỦA SẢN PHẨM
+
+1. Phương pháp nghiên cứu và kiến trúc lai (Hybrid Architecture)
+
+Nhóm phát triển phần mềm theo kiến trúc lai đa tầng (Multi-tier Hybrid Architecture), kết hợp thị giác máy tính thời gian thực, hình học tính toán, máy trạng thái hữu hạn (FSM) và các mô hình học sâu thu gọn (Lightweight Deep Learning) chạy qua bộ suy luận cục bộ. Kiến trúc này giúp luồng vẽ luôn đạt tốc độ thời gian thực trên máy tính cấu hình trung bình (CPU Core i3/i5, không cần GPU rời).
+
+Ngôn ngữ & Giao diện: Lập trình bằng Python 3 kết hợp khung giao diện đồ họa Qt for Python (PySide6) sử dụng QGraphicsScene hỗ trợ dựng hình vector chống răng cưa tốc độ cao.
+
+Thị giác máy tính & Theo dõi bàn tay: Sử dụng OpenCV và mô hình MediaPipe Hand Landmarker để phát hiện bàn tay và trích xuất 21 điểm mốc (landmarks) 3D.
+
+Công cụ làm nét (Stroke Beautifier): Kết hợp bộ lọc thích ứng tốc độ 1€ Filter, thuật toán rút gọn điểm Ramer–Douglas–Peucker (RDP) và nội suy đường cong Bézier bậc ba cùng bộ nhận diện hình học Convex Hull.
+
+Nhận diện AI cục bộ (Offline AI): Thực thi trên CPU qua ONNX Runtime, gồm mô hình nhận diện chữ viết nhẹ PaddleOCR / RapidOCR, mô hình nhận diện công thức toán học sang LaTeX RapidLaTeXOCR (pix2tex) và mô hình đặc trưng khuôn mặt nhẹ MobileFaceNet / InsightFace.
+
+Mô-đun hệ thống
+
+Chức năng kỹ thuật chính
+
+Đầu ra dữ liệu
+
+1. Camera Engine
+
+Thu hình từ webcam, lật gương ngang, cân bằng sáng thích ứng (CLAHE) và hiệu chỉnh vùng làm việc
+
+Khung hình RGB chuẩn hóa
+
+2. Hand Tracking
+
+Phát hiện bàn tay, trích xuất tọa độ 21 điểm mốc (x, y, z) và độ tin cậy qua MediaPipe
+
+Vector 21 điểm mốc & độ tin cậy
+
+3. Gesture Engine
+
+Máy trạng thái hữu hạn (FSM) tách biệt trạng thái Trỏ laser, Viết, Chọn, Tạm dừng và Lật trang
+
+Trạng thái thao tác hiện thời
+
+4. Stroke Beautifier
+
+Tool làm nét 3 tầng: lọc 1€ Filter thời gian thực, rút gọn điểm RDP, làm mịn Bézier và nắn hình chuẩn
+
+Đường cong vector mượt / Hình chuẩn
+
+5. Smart Ink OCR
+
+Nhận diện chữ viết tay (Việt/Anh) và công thức toán học sang LaTeX chạy offline qua ONNX Runtime
+
+Đối tượng văn bản / Công thức LaTeX
+
+6. Document Importer
+
+Chuỗi chuyển đổi kép (MS Office COM / LibreOffice Headless) nhập PPTX, DOCX, PDF thành trang nền
+
+Lớp trang nền & văn bản chỉ mục
+
+7. Lesson Board
+
+Quản lý bảng nhiều trang, tách lớp nền (pages/) và lớp nét viết vector (ink/), Undo/Redo đa bước
+
+Trạng thái hiển thị bảng thời gian thực
+
+8. Teacher Profile
+
+Đăng nhập bằng nhận diện khuôn mặt 2D cục bộ (lưu vector mã hóa AES) kèm mã PIN dự phòng
+
+Phiên làm việc & kho bài giảng riêng
+
+9. Export & Replay
+
+Đóng gói tệp .airteach, xuất PDF kèm chú thích và phát lại quá trình viết theo mốc thời gian
+
+Tệp .airteach, .pdf, luồng Replay
+
+2. Giải pháp kỹ thuật trọng tâm
+
+2.1. Tập cử chỉ tối giản và Máy trạng thái chống vẽ nhầm: Để giáo viên không bị vẽ nhầm lên slide khi chỉ muốn di chuyển tay chỉ bài, hệ thống chuẩn hóa mọi khoảng cách theo chiều dài cơ sở của bàn tay L_hand = ||P0 - P9|| (khoảng cách từ cổ tay P0 đến khớp gốc ngón giữa P9) và thiết lập 6 cử chỉ trực quan:
+
+Cử chỉ tay
+
+Điều kiện hình học chuẩn hóa
+
+Trạng thái & Chức năng tương ứng
+
+☝ Ngón trỏ duỗi, ngón cái khép
+
+Đầu ngón trỏ P8 mở cao hơn P6; khoảng cách ngón cái tới khớp trỏ d_pinch = ||P4 - P6|| / L_hand ≤ ngưỡng τ_draw
+
+Chế độ Viết (DRAW): Hạ bút ảo, ghi nhận quỹ đạo đầu ngón trỏ P8 để tạo nét vẽ
+
+☝ Ngón trỏ duỗi, ngón cái xòe (chữ L)
+
+Ngón trỏ P8 duỗi thẳng, ngón cái P4 mở rộng tách khỏi ngón trỏ (d_pinch > τ_point)
+
+Chế độ Con trỏ Laser (POINT): Chỉ di chuyển tâm laser đỏ trên slide để giảng bài, không tạo nét mực
+
+✊ Nắm bàn tay
+
+Cả 4 đầu ngón tay (P8, P12, P16, P20) gập xuống dưới khớp PIP tương ứng
+
+Kết thúc nét (PAUSE): Nhấc bút ảo, kích hoạt Tool làm nét xử lý hậu kỳ nét vừa vẽ
+
+✌ Giơ hai ngón (Trỏ & Giữa)
+
+Ngón trỏ và ngón giữa cùng duỗi, ngón áp út và ngón út gập
+
+Chế độ Chọn vùng (SELECT): Khoanh chọn cụm nét vẽ để xóa, di chuyển hoặc chuyển thành chữ/công thức
+
+👋 Bàn tay mở vuốt trái/phải
+
+5 ngón mở, vận tốc ngang tâm bàn tay |v_x| > v_swipe trong cửa sổ 250 ms
+
+Lật trang (SWIPE): Chuyển sang trang bài giảng tiếp theo hoặc quay lại trang trước
+
+👍 Nắm tay giơ ngón cái
+
+Đầu ngón cái P4 hướng lên cao hơn toàn bộ các khớp còn lại ổn định trong 300 ms
+
+Xác nhận nhanh (CONFIRM): Chấp nhận kết quả nắn hình học hoặc kết quả nhận diện công thức
+
+Hệ thống áp dụng cơ chế chống dội trạng thái (Gesture Debouncing): chỉ kích hoạt chuyển trạng thái khi điểm tin cậy (confidence score) của MediaPipe đạt ≥ 0,75 và cử chỉ duy trì liên tục qua tối thiểu 3 khung hình.
+
+2.2. Công cụ làm nét 3 tầng (Multi-stage Stroke Beautifier & Shape Snapper): Viết trên không trung không có điểm tựa vật lý nên đầu ngón tay luôn có rung cơ học tần số cao. Nếu chỉ dùng bộ lọc trung bình động mũ cố định x_mới = α·x_hiện_tại + (1 - α)·x_cũ thì sẽ bị trễ nét khi vẽ nhanh hoặc răng cưa khi viết chậm. AirTeach AI giải quyết bằng quy trình làm nét 3 tầng:
+
+Tầng 1 – Khử rung thời gian thực bằng bộ lọc thích ứng tốc độ (1€ Filter): Hệ số làm mượt tự động điều chỉnh theo tốc độ di chuyển đầu ngón tay thông qua tần số cắt f_c = f_c_min + β·|dx/dt|. Khi giáo viên viết chữ nhỏ hoặc dấu câu (di chuyển chậm), bộ lọc siết chặt tần số cắt để triệt tiêu rung tay; khi giáo viên gạch chân hoặc khoanh vùng nhanh, tần số cắt mở rộng giúp nét mực bám sát ngón tay tức thì.
+
+Tầng 2 – Rút gọn điểm nhiễu và làm mịn đường cong Bézier: Ngay khi giáo viên nắm tay kết thúc nét (chuyển sang PAUSE), chuỗi điểm thô được đưa qua thuật toán Ramer–Douglas–Peucker (RDP) để loại bỏ các điểm nhiễu dư thừa, sau đó nội suy thành đường cong Cubic Bézier liên tục cấp C1 có độ thanh đậm mượt mà.
+
+Tầng 3 – Tự động nắn chuẩn hình học (Geometric Shape Snapping): Bằng cách phân tích tỷ lệ khoảng cách đầu-cuối trên tổng chiều dài nét, độ tròn C = 4π·Area / Perimeter² và số đỉnh bao lồi (Convex Hull), công cụ tự động nắn các nét phác tay của giáo viên thành đường thẳng tuyệt đối (bắt dính góc 0°, 45°, 90°), mũi tên, đường tròn/elip, tam giác hoặc hình chữ nhật chuẩn xác.
+
+Hình 1: Mô phỏng toán học nguyên lý Công cụ làm nét 3 tầng của AirTeach AI: (a) So sánh quỹ đạo thô, bộ lọc EMA cố định và bộ lọc 1€ Filter + Bézier; (b) Tự động nắn hình học (Shape Snapping).
+
+2.3. Nhận diện chữ viết tay và công thức toán học cục bộ (Offline Smart Ink): Khi giáo viên dùng cử chỉ Chọn (SELECT) khoanh vùng một nhóm nét viết và kích hoạt chuyển đổi, một luồng xử lý nền (Background Worker) sẽ kết xuất vùng nét vector đó thành ảnh độ tương phản cao và đưa qua ONNX Runtime chạy hoàn toàn trên CPU:
+
+Chuyển nét viết thành văn bản chuẩn: Sử dụng nhánh nhận dạng siêu nhẹ của PaddleOCR / RapidOCR để nhận diện chữ viết tay tiếng Việt và tiếng Anh, thay thế bằng đối tượng văn bản sắc nét ngay tại vị trí viết.
+
+Chuyển nét viết thành công thức toán học (LaTeX): Sử dụng mô hình lượng tử hóa RapidLaTeXOCR (dựa trên kiến trúc ViT của LaTeX-OCR / pix2tex) để dịch các biểu thức phân số, căn thức, tích phân, phương trình viết tay sang mã LaTeX và dựng lại thành công thức vector chuẩn.
+
+2.4. Chuỗi nhập tài liệu kép và cấu trúc gói .airteach: Để giữ nguyên 100% định dạng slide của giáo viên, hệ thống ưu tiên gọi MS Office COM API nếu máy tính đã cài sẵn Microsoft Office; trường hợp máy chưa cài Office, hệ thống tự động gọi LibreOffice chạy ẩn (soffice --headless --convert-to pdf). Mỗi bài giảng được lưu thành tệp nén .airteach gồm: manifest.json (thông tin bài giảng), pages/ (ảnh nền trang độ phân giải cao), ink/ (nét vẽ vector Bézier kèm mốc thời gian ms), recognized/ (công thức LaTeX & hình học chuẩn) và links.json (liên kết tệp gốc).
+
+2.5. Hồ sơ giáo viên và Đăng nhập khuôn mặt cục bộ: Trên máy tính dùng chung tại lớp học, hệ thống trích xuất vector đặc trưng khuôn mặt 512 chiều bằng mô hình MobileFaceNet (chạy qua ONNX Runtime), kết hợp kiểm tra chớp mắt/chuyển động đầu nhẹ để chống giả mạo bằng ảnh chụp. Hệ thống chỉ lưu vector đặc trưng đã mã hóa AES, không lưu ảnh khuôn mặt gốc, và luôn có mã PIN 4–6 số dự phòng.
+
+III. NGUYÊN TẮC VẬN HÀNH CỦA SẢN PHẨM TRONG LỚP HỌC
+
+AirTeach AI hoạt động theo nguyên tắc hai luồng song song tách biệt để thao tác viết không bao giờ bị giật trễ:
+
+Luồng thao tác thời gian thực (Ưu tiên cao): Webcam → Phát hiện 21 điểm mốc tay → Máy trạng thái cử chỉ + Độ tin cậy → Lọc khử rung 1€ Filter → Hiển thị nét vẽ tức thời → Khi kết thúc nét: Tool làm nét (Rút gọn RDP + Đường cong Bézier / Nắn hình học chuẩn) → Lưu vào lớp ink/.
+
+Luồng nhận diện AI theo yêu cầu (Chạy nền): Vùng nét viết được chọn → ONNX Runtime (RapidOCR / RapidLaTeXOCR) → Chuyển thành văn bản hoặc công thức toán học chuẩn → Giáo viên xác nhận (👍) để hiển thị lên trang bảng.
+
+Quy trình một tiết dạy chuẩn: (1) Giáo viên nhìn vào camera 1–2 giây để mở kho bài giảng riêng; (2) Mở bài đã soạn hoặc nhập nhanh tệp PPTX/PDF/Word; (3) Đứng giảng bài linh hoạt: dùng cử chỉ chữ L để trỏ laser, giơ 1 ngón trỏ để viết chú thích và vẽ hình (được Tool làm nét tự động làm đẹp), khoanh chọn công thức để chuyển sang LaTeX; (4) Kết thúc tiết học, lưu tệp .airteach, xuất PDF gửi cho lớp hoặc phát lại từng bước vẽ (Stroke Replay) khi ôn tập.
+
+IV. TÍNH MỚI VÀ SỰ KHÁC BIỆT CỦA DỰ ÁN
+
+Khác với các chương trình thử nghiệm chỉ dừng ở mức 'vẽ nét thô lên màn hình trắng bằng webcam', AirTeach AI là một nền tảng học liệu tương tác hoàn chỉnh với 5 điểm mới cốt lõi, được thể hiện rõ qua bảng đối sánh dưới đây:
+
+Tiêu chí đối sánh
+
+Bảng tương tác thông minh
+
+Bảng vẽ điện tử (Wacom)
+
+Phần mềm vẽ màn hình (Epic Pen)
+
+Các bản mẫu vẽ Webcam mã nguồn mở
+
+AirTeach AI (Đề xuất)
+
+Chi phí đầu tư
+
+Rất cao (25 – 80+ triệu đ)
+
+Trung bình (1,2 – 2,5 triệu đ)
+
+Miễn phí / Bản trả phí
+
+Miễn phí
+
+Rất thấp (Tận dụng PC + Webcam sẵn có)
+
+Tự do di chuyển (Không cầm thiết bị)
+
+Phải đứng sát mặt bảng
+
+Phải ngồi tại bàn & cầm bút
+
+Phải cầm chuột / bút vẽ
+
+Không cầm thiết bị
+
+Không cầm thiết bị, di chuyển linh hoạt
+
+Tool làm nét & Nắn hình học
+
+Có (tùy phần mềm hãng)
+
+Không tích hợp sẵn
+
+Chỉ vẽ hình bằng chuột
+
+Không có (nét vẽ rất rung)
+
+Có (1€ Filter + Bézier + Shape Snapping)
+
+Nhập PPTX/PDF/Word tách lớp
+
+Có
+
+Không
+
+Không (chỉ vẽ đè màn hình)
+
+Không (chỉ vẽ nền trắng)
+
+Có (Gói .airteach tách lớp nền & vector)
+
+Nhận diện chữ & Công thức Offline
+
+Hiếm (đòi hỏi bản quyền cao)
+
+Không
+
+Không
+
+Không
+
+Có (Chuyển sang chữ & LaTeX qua ONNX)
+
+Phát lại theo thời gian (Replay)
+
+Ít hỗ trợ
+
+Không
+
+Không
+
+Không
+
+Có (Lưu mốc thời gian từng nét vẽ)
+
+V. TÍNH SÁNG TẠO
+
+Sáng tạo trong giải pháp làm nét và chuẩn hóa tương tác: Giải quyết thành công nhược điểm lớn nhất của viết không điểm tựa (rung tay và dính nét) bằng cách kết hợp Máy trạng thái chuẩn hóa theo kích thước bàn tay với Công cụ làm nét 3 tầng (1€ Filter + Ramer–Douglas–Peucker + Bézier Spline & Shape Snapping).
+
+Sáng tạo trong phân bổ tài nguyên tính toán (Lightweight Local AI): Loại bỏ hoàn toàn các mô hình LLM sinh bài tập nặng nề dễ gây ảo giác; thay vào đó kết hợp thuật toán hình học độ phức tạp O(N) cho luồng thời gian thực với các mô hình nhận diện chữ viết, công thức toán học và khuôn mặt đã lượng tử hóa trên ONNX Runtime. Nhờ vậy, phần mềm chạy hoàn toàn offline trên máy tính trường học phổ thông.
+
+Sáng tạo trong cấu trúc học liệu thời gian (.airteach): Lưu trữ nét vẽ dưới dạng phương trình đường cong vector kèm mốc thời gian (timestamp), vừa giữ dung lượng tệp siêu nhẹ, vừa cho phép chỉnh sửa từng nét độc lập với tài liệu gốc và tái hiện lại toàn bộ quá trình lập luận của giáo viên (Stroke Replay).
+
+VI. KHẢ NĂNG ÁP DỤNG, HẠN CHẾ VÀ KẾT QUẢ THỰC NGHIỆM
+
+1. Khả năng áp dụng thực tế
+
+Đối với giáo viên và học sinh: Giáo viên tận dụng ngay kho giáo án PPTX, PDF, Word sẵn có để giảng dạy sinh động, vẽ hình học và viết công thức sắc nét mà không bị bó buộc tại bàn máy tính; học sinh có tài liệu PDF chú thích rõ ràng và bản phát lại từng bước giải để tự ôn tập.
+
+Đối với nhà trường và trung tâm đào tạo: Triển khai ngay trên phòng máy hoặc máy tính bục giảng hiện có kèm webcam phổ thông; dùng chung một máy cho nhiều giáo viên nhờ hồ sơ khuôn mặt riêng; hoạt động 100% offline không phụ thuộc chất lượng mạng Wi-Fi lớp học.
+
+2. Hạn chế thực tế và giải pháp khắc phục
+
+Vấn đề thực tế trong lớp học
+
+Giải pháp kỹ thuật và công thái học trong AirTeach AI
+
+Mỏi tay khi giơ cao viết lâu trên không (Gorilla Arm)
+
+Thiết kế vùng nhận diện thấp ngang ngực – bụng; dùng Tool làm nét, Shape Snapping và Smart Ink để giáo viên chỉ cần phác nhanh trong 2–3 giây là có hình vẽ và công thức hoàn chỉnh; nội dung dài soạn trước bằng bàn phím.
+
+Độ phân giải bàn tay giảm khi đứng xa camera (1,5 – 2,2 m)
+
+Chuẩn hóa tọa độ theo chiều dài bàn tay L_hand; tự động tăng độ nhạy lọc khử rung khi diện tích vùng tay nhỏ; khuyến nghị đặt webcam rời hướng về khu vực đứng giảng.
+
+Ánh sáng lớp học ngược sáng hoặc đèn huỳnh quang
+
+Tiền xử lý khung hình bằng thuật toán cân bằng độ tương phản cục bộ (CLAHE) trên kênh độ sáng và có bước hiệu chỉnh vùng sáng đầu tiết học.
+
+Sai lệch font/công thức khi nhập tệp PPTX, DOCX
+
+Cơ chế chuyển đổi kép: tự động dùng MS Office COM API nếu máy có cài Office để giữ nguyên 100% định dạng; chỉ dùng LibreOffice chạy ẩn khi máy không có Office.
+
+Nhận diện khuôn mặt khó khăn khi thiếu sáng / đeo khẩu trang
+
+Tích hợp mã PIN dự phòng 4–6 chữ số ngay trên màn hình đăng nhập để mở khóa tức thì trong 2 giây.
+
+3. Kết quả đánh giá thực nghiệm
+
+Môi trường thử nghiệm: [CẦN ĐO THỰC NGHIỆM: Ghi rõ cấu hình máy thử, ví dụ: Laptop/PC Intel Core i5, RAM 8GB, không card đồ họa rời, Webcam 720p/1080p, thử nghiệm với ... giáo viên và ... học sinh].
+
+Chỉ số đo kiểm thực nghiệm
+
+Quy trình đo chuẩn
+
+Kết quả đạt được
+
+1. Tốc độ xử lý trung bình (FPS)
+
+Đo liên tục trong 5 phút thao tác vẽ ở độ phân giải 1280×720
+
+[CẦN ĐO: ... FPS]
+
+2. Độ trễ từ ngón tay đến nét vẽ (Latency)
+
+Thời gian trung bình từ lúc thu khung hình đến khi hiển thị nét mực
+
+[CẦN ĐO: ... ms]
+
+3. Độ chính xác nhận diện 6 cử chỉ
+
+Thử nghiệm 6 cử chỉ × 30 lần ở khoảng cách 0,6 m; 1,2 m và 1,8 m
+
+[CẦN ĐO: ... %]
+
+4. Tỷ lệ chống vẽ nhầm khi chỉ trỏ
+
+Tỷ lệ không phát sinh nét mực thừa trong 100 lần di chuyển con trỏ laser
+
+[CẦN ĐO: ... %]
+
+5. Hiệu quả làm mượt của Tool làm nét
+
+Mức giảm sai số lệch chuẩn (RMSE) khi vẽ theo đường mẫu trước/sau lọc
+
+Giảm [CẦN ĐO: ... %] độ rung
+
+6. Độ chính xác tự động nắn hình học
+
+Thử nghiệm vẽ tay 100 hình (đường thẳng, mũi tên, tròn, chữ nhật, tam giác)
+
+[CẦN ĐO: ... %]
+
+7. Độ chính xác nhận diện chữ & công thức
+
+Thử nghiệm 50 từ viết tay và 30 công thức toán phổ thông qua ONNX Offline
+
+Chữ: [... %] | Công thức: [... %]
+
+8. Độ chính xác & thời gian mở khóa khuôn mặt
+
+Thử nghiệm đăng nhập trên [...] hồ sơ giáo viên ở ánh sáng phòng học
+
+[... %] (Trung bình [... giây])
+
+9. Đánh giá của giáo viên & học sinh
+
+Khảo sát sau tiết dạy thử nghiệm theo thang điểm Likert (1 – 5)
+
+[CẦN ĐO: ... / 5,0 điểm]
+
+VII. TÀI LIỆU THAM KHẢO
+
+1. Google AI Edge Developers, MediaPipe Hand Landmarker Documentation — Tài liệu kỹ thuật mô hình trích xuất 21 điểm mốc bàn tay.
+
+2. Géry Casiez, Nicolas Roussel, Daniel Vogel (2012), 1€ Filter: A Simple Speed-based Low-pass Filter for Noisy Input in Interactive Systems (CHI '12) — Cơ sở toán học của bộ lọc làm mượt thích ứng tốc độ.
+
+3. David H. Douglas, Thomas K. Peucker (1973), Ramer–Douglas–Peucker Algorithm — Thuật toán rút gọn điểm nhiễu trên quỹ đạo vector.
+
+4. Microsoft & Cộng đồng mã nguồn mở, ONNX Runtime Documentation — Nền tảng tăng tốc suy luận mô hình AI cục bộ trên CPU.
+
+5. Lukas Blecher & RapidAI Team, RapidLaTeXOCR / LaTeX-OCR (pix2tex) — Mô hình nhận diện công thức toán học sang chuỗi LaTeX.
+
+6. PaddlePaddle & RapidAI Team, RapidOCR / PaddleOCR Lightweight OCR — Hệ thống nhận dạng chữ viết đa ngôn ngữ siêu nhẹ chạy offline.
+
+7. OpenCV Team & The Qt Company, OpenCV Documentation và Qt for Python (PySide6) Documentation (https://doc.qt.io/qtforpython-6/).
+
+PHỤ LỤC & KẾT LUẬN
+
+Phụ lục 1 – Giao diện phần mềm thực tế: [Nhóm chèn 5 ảnh chụp màn hình: (1) Đăng nhập khuôn mặt & PIN; (2) Kho bài giảng cá nhân; (3) Chế độ soạn bài & nhập PPTX/PDF; (4) Chế độ dạy trực tiếp với Tool làm nét & Shape Snapping; (5) Nhận diện công thức LaTeX & phát lại Stroke Replay].
+
+Phụ lục 2 – Mã nguồn & Bộ cài đặt (.exe): [Điền liên kết GitHub / Google Drive chứa bộ cài đặt đóng gói sẵn cho Windows].
+
+Kết luận: AirTeach AI mang đến giải pháp giảng dạy tương tác không chạm có chi phí thấp, hoạt động hoàn toàn offline và tận dụng trực tiếp kho bài giảng sẵn có của giáo viên. Việc bổ sung Công cụ làm nét vector 3 tầng, tự động nắn hình học và nhận diện chữ viết – công thức toán học cục bộ (đồng thời lược bỏ các mô hình sinh bài tập nặng nề) giúp hệ thống đạt tính khả thi thực tiễn rất cao, sẵn sàng triển khai tại các trường học và trung tâm giáo dục.

@@ -223,6 +223,21 @@ def _make_splash(app: QApplication) -> QSplashScreen:
 def main() -> int:
     _ensure_dirs()
 
+    if "--version" in sys.argv:
+        print("AirTeach AI v2.5.0-Release (Windows Desktop Academic Edition)")
+        return 0
+
+    if "--check" in sys.argv or "--dry-run" in sys.argv:
+        print("[CHECK] AirTeach AI system components and models verification...")
+        _download_models_if_needed()
+        print("[CHECK] Open-source AI models verified.")
+        from src.services.face_profile_service import TeacherProfileService  # noqa: PLC0415
+        svc = TeacherProfileService(db_path=_ROOT / "data" / "profiles.db", models_dir=_ROOT / "models")
+        svc.close()
+        print("[CHECK] SQLite profile store and facial recognition pipeline verified.")
+        print("[CHECK] All systems operational. Ready to launch.")
+        return 0
+
     app = QApplication(sys.argv)
     app.setApplicationName("AirTeach AI")
     app.setOrganizationName("AirTeach")

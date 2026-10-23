@@ -272,6 +272,8 @@ class HandGestureFSM:
             swipe = self._detect_swipe(t_ms)
             if swipe is not None:
                 return swipe
+            # Open resting palm is idle, not drawing or pointing
+            return GestureState.NONE
 
         # ── Confirm 👍: thumb extended upward, all other fingers curled ────
         if self._is_thumbs_up(lm, l_hand):
@@ -281,25 +283,34 @@ class HandGestureFSM:
         if self._is_fist(lm):
             return GestureState.PAUSE
 
+        # Finger extension states
+        idx_ext = self._finger_extended(lm, LM.INDEX_TIP, LM.INDEX_PIP)
+        mid_ext = self._finger_extended(lm, LM.MIDDLE_TIP, LM.MIDDLE_PIP)
+        rng_ext = self._finger_extended(lm, LM.RING_TIP, LM.RING_PIP)
+        pnk_ext = self._finger_extended(lm, LM.PINKY_TIP, LM.PINKY_PIP)
+
         # ── SELECT: index + middle extended, ring + pinky curled ───────────
-        if (
-            self._finger_extended(lm, LM.INDEX_TIP, LM.INDEX_PIP)
-            and self._finger_extended(lm, LM.MIDDLE_TIP, LM.MIDDLE_PIP)
-            and not self._finger_extended(lm, LM.RING_TIP, LM.RING_PIP)
-            and not self._finger_extended(lm, LM.PINKY_TIP, LM.PINKY_PIP)
-        ):
+        if idx_ext and mid_ext and not rng_ext and not pnk_ext:
             return GestureState.SELECT
 
-        # ── DRAW or POINT: index extended ──────────────────────────────────
-        if self._finger_extended(lm, LM.INDEX_TIP, LM.INDEX_PIP):
+        # ── DRAW or POINT: index extended, other fingers curled ────────────
+        if idx_ext and not mid_ext and not rng_ext and not pnk_ext:
             thumb_index_dist = float(
                 np.linalg.norm(lm[LM.THUMB_TIP, :2] - lm[LM.INDEX_PIP, :2])
             ) / l_hand
 
-            if thumb_index_dist <= self.draw_thumb_ratio:
-                return GestureState.DRAW
-            elif thumb_index_dist > self.point_thumb_ratio:
+            # Hysteresis threshold to prevent edge jitter between DRAW and POINT
+            point_thr = self.point_thumb_ratio
+            if self._state == GestureState.DRAW:
+                point_thr += 0.04
+            elif self._state == GestureState.POINT:
+                point_thr -= 0.04
+
+            # L-shape: thumb extended outward into an L shape (POINT / laser)
+            if thumb_index_dist > point_thr:
                 return GestureState.POINT
+            else:
+                return GestureState.DRAW
 
         return GestureState.NONE
 
@@ -307,19 +318,33 @@ class HandGestureFSM:
 
     @staticmethod
     def _finger_extended(lm: np.ndarray, tip_idx: int, pip_idx: int) -> bool:
-        """Finger is extended if tip y-coordinate < PIP y-coordinate (screen coords)."""
-        return bool(lm[tip_idx, 1] < lm[pip_idx, 1])
+        """
+        Finger is extended if tip is further from the wrist than PIP joint
+        or if tip is above PIP in upright screen coordinates.
+        Scale-invariant and orientation-resilient.
+        """
+        wrist = lm[LM.WRIST, :2]
+        d_tip = float(np.linalg.norm(lm[tip_idx, :2] - wrist))
+        d_pip = float(np.linalg.norm(lm[pip_idx, :2] - wrist))
+        dist_extended = d_tip > (d_pip * 1.08)
+        y_extended = bool(lm[tip_idx, 1] < lm[pip_idx, 1])
+        return dist_extended or y_extended
 
     @staticmethod
     def _is_fist(lm: np.ndarray) -> bool:
-        """All four fingertips are below (higher y) their respective PIP joints."""
+        """All four fingertips are curled toward wrist/palm."""
         pairs = [
             (LM.INDEX_TIP, LM.INDEX_PIP),
             (LM.MIDDLE_TIP, LM.MIDDLE_PIP),
             (LM.RING_TIP, LM.RING_PIP),
             (LM.PINKY_TIP, LM.PINKY_PIP),
         ]
-        return all(lm[tip, 1] > lm[pip, 1] for tip, pip in pairs)
+        wrist = lm[LM.WRIST, :2]
+        return all(
+            (lm[tip, 1] >= lm[pip, 1])
+            or (float(np.linalg.norm(lm[tip, :2] - wrist)) <= float(np.linalg.norm(lm[pip, :2] - wrist)) * 1.05)
+            for tip, pip in pairs
+        )
 
     def _all_fingers_open(self, lm: np.ndarray, l_hand: float) -> bool:
         """All 5 fingers extended (open palm / swipe gesture)."""
