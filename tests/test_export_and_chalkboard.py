@@ -280,3 +280,19 @@ def test_main_window_toggle_board_theme_integration(qapp):
         assert mw._ink_color == THEME_CONFIGS[BoardTheme.SLATE]["default_ink"]
     finally:
         mw.close()
+
+def test_export_scene_to_file_atomic_cleanup_on_failure(qapp, tmp_path):
+    """export_scene_to_file must clean up temporary files if saving fails."""
+    board = LessonBoard()
+    # Invalid directory path that causes save failure
+    out_file = tmp_path / "nonexistent_dir" / "nested" / "test.png"
+    # Create parent as a file instead of directory to trigger save error
+    (tmp_path / "nonexistent_dir").write_text("not_a_dir")
+
+    with pytest.raises(Exception):
+        CanvasExporter.export_scene_to_file(board, out_file)
+
+    # Ensure no lingering .tmp files remain in tmp_path
+    tmp_files = list(tmp_path.glob(".tmp_*"))
+    assert len(tmp_files) == 0
+

@@ -257,20 +257,14 @@ class TeacherCredentialService:
 
     @staticmethod
     def redact_text(text: str) -> str:
-        """
-        Sanitize text from any accidental Gemini/Google API key appearances (AIzaSy...)
-        or generic secret tokens (sk-...).
-        """
+        """Sanitize text from any accidental API key, secret, bearer token, or PIN appearances."""
         if not text:
             return ""
-        # Match Google API key pattern: AIza followed by 20+ base64/url-safe characters
         text = re.sub(r"AIza[0-9A-Za-z\-_]{20,}", "[REDACTED_API_KEY]", text)
-        # Match OpenAI / Anthropic / general API tokens
         text = re.sub(r"sk-[0-9A-Za-z\-_]{20,}", "[REDACTED_SECRET]", text)
+        text = re.sub(r"Bearer\s+[A-Za-z0-9\-_\.=]+", "Bearer [REDACTED_TOKEN]", text, flags=re.IGNORECASE)
+        text = re.sub(r'(?i)\b(pin|password|secret|token)\s*=\s*\S+', r'\1=[REDACTED]', text)
         return text
-
-    # ── Per-Teacher Settings Storage (SQLite) ──────────────────────────────────
-
     def get_settings(self, teacher_id: str) -> TeacherAISettings:
         """Retrieve AI & drawing settings for a teacher (or default)."""
         if not teacher_id or keyring is None:

@@ -7,6 +7,7 @@ to PNG and JPEG.
 """
 
 from __future__ import annotations
+import uuid
 
 import math
 from pathlib import Path
@@ -215,21 +216,32 @@ class CanvasExporter:
         )
 
         ext = out_p.suffix.lower()
-        if ext in (".jpg", ".jpeg"):
-            # Ensure background is opaque for JPEG
-            if qimage.hasAlphaChannel():
-                opaque_img = QImage(qimage.size(), QImage.Format.Format_RGB32)
-                opaque_img.fill(Qt.GlobalColor.white)
-                p = QPainter(opaque_img)
-                p.drawImage(0, 0, qimage)
-                p.end()
-                qimage = opaque_img
-            saved = qimage.save(str(out_p), "JPEG", quality)
-        else:
-            saved = qimage.save(str(out_p), "PNG")
+        temp_out = out_p.with_name(f".tmp_{uuid.uuid4().hex}_{out_p.name}")
+        try:
+            if ext in (".jpg", ".jpeg"):
+                # Ensure background is opaque for JPEG
+                if qimage.hasAlphaChannel():
+                    opaque_img = QImage(qimage.size(), QImage.Format.Format_RGB32)
+                    opaque_img.fill(Qt.GlobalColor.white)
+                    p = QPainter(opaque_img)
+                    p.drawImage(0, 0, qimage)
+                    p.end()
+                    qimage = opaque_img
+                saved = qimage.save(str(temp_out), "JPEG", quality)
+            else:
+                saved = qimage.save(str(temp_out), "PNG")
 
-        if not saved:
-            raise IOError(f"Không thể lưu hình ảnh vào đường dẫn: {out_p}")
+            if not saved:
+                raise IOError(f"Không thể ghi tệp tạm thời: {temp_out}")
+
+            temp_out.replace(out_p)
+        except Exception:
+            if temp_out.exists():
+                try:
+                    temp_out.unlink()
+                except Exception:
+                    pass
+            raise
 
         return out_p
 

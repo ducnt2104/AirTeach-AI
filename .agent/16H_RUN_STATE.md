@@ -176,12 +176,23 @@
   - Added 4 new unit tests in `TestDocumentManager` (`test_export_annotated_pdf_single_and_multi_page`, `test_export_annotated_pdf_with_recognized_items_and_latex`, `test_export_annotated_pages_generates_valid_pngs`, `test_export_annotated_pdf_atomic_save_and_error_handling`).
   - Total passing tests raised from 1,483 to **1,487 passed tests (100% pass rate across 108 test suites)**.
 
+
+### Milestone 173: Canvas Exporter Transactional Atomic Storage & Expanded Credential Redaction
+- **Canvas Image Atomic Saving (`export_scene_to_file`)**:
+  - Upgraded high-resolution PNG/JPEG exports to write to temporary files (`.tmp_<uuid>_<name>`) and commit via atomic `replace()`.
+  - Added fail-safe cleanup on write errors, eliminating partially-written or corrupt image files on disk.
+- **Expanded Credential Sanitization (`TeacherCredentialService.redact_text`)**:
+  - Enhanced secret redaction across the credential service to sanitize Bearer tokens (`Bearer [REDACTED_TOKEN]`), PIN numbers (`pin=[REDACTED]`), and passwords, harmonizing security protections with `CrashDiagnostics`.
+- **Test Suite Verification**:
+  - Added unit tests in `tests/test_export_and_chalkboard.py` (`test_export_scene_to_file_atomic_cleanup_on_failure`) and `tests/test_services_and_storage.py` (`test_redact_text_comprehensive_secrets`).
+  - Total passing tests raised from 1,487 to **1,489 passed tests (100% pass rate across 108 test suites)**.
+
 ---
 
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **108 Test Suites**
-- **Total Passing Tests**: **1,487 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1487 passed (100%)**
+- **Total Passing Tests**: **1,489 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1489 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

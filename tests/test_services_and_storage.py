@@ -801,6 +801,25 @@ class TestStrokeRenderer:
         assert img.shape[1] >= 64, "Canvas must have minimum size"
 
 
+
+    def test_redact_text_comprehensive_secrets(self):
+        """TeacherCredentialService.redact_text must scrub API keys, tokens, and PINs."""
+        from src.services.credential_service import TeacherCredentialService
+
+        raw_api = "Failed calling with key AIzaSyA1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q and bearer token Bearer eyJhbGciOiJIUzI1NiJ9"
+        sanitized = TeacherCredentialService.redact_text(raw_api)
+        assert "[REDACTED_API_KEY]" in sanitized
+        assert "AIzaSy" not in sanitized
+        assert "Bearer [REDACTED_TOKEN]" in sanitized
+        assert "eyJhbGci" not in sanitized
+
+        raw_pin = "Error in auth: pin=123456, password=secretPass123"
+        sanitized_pin = TeacherCredentialService.redact_text(raw_pin)
+        assert "123456" not in sanitized_pin
+        assert "secretPass123" not in sanitized_pin
+        assert "pin=[REDACTED]" in sanitized_pin
+        assert "password=[REDACTED]" in sanitized_pin
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 10. GeminiAssistant Tests
 # ─────────────────────────────────────────────────────────────────────────────
