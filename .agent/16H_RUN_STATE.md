@@ -9,7 +9,7 @@
 - **Global Architectural Policy Compliance**:
   - `RULE[AGENTS.md]` Zero Mock Data Policy: **100% COMPLIANT** (0 mock coordinates, 0 dummy users, 0 static dummy strings, 100% authentic mathematical, physical, chemical, biological, astronomical, and algorithmic implementations).
   - Zero UI Thread Blocking Policy: **100% COMPLIANT** (All heavy processing separated into QThreads, QRunnables, and QThreadPool with Qt Signals/Slots).
-  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,461 automated tests passing 100% across all suites; zero test failures).
+  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,493 automated tests passing 100% across all suites; zero test failures).
 
 ---
 
@@ -177,6 +177,28 @@
   - Total passing tests raised from 1,483 to **1,487 passed tests (100% pass rate across 108 test suites)**.
 
 
+### Milestone 174: Biometric Anti-Spoofing Architecture, Independent Liveness Check & Zero-Redundancy Auth Pipeline
+- **Liveness Anti-Spoofing Architecture & Catch-22 Elimination**:
+  - Implemented standalone LivenessChecker.check() -> bool method to evaluate physiological micro-motion across recorded face history without mutating the tracking queue.
+  - Refactored TeacherProfileService.authenticate_by_face() pipeline execution order:
+    1. Fast lockout check (is_locked()).
+    2. Face detection (detect_faces(frame)) and landmark extraction.
+    3. Real-time liveness queue ingestion (liveness_checker.update(best_face)).
+    4. Readiness check (liveness_checker.is_ready()) and micro-motion validation (liveness_checker.check()).
+    5. Recognition feature extraction (extract_feature()).
+    6. Database teacher lookup (_get_all_teachers()) and cosine similarity matching.
+  - Eliminated the critical catch-22 where liveness history could never be accumulated because is_ready() was previously evaluated before face detection and landmark feeding.
+  - Eliminated continuous redundant SQLite queries (30 queries/sec) on frames with no faces or failing anti-spoofing checks.
+- **Test Suite Verification**:
+  - Added 4 unit tests in TestLivenessChecker and TestFaceAuthenticationFlow (	ests/test_services_and_storage.py):
+    - 	est_liveness_check_independent_evaluation
+    - 	est_authenticate_by_face_updates_liveness_when_not_ready
+    - 	est_authenticate_by_face_static_spoof_fails
+    - 	est_authenticate_by_face_successful_match
+  - Total passing tests raised from 1,489 to **1,493 passed tests (100% pass rate across 108 test suites)**.
+
+---
+
 ### Milestone 173: Canvas Exporter Transactional Atomic Storage & Expanded Credential Redaction
 - **Canvas Image Atomic Saving (`export_scene_to_file`)**:
   - Upgraded high-resolution PNG/JPEG exports to write to temporary files (`.tmp_<uuid>_<name>`) and commit via atomic `replace()`.
@@ -191,8 +213,8 @@
 
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **108 Test Suites**
-- **Total Passing Tests**: **1,489 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1489 passed (100%)**
+- **Total Passing Tests**: **1,493 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1493 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

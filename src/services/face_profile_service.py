@@ -298,6 +298,15 @@ class LivenessChecker:
         motion = float(np.std(xs) + np.std(ys))
         return motion > LIVENESS_MOTION_THRESHOLD
 
+    def check(self) -> bool:
+        """Evaluate if recent face history exhibits authentic physiological motion."""
+        if len(self._nose_history) < self._required:
+            return False
+        xs = [p[0] for p in self._nose_history]
+        ys = [p[1] for p in self._nose_history]
+        motion = float(np.std(xs) + np.std(ys))
+        return motion > LIVENESS_MOTION_THRESHOLD
+
     def is_ready(self) -> bool:
         return len(self._nose_history) >= self._required
 
@@ -624,26 +633,30 @@ class TeacherProfileService:
         Returns:
             Teacher DB row if authenticated, else None.
         """
-        teachers = self._get_all_teachers()
-        if not teachers:
-            self.last_match_score = -1.0
-            self.last_match_candidate = ""
-            return None
-
-        if not liveness_checker.is_ready():
-            logger.debug("Liveness check not yet ready.")
-            return None
-
         faces = self._models.detect_faces(frame)
         if faces is None or len(faces) == 0:
             return None
 
         best_face = faces[np.argmax(faces[:, 14])]
-        liveness_checker.update(best_face)
+        is_lively = liveness_checker.update(best_face)
+
+        if not liveness_checker.is_ready():
+            logger.debug("Liveness check not yet ready.")
+            return None
+
+        if not is_lively and not liveness_checker.check():
+            logger.debug("Liveness anti-spoofing check failed (insufficient micro-motion).")
+            return None
 
         probe_feat = self._models.extract_feature(frame, best_face)
         if probe_feat is None:
             logger.debug("Feature extraction failed (model unavailable).")
+            return None
+
+        teachers = self._get_all_teachers()
+        if not teachers:
+            self.last_match_score = -1.0
+            self.last_match_candidate = ""
             return None
 
         best_match: Optional[sqlite3.Row] = None

@@ -481,6 +481,121 @@ class TestLivenessChecker:
         assert len(checker._nose_history) <= 20
         assert len(checker._face_size_history) <= 20
 
+    def test_liveness_check_independent_evaluation(self):
+        """Verify check() evaluates history independently without altering queue size."""
+        checker = LivenessChecker(required_frames=5)
+        assert not checker.check(), "check() on empty history must return False"
+
+        # Static history (no motion)
+        for _ in range(5):
+            checker.update(self._make_face_row(160.0, 155.0))
+        assert checker.is_ready()
+        assert not checker.check(), "Static face position must fail check()"
+        assert len(checker._nose_history) == 5
+
+        # Moving history
+        for i in range(5):
+            checker.update(self._make_face_row(160.0 + i * 2.0, 155.0 + i * 1.5))
+        assert checker.check(), "Dynamic face position must pass check()"
+        assert len(checker._nose_history) == 10
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5b. Face Authentication Flow Tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFaceAuthenticationFlow:
+    def test_authenticate_by_face_updates_liveness_when_not_ready(
+        self, profile_service: TeacherProfileService, fake_face_frame: np.ndarray
+    ):
+        """Verify authenticate_by_face continuously updates liveness checker before readiness."""
+        checker = LivenessChecker(required_frames=5)
+        assert len(checker._nose_history) == 0
+
+        # Run 3 frames (less than required 5)
+        for _ in range(3):
+            result = profile_service.authenticate_by_face(fake_face_frame, checker)
+            assert result is None
+
+        # Verify checker accumulated the 3 frames
+        assert len(checker._nose_history) == 3
+        assert not checker.is_ready()
+
+    def test_authenticate_by_face_static_spoof_fails(
+        self, profile_service: TeacherProfileService, fake_face_frame: np.ndarray
+    ):
+        """A static face across frames must be rejected by anti-spoofing check."""
+        checker = LivenessChecker(required_frames=5)
+        # Feed identical frame 10 times (zero landmark motion)
+        results = [
+            profile_service.authenticate_by_face(fake_face_frame, checker)
+            for _ in range(10)
+        ]
+        assert checker.is_ready()
+        assert not checker.check()
+        assert all(res is None for res in results)
+
+    def test_authenticate_by_face_successful_match(
+        self, profile_service: TeacherProfileService, fake_face_frame: np.ndarray
+    ):
+        """When face exhibits authentic liveness and high cosine similarity, auth succeeds."""
+        # Enroll a teacher with known embedding
+        rng = np.random.default_rng(seed=42)
+        dummy_feat = rng.normal(size=128)
+        dummy_feat /= np.linalg.norm(dummy_feat)
+
+        teacher_id = profile_service.enroll_from_frames(
+            frames=[fake_face_frame] * 3,
+            full_name="Thầy Nguyễn Hoàng",
+            subject="Tin học",
+            pin="1234",
+        )
+
+        # Directly update the enrolled teacher's encrypted embedding with dummy_feat
+        enc_blob = profile_service._encrypt_embedding(dummy_feat)
+        profile_service._conn.execute(
+            "UPDATE teachers SET encrypted_embedding=? WHERE id=?",
+            (sqlite3.Binary(enc_blob), teacher_id),
+        )
+        profile_service._conn.commit()
+
+        # Prime liveness checker with movement
+        checker = LivenessChecker(required_frames=5)
+        for i in range(5):
+            row = np.array(
+                [100.0, 80.0, 120.0, 150.0, 130.0, 120.0, 190.0, 120.0,
+                 160.0 + i * 2.0, 155.0 + i * 1.5,
+                 135.0, 190.0, 185.0, 190.0, 0.95],
+                dtype=np.float32,
+            )
+            checker.update(row)
+
+        assert checker.is_ready()
+        assert checker.check()
+
+        # Mock model methods to return the matching dummy_feat
+        original_detect = profile_service._models.detect_faces
+        original_extract = profile_service._models.extract_feature
+        original_cosine = profile_service._models.cosine_similarity
+
+        try:
+            profile_service._models.detect_faces = lambda f: np.array([[
+                100.0, 80.0, 120.0, 150.0, 130.0, 120.0, 190.0, 120.0,
+                168.0, 161.0, 135.0, 190.0, 185.0, 190.0, 0.95
+            ]], dtype=np.float32)
+            profile_service._models.extract_feature = lambda f, b: dummy_feat
+            profile_service._models.cosine_similarity = lambda a, b: float(np.dot(a, b))
+
+            matched = profile_service.authenticate_by_face(fake_face_frame, checker)
+            assert matched is not None
+            assert matched["id"] == teacher_id
+            assert matched["full_name"] == "Thầy Nguyễn Hoàng"
+            assert profile_service.last_match_score >= 0.99
+        finally:
+            profile_service._models.detect_faces = original_detect
+            profile_service._models.extract_feature = original_extract
+            profile_service._models.cosine_similarity = original_cosine
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. AirTeach Package Tests
