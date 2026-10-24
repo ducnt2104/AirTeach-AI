@@ -5,7 +5,7 @@
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20Qt6-brightgreen.svg)](https://www.qt.io/)
 [![Computer Vision](https://img.shields.io/badge/CV-OpenCV%20%2B%20MediaPipe-orange.svg)](https://opencv.org/)
 [![AI Assistant](https://img.shields.io/badge/AI-Google%20Gemini%20API-4285F4.svg)](https://aistudio.google.com/)
-[![Tests](https://img.shields.io/badge/Tests-1%2C416%20passed%20(103%20suites)-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-1%2C461%20passed%20(107%20suites)-success.svg)](tests/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue.svg)](https://github.com/ducnt2104/AirTeach-AI)
 [![License](https://img.shields.io/badge/License-Apache%202.0%20%2F%20LGPLv3-lightgrey.svg)](LICENSE)
 
@@ -26,7 +26,7 @@ Dự án cung cấp sẵn các bộ kịch bản tự động kiểm tra môi tr
 ### 🪟 1. Dành cho Windows (10/11)
 
 #### Cách 1: Cài đặt tự động "1 chạm" (Khuyên dùng khi chạy từ mã nguồn)
-* Nhấp đúp chuột vào file **`Cài_Đặt_AirTeach_AI.bat`** (hoặc `Install_AirTeach_AI.bat`).
+* Nhấp đúp chuột vào file **`Cai_Dat_AirTeach_AI.bat`** (hoặc `Install_AirTeach_AI.bat`).
 * **Hệ thống sẽ tự động:**
   1. Kiểm tra Python (nếu máy chưa có, tự động tải bản Python 3.11 64-bit chính thức từ python.org và cài đặt).
   2. Tạo môi trường ảo độc lập `.venv` và cài đặt toàn bộ thư viện trong `requirements.txt`.
@@ -108,9 +108,9 @@ python3 main.py
 
 ---
 
-## 🔬 Danh mục 154 Công cụ Mô phỏng STEM Tương tác (Interactive STEM Suite)
+## 🔬 Danh mục 160+ Công cụ Mô phỏng STEM Tương tác (Interactive STEM Suite)
 
-AirTeach AI tích hợp **154 công cụ mô phỏng khoa học chuyên sâu** có thể kéo thả, tùy chỉnh tham số vật lý thời gian thực, tương tác bằng cử chỉ tay không chạm và đóng dấu vector vĩnh viễn lên bảng giảng dạy:
+AirTeach AI tích hợp **160+ công cụ mô phỏng khoa học chuyên sâu** có thể kéo thả, tùy chỉnh tham số vật lý thời gian thực, tương tác bằng cử chỉ tay không chạm và đóng dấu vector vĩnh viễn lên bảng giảng dạy:
 
 ```
 ├── ⚡ VẬT LÝ & QUANG HỌC (Physics & Optics)
@@ -123,6 +123,9 @@ AirTeach AI tích hợp **154 công cụ mô phỏng khoa học chuyên sâu** c
 │   ├── Dao động điều hòa, Con lắc đơn & RLC nối tiếp / song song
 │   ├── Động học chất lưu: Ống Venturi & Định luật Bernoulli / Poiseuille
 │   ├── Cơ học: Ném xiên, Chuyển động tròn, Mặt phẳng nghiêng ma sát
+│   ├── Thấu kính hấp dẫn Einstein, Vòng Einstein & Độ cong không-thời gian
+│   ├── Tán xạ Compton photon-electron & Động học lượng tử tương đối tính
+│   ├── Năng lượng liên kết hạt nhân Aston & Mẫu giọt chất lỏng SEMF
 │   └── Vật lý hạt: Máy gia tốc Cyclotron, Khối phổ kế Thomson, Giọt dầu Millikan
 │
 ├── 🧪 HÓA HỌC & VẬT LIỆU (Chemistry & Materials)
@@ -133,6 +136,7 @@ AirTeach AI tích hợp **154 công cụ mô phỏng khoa học chuyên sâu** c
 │   ├── Động hóa học & Phương trình Arrhenius
 │   ├── Điện hóa học: Pin Galvanic & Bình điện phân Nernst
 │   ├── Giản đồ pha áp suất - nhiệt độ (P-T) các chất
+│   ├── Cân bằng hóa học: Nguyên lý Le Chatelier, Bảng ICE & Tốc độ phản ứng động
 │   ├── Sắc ký lỏng HPLC & Sắc ký khí khối phổ GC-MS
 │   └── Đường cong ứng suất - biến dạng Hooke, Giới hạn chảy & Độ bền kéo
 │
@@ -225,10 +229,10 @@ graph TD
 
 ## 🧪 Đảm bảo chất lượng & Kiểm thử tự động (Test Suite)
 
-Hệ thống được bảo vệ bởi **1,416 bài test tự động** vượt qua 100% trong **103 file test suites**:
+Hệ thống được bảo vệ bởi **1,461 bài test tự động** vượt qua 100% trong **107 file test suites**:
 
 ```bash
-# Chạy toàn bộ 1,416 bài test ở chế độ headless (CI/CD)
+# Chạy toàn bộ 1,461 bài test ở chế độ headless (CI/CD)
 pytest -q
 
 # Kiểm tra tình trạng sẵn sàng của hệ thống và trọng số mô hình AI
@@ -236,7 +240,7 @@ python3 main.py --check
 ```
 
 ```text
-======================= 1416 passed, 1 warning in 184.20s =======================
+======================= 1461 passed, 1 warning in 366.97s =======================
 [CHECK] Open-source AI models verified.
 [CHECK] SQLite profile store and facial recognition pipeline verified.
 [CHECK] All systems operational. Ready to launch.
