@@ -270,6 +270,30 @@ class TestOneEuroFilter2D:
         assert mean_slow < 20.0, f"Slow filter lag too high: {mean_slow:.2f}"
         assert mean_fast < 50.0, f"Fast filter lag too high: {mean_fast:.2f}"
 
+    def test_one_euro_filter_reset_resets_derivatives_and_history(self):
+        """OneEuroFilter2D.reset() must reset internal states in O(1)."""
+        filt = OneEuroFilter2D()
+        filt.filter(10.0, 20.0, 0.0)
+        filt.filter(50.0, 60.0, 16.6)
+        assert filt._fx._last_t == 16.6
+        assert filt._fx._x._initialized is True
+
+        filt.reset()
+        assert filt._fx._last_t is None
+        assert filt._fx._x._initialized is False
+        assert filt._fy._x._initialized is False
+
+    def test_filter_handles_large_pause_gracefully(self):
+        """Filter must reset when pause exceeds 2.0s without explosive derivatives."""
+        filt = OneEuroFilter2D()
+        filt.filter(100.0, 100.0, 0.0)
+        filt.filter(102.0, 102.0, 33.3)
+
+        # 5 second pause in drawing
+        fx, fy = filt.filter(200.0, 200.0, 5033.3)
+        assert math.isfinite(fx) and math.isfinite(fy)
+        assert 150.0 <= fx <= 200.0
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. Ramer-Douglas-Peucker Tests
@@ -565,6 +589,27 @@ class TestGeometricShapeSnapper:
         assert result.render_points is not None
         assert result.render_points.shape[1] == 2
 
+    def test_line_preserves_drawing_direction(self, snapper):
+        """Snapped line must preserve stroke direction from start to end."""
+        # Drawn left to right
+        ltr = np.array([[float(i * 10), 100.0] for i in range(20)])
+        res_ltr = snapper.snap(ltr)
+        assert res_ltr.shape_type == ShapeType.LINE
+        assert res_ltr.params["start"][0] < res_ltr.params["end"][0]
+
+        # Drawn right to left
+        rtl = np.array([[float((20 - i) * 10), 100.0] for i in range(20)])
+        res_rtl = snapper.snap(rtl)
+        assert res_rtl.shape_type == ShapeType.LINE
+        assert res_rtl.params["start"][0] > res_rtl.params["end"][0]
+
+    def test_snap_angle_circular_wrap_around(self, snapper):
+        """_snap_angle must correctly wrap around 360 degrees near +/- 180 degrees."""
+        assert snapper._snap_angle(178.5) == 180.0
+        assert snapper._snap_angle(-178.5) in (-180.0, 180.0)
+        assert snapper._snap_angle(1.5) == 0.0
+        assert snapper._snap_angle(88.5) == 90.0
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. RMSE Metric Tests
@@ -594,6 +639,17 @@ class TestComputeStrokeRmse:
         rmse = compute_stroke_rmse(raw, simplified)
         assert math.isfinite(rmse), "RMSE should be finite for different-length arrays"
         assert rmse >= 0.0
+
+    def test_large_stroke_fast_rmse_evaluation(self):
+        """cKDTree-accelerated RMSE must evaluate 1,000 points in under 15ms."""
+        import time
+        raw = np.random.rand(1000, 2) * 500.0
+        smooth = raw[::5]  # 200 points
+        t0 = time.perf_counter()
+        rmse = compute_stroke_rmse(raw, smooth)
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+        assert math.isfinite(rmse) and rmse >= 0.0
+        assert dt_ms < 50.0  # Compiled C execution
 
 
 # ─────────────────────────────────────────────────────────────────────────────

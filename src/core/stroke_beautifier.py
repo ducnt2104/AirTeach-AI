@@ -17,7 +17,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
-from scipy.spatial import ConvexHull
+from scipy.spatial import ConvexHull, cKDTree
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -48,6 +48,11 @@ class _LowPassFilter:
     @property
     def last_value(self) -> float:
         return self._y
+
+    def reset(self) -> None:
+        self._alpha = 1.0
+        self._y = 0.0
+        self._initialized = False
 
 
 class OneEuroFilter:
@@ -82,6 +87,11 @@ class OneEuroFilter:
         self._dx = _LowPassFilter()
         self._last_t: Optional[float] = None
 
+    def reset(self) -> None:
+        self._x.reset()
+        self._dx.reset()
+        self._last_t = None
+
     @staticmethod
     def _alpha(cutoff: float, freq: float) -> float:
         """Compute smoothing factor α from cutoff frequency and sample rate."""
@@ -97,8 +107,10 @@ class OneEuroFilter:
         """
         if self._last_t is not None:
             dt_s = (t_ms - self._last_t) / 1000.0
-            if dt_s > 0.0:
-                self._freq = 1.0 / dt_s
+            if dt_s > 2.0 or dt_s < 0.0:
+                self.reset()
+            elif dt_s > 0.001:
+                self._freq = max(1.0, min(240.0, 1.0 / dt_s))
         self._last_t = t_ms
 
         # Derivative estimate
@@ -144,16 +156,8 @@ class OneEuroFilter2D:
 
     def reset(self) -> None:
         """Reset the filter state (call when starting a new stroke)."""
-        self._fx = OneEuroFilter(
-            min_cutoff=self._fx._min_cutoff,
-            beta=self._fx._beta,
-            d_cutoff=self._fx._d_cutoff,
-        )
-        self._fy = OneEuroFilter(
-            min_cutoff=self._fy._min_cutoff,
-            beta=self._fy._beta,
-            d_cutoff=self._fy._d_cutoff,
-        )
+        self._fx.reset()
+        self._fy.reset()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -513,10 +517,16 @@ class GeometricShapeSnapper:
         # Principal direction = eigenvector of largest eigenvalue (last column)
         principal = eigenvectors[:, -1]
 
-        # Project all points onto principal axis, find min/max projections
+        # Project all points onto principal axis, matching stroke direction
         projections = centered @ principal
-        p_start = pts.mean(axis=0) + projections.min() * principal
-        p_end = pts.mean(axis=0) + projections.max() * principal
+        proj_start = (pts[0] - pts.mean(axis=0)) @ principal
+        proj_end = (pts[-1] - pts.mean(axis=0)) @ principal
+        if proj_start <= proj_end:
+            p_start = pts.mean(axis=0) + projections.min() * principal
+            p_end = pts.mean(axis=0) + projections.max() * principal
+        else:
+            p_start = pts.mean(axis=0) + projections.max() * principal
+            p_end = pts.mean(axis=0) + projections.min() * principal
 
         dx = float(p_end[0] - p_start[0])
         dy = float(p_end[1] - p_start[1])
@@ -554,9 +564,10 @@ class GeometricShapeSnapper:
 
     def _snap_angle(self, angle_deg: float) -> Optional[float]:
         """Return nearest snap angle (0, 45, 90, 135, 180, -45, -90, -135) if within tolerance."""
-        snap_angles = [0.0, 45.0, 90.0, 135.0, 180.0, -45.0, -90.0, -135.0, -180.0]
+        snap_angles = [0.0, 45.0, 90.0, 135.0, 180.0, -45.0, -90.0, -135.0]
         for snap in snap_angles:
-            if abs(angle_deg - snap) < self.angle_tolerance_deg:
+            diff = abs((angle_deg - snap + 180.0) % 360.0 - 180.0)
+            if diff < self.angle_tolerance_deg:
                 return snap
         return None
 
@@ -815,10 +826,7 @@ def compute_stroke_rmse(
     if len(raw) == 0 or len(smooth) == 0:
         return 0.0
 
-    # For each raw point, find squared distance to nearest smoothed point
-    squared_errors = []
-    for rp in raw:
-        dists_sq = np.sum((smooth - rp) ** 2, axis=1)
-        squared_errors.append(float(np.min(dists_sq)))
-
-    return float(math.sqrt(np.mean(squared_errors)))
+    # Accelerate nearest neighbor search via compiled cKDTree
+    tree = cKDTree(smooth)
+    distances, _ = tree.query(raw)
+    return float(math.sqrt(np.mean(distances ** 2)))
