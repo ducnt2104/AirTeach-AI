@@ -301,12 +301,51 @@ class GeometricMathParser:
         angle_deg = math.degrees(math.atan2(float(principal[1]), float(principal[0])))
         angle_deg = (angle_deg + 90) % 180 - 90  # range [-90, 90]
 
+        # 0. Dot / decimal point / multiplication dot
+        if max(w, h) < 14.0 or arc_len < 16.0:
+            return _MathToken(".", xmin, ymin, xmax, ymax, cx, cy)
+
         # 1. Closed loop: 0, o, O
         if is_closed or (w / h > 0.55 and w / h < 1.8 and chord_len / max(arc_len, 1e-4) < 0.35):
             # Check if it has a figure-8 self-intersection
             return _MathToken("0", xmin, ymin, xmax, ymax, cx, cy)
 
-        # 2. Straight line candidates
+        # 2. Chevrons < and > (sharp apex angle < 110 deg)
+        if 0.3 <= h / w <= 2.8 and not is_closed and len(pts) >= 3:
+            apex_min_idx = int(np.argmin(pts[:, 0]))
+            apex_max_idx = int(np.argmax(pts[:, 0]))
+            start_x, end_x = pts[0, 0], pts[-1, 0]
+            if (start_x - pts[apex_min_idx, 0] > 0.28 * w) and (end_x - pts[apex_min_idx, 0] > 0.28 * w):
+                # Calculate apex angle
+                v1 = pts[0] - pts[apex_min_idx]
+                v2 = pts[-1] - pts[apex_min_idx]
+                n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
+                if n1 > 1e-4 and n2 > 1e-4:
+                    cos_ang = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
+                    ang_deg = math.degrees(math.acos(cos_ang))
+                    if ang_deg < 112.0:
+                        return _MathToken("<", xmin, ymin, xmax, ymax, cx, cy)
+            elif (pts[apex_max_idx, 0] - start_x > 0.28 * w) and (pts[apex_max_idx, 0] - end_x > 0.28 * w):
+                v1 = pts[0] - pts[apex_max_idx]
+                v2 = pts[-1] - pts[apex_max_idx]
+                n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
+                if n1 > 1e-4 and n2 > 1e-4:
+                    cos_ang = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
+                    ang_deg = math.degrees(math.acos(cos_ang))
+                    if ang_deg < 112.0:
+                        return _MathToken(">", xmin, ymin, xmax, ymax, cx, cy)
+
+        # 3. Parentheses ( and ) (smooth arc, apex angle >= 112 deg)
+        if h > 1.35 * w and not is_closed and len(pts) >= 3 and w > 4.0:
+            chord_x = 0.5 * (pts[0, 0] + pts[-1, 0])
+            mid_idx = len(pts) // 2
+            mid_x = pts[mid_idx, 0]
+            if (chord_x - mid_x) > 0.20 * w:
+                return _MathToken("(", xmin, ymin, xmax, ymax, cx, cy)
+            elif (mid_x - chord_x) > 0.20 * w:
+                return _MathToken(")", xmin, ymin, xmax, ymax, cx, cy)
+
+        # 4. Straight line candidates
         if linearity > 0.85:
             abs_ang = abs(angle_deg)
             if abs_ang < 25.0:
@@ -320,21 +359,21 @@ class GeometricMathParser:
                 sym = "DIAG_POS" if angle_deg > 0 else "DIAG_NEG"
                 return _MathToken(sym, xmin, ymin, xmax, ymax, cx, cy)
 
-        # 3. Square root radical check
+        # 5. Square root radical check
         # Starts high, dips low, rises high, then goes right
         if len(pts) >= 6:
             start_y, mid_min_y, end_x = pts[0, 1], pts[:, 1].max(), pts[-1, 0]
             if mid_min_y > start_y and (pts[-1, 1] < mid_min_y) and (end_x > cx + w * 0.2):
                 return _MathToken(r"\sqrt", xmin, ymin, xmax, ymax, cx, cy)
 
-        # 4. Integral S-curve
+        # 6. Integral S-curve
         if h > 2.0 * w and not is_closed:
             # Check inflection in x-direction
             dxs = diffs[:, 0]
             if np.any(dxs > 0) and np.any(dxs < 0):
                 return _MathToken(r"\int", xmin, ymin, xmax, ymax, cx, cy)
 
-        # 5. Curve heuristics for digits and common variables
+        # 7. Curve heuristics for digits and common variables
         # Aspect ratio and curvature
         if w / h > 1.3:
             return _MathToken("HORIZ_BAR", xmin, ymin, xmax, ymax, cx, cy)
@@ -363,6 +402,38 @@ class GeometricMathParser:
         used = set()
         n = len(tokens)
 
+        # Pass 1: Look for 3-stroke symbol Pi (pi): 1 HORIZ_BAR + 2 VERT_BAR / '1' underneath
+        for i in range(n):
+            if i in used or tokens[i].symbol != "HORIZ_BAR":
+                continue
+            th = tokens[i]
+            cand_legs = []
+            for j in range(n):
+                if j == i or j in used:
+                    continue
+                tj = tokens[j]
+                if tj.symbol in ("VERT_BAR", "1"):
+                    if tj.ymin >= th.ymin - 5.0 and th.xmin - 10.0 <= tj.cx <= th.xmax + 10.0:
+                        cand_legs.append(j)
+            if len(cand_legs) >= 2:
+                j1, j2 = cand_legs[0], cand_legs[1]
+                t_j1, t_j2 = tokens[j1], tokens[j2]
+                if abs(t_j1.cx - t_j2.cx) > 0.18 * (th.xmax - th.xmin):
+                    pi_token = _MathToken(
+                        r"\pi",
+                        min(th.xmin, t_j1.xmin, t_j2.xmin),
+                        min(th.ymin, t_j1.ymin, t_j2.ymin),
+                        max(th.xmax, t_j1.xmax, t_j2.xmax),
+                        max(th.ymax, t_j1.ymax, t_j2.ymax),
+                        (th.cx + t_j1.cx + t_j2.cx) / 3.0,
+                        (th.cy + t_j1.cy + t_j2.cy) / 3.0,
+                    )
+                    fused.append(pi_token)
+                    used.add(i)
+                    used.add(j1)
+                    used.add(j2)
+
+        # Pass 2: Look for 2-stroke or 3-stroke symbols (=, \neq, +, x, \leq, \geq)
         for i in range(n):
             if i in used:
                 continue
@@ -383,8 +454,66 @@ class GeometricMathParser:
                 # Equal sign '=': two horizontal bars stacked vertically
                 if t1.symbol == "HORIZ_BAR" and t2.symbol == "HORIZ_BAR":
                     if dx < max_dim * 0.6 and 0.2 * max_dim < dy < 1.4 * max_dim:
+                        # Check for 3rd stroke crossing = (\neq)
+                        neq_matched = False
+                        for k in range(n):
+                            if k not in (i, j) and k not in used:
+                                tk = tokens[k]
+                                if tk.symbol in ("DIAG_NEG", "DIAG_POS", "VERT_BAR", "/"):
+                                    if abs(tk.cx - (t1.cx + t2.cx)/2.0) < max_dim * 0.6 and abs(tk.cy - (t1.cy + t2.cy)/2.0) < max_dim * 0.6:
+                                        comb = _MathToken(
+                                            r"\neq",
+                                            min(t1.xmin, t2.xmin, tk.xmin), min(t1.ymin, t2.ymin, tk.ymin),
+                                            max(t1.xmax, t2.xmax, tk.xmax), max(t1.ymax, t2.ymax, tk.ymax),
+                                            (t1.cx + t2.cx + tk.cx) / 3.0, (t1.cy + t2.cy + tk.cy) / 3.0,
+                                        )
+                                        fused.append(comb)
+                                        used.add(i)
+                                        used.add(j)
+                                        used.add(k)
+                                        neq_matched = True
+                                        matched = True
+                                        break
+                        if neq_matched:
+                            break
                         comb = _MathToken(
                             "=",
+                            min(t1.xmin, t2.xmin), min(t1.ymin, t2.ymin),
+                            max(t1.xmax, t2.xmax), max(t1.ymax, t2.ymax),
+                            (t1.cx + t2.cx) / 2.0, (t1.cy + t2.cy) / 2.0,
+                        )
+                        fused.append(comb)
+                        used.add(i)
+                        used.add(j)
+                        matched = True
+                        break
+
+                # Less-than or equal '\leq': '<' with horizontal bar underneath
+                elif (
+                    (t1.symbol == "<" and t2.symbol == "HORIZ_BAR" and t2.cy > t1.cy)
+                    or (t2.symbol == "<" and t1.symbol == "HORIZ_BAR" and t1.cy > t2.cy)
+                ):
+                    if dx < max_dim * 0.6 and 0.1 * max_dim < dy < 1.4 * max_dim:
+                        comb = _MathToken(
+                            r"\leq",
+                            min(t1.xmin, t2.xmin), min(t1.ymin, t2.ymin),
+                            max(t1.xmax, t2.xmax), max(t1.ymax, t2.ymax),
+                            (t1.cx + t2.cx) / 2.0, (t1.cy + t2.cy) / 2.0,
+                        )
+                        fused.append(comb)
+                        used.add(i)
+                        used.add(j)
+                        matched = True
+                        break
+
+                # Greater-than or equal '\geq': '>' with horizontal bar underneath
+                elif (
+                    (t1.symbol == ">" and t2.symbol == "HORIZ_BAR" and t2.cy > t1.cy)
+                    or (t2.symbol == ">" and t1.symbol == "HORIZ_BAR" and t1.cy > t2.cy)
+                ):
+                    if dx < max_dim * 0.6 and 0.1 * max_dim < dy < 1.4 * max_dim:
+                        comb = _MathToken(
+                            r"\geq",
                             min(t1.xmin, t2.xmin), min(t1.ymin, t2.ymin),
                             max(t1.xmax, t2.xmax), max(t1.ymax, t2.ymax),
                             (t1.cx + t2.cx) / 2.0, (t1.cy + t2.cy) / 2.0,
@@ -512,7 +641,7 @@ class GeometricMathParser:
                     continue
 
             # Spacing between operator and operands
-            if sym in ("+", "-", "=", r"\times", r"\div"):
+            if sym in ("+", "-", "=", r"\times", r"\div", "<", ">", r"\leq", r"\geq", r"\neq"):
                 parts.append(f" {sym} ")
             elif parts and parts[-1].endswith(" "):
                 parts.append(sym)

@@ -1152,6 +1152,61 @@ class TestGeometricMathParser:
         assert out.confidence >= 0.8
         assert out.render_image_rgba is not None
 
+    def test_parse_parentheses(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        import numpy as np
+        # Open parenthesis (
+        t = np.linspace(-np.pi/2, np.pi/2, 10)
+        pts_l = [StrokePoint(float(30.0 - 10.0 * np.cos(ti)), float(50.0 + 25.0 * np.sin(ti)), i * 10) for i, ti in enumerate(t)]
+        # Closing parenthesis )
+        pts_r = [StrokePoint(float(70.0 + 10.0 * np.cos(ti)), float(50.0 + 25.0 * np.sin(ti)), 100 + i * 10) for i, ti in enumerate(t)]
+        # Middle variable x
+        s_mid = Stroke(points=[StrokePoint(50.0, 40.0, 200), StrokePoint(50.0, 60.0, 210)])
+        res = GeometricMathParser.parse([Stroke(points=pts_l), s_mid, Stroke(points=pts_r)])
+        assert "(" in res
+        assert ")" in res
+
+    def test_parse_pi_symbol(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        # Horizontal top bar
+        s_top = Stroke(points=[StrokePoint(10.0, 20.0, 0), StrokePoint(50.0, 20.0, 10)])
+        # Left vertical leg
+        s_leg1 = Stroke(points=[StrokePoint(20.0, 22.0, 20), StrokePoint(20.0, 60.0, 30)])
+        # Right vertical leg
+        s_leg2 = Stroke(points=[StrokePoint(40.0, 22.0, 40), StrokePoint(40.0, 60.0, 50)])
+        res = GeometricMathParser.parse([s_top, s_leg1, s_leg2])
+        assert r"\pi" in res
+
+    def test_parse_inequalities_and_not_equal(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        # < chevron
+        s_lt = Stroke(points=[
+            StrokePoint(40.0, 20.0, 0),
+            StrokePoint(20.0, 35.0, 10),
+            StrokePoint(40.0, 50.0, 20),
+        ])
+        res_lt = GeometricMathParser.parse([s_lt])
+        assert "<" in res_lt
+
+        # <= chevron + bar
+        s_bar = Stroke(points=[StrokePoint(15.0, 58.0, 30), StrokePoint(45.0, 58.0, 40)])
+        res_leq = GeometricMathParser.parse([s_lt, s_bar])
+        assert r"\leq" in res_leq
+
+        # != equal sign + slash
+        s1 = Stroke(points=[StrokePoint(10.0, 45.0, 0), StrokePoint(50.0, 45.0, 10)])
+        s2 = Stroke(points=[StrokePoint(10.0, 55.0, 20), StrokePoint(50.0, 55.0, 30)])
+        s_slash = Stroke(points=[StrokePoint(40.0, 35.0, 40), StrokePoint(20.0, 65.0, 50)])
+        res_neq = GeometricMathParser.parse([s1, s2, s_slash])
+        assert r"\neq" in res_neq
+
+    def test_parse_dot_symbol(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        # A tiny dot stroke
+        s_dot = Stroke(points=[StrokePoint(25.0, 50.0, 0), StrokePoint(26.0, 50.5, 10)])
+        res = GeometricMathParser.parse([s_dot])
+        assert "." in res
+
 
 
 class TestApplicationCommandLine:
