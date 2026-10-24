@@ -118,12 +118,27 @@
   - Added `test_atomic_save_cleans_up_on_failure` and `test_liveness_bounded_sliding_window` to `tests/test_services_and_storage.py`.
   - Total passing tests raised from 1,465 to **1,467 passed tests (100% pass rate across 107 test suites)**.
 
+### Milestone 169: Multi-Hand Coordinate Precision, Crash Diagnostics & STEM Serialization
+- **Multi-Hand Tracking & Vision Precision**:
+  - Fixed coordinate double-mapping in `MultiHandCoordinator.process_frame_hands()`: directly mapped index tip canvas coordinates from FSM without re-applying perspective transformation, fixing coordinates that were pinned to the display boundary.
+  - Enforced $O(1)$ memory bound on tracking state: automatically evict dead tracks and FSM instances from `MultiHandCoordinator._fsms` and `AirClickDetector._history` when hands leave the camera field of view.
+  - Guaranteed safe CLAHE initialization in `HandTrackingWorker` (`self._clahe`) to eliminate potential `AttributeError`.
+- **Lesson Package Serialization & STEM Integrity**:
+  - Added `LessonBoard.get_recognized_items_for_export(page_index)` to serialize all active text and LaTeX overlays conforming to `recognized/items.json`.
+  - Upgraded `MainWindow._on_save_airteach` to serialize all stamped STEM diagram items and metadata into `RecognizedItem` records.
+- **Telemetry & Crash Diagnostics Hardening**:
+  - Created `CrashDiagnostics` (`src/utils/crash_diagnostics.py`) with automatic credential and API key sanitization, platform telemetry capture, and structured JSON dump generation. Installed in `main.py`.
+  - Upgraded `TelemetryLogger._flush_to_disk` with fail-safe write retry recovery on disk `OSError`.
+- **Test Suite Verification**:
+  - Added 7 new exhaustive unit tests in `tests/test_crash_diagnostics.py`.
+  - Total passing tests raised from 1,467 to **1,474 passed tests (100% pass rate across 108 test suites)**.
+
 ---
 
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **107 Test Suites**
-- **Total Passing Tests**: **1,467 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1467 passed (100%)**
+- **Total Automated Test Suites**: **108 Test Suites**
+- **Total Passing Tests**: **1,474 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1474 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

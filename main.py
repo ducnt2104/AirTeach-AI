@@ -252,6 +252,10 @@ Tùy chọn:
         print("[CHECK] All systems operational. Ready to launch.")
         return 0
 
+    # ── Install Crash Diagnostics ─────────────────────────────────────────────
+    from src.utils.crash_diagnostics import install_crash_handler  # noqa: PLC0415
+    install_crash_handler(_ROOT / "data" / "crash_reports")
+
     # ── High-DPI Display Scaling Hardening ────────────────────────────────────
     if hasattr(Qt, "HighDpiScaleFactorRoundingPolicy"):
         QApplication.setHighDpiScaleFactorRoundingPolicy(

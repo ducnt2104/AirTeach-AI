@@ -247,6 +247,10 @@ class TelemetryLogger:
                     writer.writerow(asdict(rec))
         except OSError as exc:
             logger.error("TelemetryLogger flush failed: %s", exc)
+            with self._lock:
+                for rec in reversed(records_to_write):
+                    if len(self._buffer) < MAX_BUFFER_SIZE:
+                        self._buffer.appendleft(rec)
 
     # ── Context manager support ───────────────────────────────────────────────
 
