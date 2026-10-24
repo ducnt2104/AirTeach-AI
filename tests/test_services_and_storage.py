@@ -1658,6 +1658,41 @@ class TestGeometricMathParser:
         res = GeometricMathParser.parse([s_dot])
         assert "." in res
 
+    def test_parse_division_symbol(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        s_dot_top = Stroke([StrokePoint(100.0, 40.0, 0), StrokePoint(101.0, 41.0, 10)])
+        s_bar = Stroke([StrokePoint(80.0, 60.0, 20), StrokePoint(120.0, 60.0, 30)])
+        s_dot_bot = Stroke([StrokePoint(100.0, 80.0, 40), StrokePoint(101.0, 81.0, 50)])
+        res = GeometricMathParser.parse([s_dot_top, s_bar, s_dot_bot])
+        assert res == r"\div"
+
+    def test_parse_plus_minus_symbol(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        s_h = Stroke([StrokePoint(80.0, 50.0, 0), StrokePoint(120.0, 50.0, 10)])
+        s_v = Stroke([StrokePoint(100.0, 30.0, 20), StrokePoint(100.0, 70.0, 30)])
+        s_b = Stroke([StrokePoint(80.0, 85.0, 40), StrokePoint(120.0, 85.0, 50)])
+        res = GeometricMathParser.parse([s_h, s_v, s_b])
+        assert res == r"\pm"
+
+    def test_parse_delta_triangle_symbol(self):
+        from src.services.smart_ink_ocr import GeometricMathParser, Stroke, StrokePoint
+        # Single-stroke closed triangle
+        s_tri = Stroke([
+            StrokePoint(100.0, 200.0, 0),
+            StrokePoint(150.0, 100.0, 10),
+            StrokePoint(200.0, 200.0, 20),
+            StrokePoint(100.0, 200.0, 30),
+        ])
+        res_single = GeometricMathParser.parse([s_tri])
+        assert res_single == r"\Delta"
+
+        # 3-stroke tent triangle (base bar + 2 diagonal lines)
+        s_base = Stroke([StrokePoint(100.0, 200.0, 40), StrokePoint(200.0, 200.0, 50)])
+        s_leg_pos = Stroke([StrokePoint(100.0, 200.0, 60), StrokePoint(150.0, 100.0, 70)])
+        s_leg_neg = Stroke([StrokePoint(150.0, 100.0, 80), StrokePoint(200.0, 200.0, 90)])
+        res_multi = GeometricMathParser.parse([s_base, s_leg_pos, s_leg_neg])
+        assert res_multi == r"\Delta"
+
 
 
 class TestApplicationCommandLine:

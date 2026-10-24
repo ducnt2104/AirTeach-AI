@@ -302,12 +302,19 @@ class GeometricMathParser:
         angle_deg = (angle_deg + 90) % 180 - 90  # range [-90, 90]
 
         # 0. Dot / decimal point / multiplication dot
-        if max(w, h) < 14.0 or arc_len < 16.0:
+        if max(w, h) <= 8.0 or (arc_len <= 10.0 and max(w, h) <= 12.0):
             return _MathToken(".", xmin, ymin, xmax, ymax, cx, cy)
 
-        # 1. Closed loop: 0, o, O
+        # 1. Closed loop: 0, o, O vs \Delta (triangle)
         if is_closed or (w / h > 0.55 and w / h < 1.8 and chord_len / max(arc_len, 1e-4) < 0.35):
-            # Check if it has a figure-8 self-intersection
+            pts_f32 = pts.astype(np.float32)
+            contour_area = abs(cv2.contourArea(pts_f32))
+            perim = cv2.arcLength(pts_f32, closed=True)
+            if perim > 1e-4:
+                circularity = (4.0 * np.pi * contour_area) / (perim * perim)
+                approx = cv2.approxPolyDP(pts_f32, 0.07 * perim, closed=True)
+                if len(approx) == 3 or (circularity < 0.68 and len(approx) <= 4):
+                    return _MathToken(r"\Delta", xmin, ymin, xmax, ymax, cx, cy)
             return _MathToken("0", xmin, ymin, xmax, ymax, cx, cy)
 
         # 2. Chevrons < and > (sharp apex angle < 110 deg)
@@ -351,11 +358,11 @@ class GeometricMathParser:
             if abs_ang < 25.0:
                 # Horizontal line (minus, fraction bar, or = component)
                 return _MathToken("HORIZ_BAR", xmin, ymin, xmax, ymax, cx, cy)
-            elif abs_ang > 65.0:
+            elif abs_ang > 70.0:
                 # Vertical line (1, |, or + component)
                 return _MathToken("VERT_BAR", xmin, ymin, xmax, ymax, cx, cy)
-            elif 30.0 <= abs_ang <= 60.0:
-                # Diagonal line (/ or component of \times or x)
+            elif 25.0 <= abs_ang <= 70.0:
+                # Diagonal line (/ or component of \times, x, or \Delta)
                 sym = "DIAG_POS" if angle_deg > 0 else "DIAG_NEG"
                 return _MathToken(sym, xmin, ymin, xmax, ymax, cx, cy)
 
@@ -401,6 +408,110 @@ class GeometricMathParser:
         fused: list[_MathToken] = []
         used = set()
         n = len(tokens)
+
+        # Pass 0.1: Division sign \div (1 HORIZ_BAR + 2 dots: one above, one below)
+        for i in range(n):
+            if i in used or tokens[i].symbol != "HORIZ_BAR":
+                continue
+            th = tokens[i]
+            w_bar = max(th.xmax - th.xmin, 1.0)
+            dot_above = None
+            dot_below = None
+            for j in range(n):
+                if j == i or j in used or tokens[j].symbol != ".":
+                    continue
+                tj = tokens[j]
+                if abs(tj.cx - th.cx) <= 0.45 * w_bar:
+                    if tj.cy < th.ymin and (th.ymin - tj.cy) <= 3.0 * w_bar:
+                        dot_above = j
+                    elif tj.cy > th.ymax and (tj.cy - th.ymax) <= 3.0 * w_bar:
+                        dot_below = j
+            if dot_above is not None and dot_below is not None:
+                d_top = tokens[dot_above]
+                d_bot = tokens[dot_below]
+                div_token = _MathToken(
+                    r"\div",
+                    min(th.xmin, d_top.xmin, d_bot.xmin),
+                    min(th.ymin, d_top.ymin, d_bot.ymin),
+                    max(th.xmax, d_top.xmax, d_bot.xmax),
+                    max(th.ymax, d_top.ymax, d_bot.ymax),
+                    th.cx,
+                    th.cy,
+                )
+                fused.append(div_token)
+                used.add(i)
+                used.add(dot_above)
+                used.add(dot_below)
+
+        # Pass 0.2: Plus-minus \pm (1 VERT_BAR + 2 HORIZ_BARs: one crossing, one underneath)
+        for i in range(n):
+            if i in used or tokens[i].symbol != "VERT_BAR":
+                continue
+            tv = tokens[i]
+            h_v = max(tv.ymax - tv.ymin, 1.0)
+            crossing_bars = []
+            below_bars = []
+            for j in range(n):
+                if j == i or j in used or tokens[j].symbol != "HORIZ_BAR":
+                    continue
+                th = tokens[j]
+                if abs(th.cx - tv.cx) <= 0.5 * max(h_v, th.xmax - th.xmin):
+                    if abs(th.cy - tv.cy) <= 0.35 * h_v:
+                        crossing_bars.append(j)
+                    elif th.cy > tv.cy + 0.3 * h_v:
+                        below_bars.append(j)
+            if crossing_bars and below_bars:
+                j_cross = crossing_bars[0]
+                j_below = below_bars[0]
+                th_c = tokens[j_cross]
+                th_b = tokens[j_below]
+                pm_token = _MathToken(
+                    r"\pm",
+                    min(tv.xmin, th_c.xmin, th_b.xmin),
+                    min(tv.ymin, th_c.ymin, th_b.ymin),
+                    max(tv.xmax, th_c.xmax, th_b.xmax),
+                    max(tv.ymax, th_c.ymax, th_b.ymax),
+                    tv.cx,
+                    (tv.cy + th_b.cy) / 2.0,
+                )
+                fused.append(pm_token)
+                used.add(i)
+                used.add(j_cross)
+                used.add(j_below)
+
+        # Pass 0.3: Triangle \Delta (1 base HORIZ_BAR + 2 diagonal lines meeting at apex)
+        for i in range(n):
+            if i in used or tokens[i].symbol != "HORIZ_BAR":
+                continue
+            th = tokens[i]
+            pos_legs = []
+            neg_legs = []
+            for j in range(n):
+                if j == i or j in used:
+                    continue
+                if tokens[j].symbol == "DIAG_POS" and tokens[j].cy < th.cy:
+                    pos_legs.append(j)
+                elif tokens[j].symbol == "DIAG_NEG" and tokens[j].cy < th.cy:
+                    neg_legs.append(j)
+            if pos_legs and neg_legs:
+                j_pos = pos_legs[0]
+                j_neg = neg_legs[0]
+                tp = tokens[j_pos]
+                tn = tokens[j_neg]
+                if abs(tp.cx - tn.cx) <= 0.6 * (th.xmax - th.xmin):
+                    delta_token = _MathToken(
+                        r"\Delta",
+                        min(th.xmin, tp.xmin, tn.xmin),
+                        min(th.ymin, tp.ymin, tn.ymin),
+                        max(th.xmax, tp.xmax, tn.xmax),
+                        max(th.ymax, tp.ymax, tn.ymax),
+                        th.cx,
+                        (th.cy + min(tp.ymin, tn.ymin)) / 2.0,
+                    )
+                    fused.append(delta_token)
+                    used.add(i)
+                    used.add(j_pos)
+                    used.add(j_neg)
 
         # Pass 1: Look for 3-stroke symbol Pi (pi): 1 HORIZ_BAR + 2 VERT_BAR / '1' underneath
         for i in range(n):
@@ -641,7 +752,7 @@ class GeometricMathParser:
                     continue
 
             # Spacing between operator and operands
-            if sym in ("+", "-", "=", r"\times", r"\div", "<", ">", r"\leq", r"\geq", r"\neq"):
+            if sym in ("+", "-", "=", r"\times", r"\div", "<", ">", r"\leq", r"\geq", r"\neq", r"\pm"):
                 parts.append(f" {sym} ")
             elif parts and parts[-1].endswith(" "):
                 parts.append(sym)

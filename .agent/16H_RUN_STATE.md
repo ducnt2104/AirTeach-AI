@@ -9,7 +9,7 @@
 - **Global Architectural Policy Compliance**:
   - `RULE[AGENTS.md]` Zero Mock Data Policy: **100% COMPLIANT** (0 mock coordinates, 0 dummy users, 0 static dummy strings, 100% authentic mathematical, physical, chemical, biological, astronomical, and algorithmic implementations).
   - Zero UI Thread Blocking Policy: **100% COMPLIANT** (All heavy processing separated into QThreads, QRunnables, and QThreadPool with Qt Signals/Slots).
-  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,508 automated tests passing 100% across all suites; zero test failures).
+  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,511 automated tests passing 100% across all suites; zero test failures).
 
 ---
 
@@ -177,6 +177,25 @@
   - Total passing tests raised from 1,483 to **1,487 passed tests (100% pass rate across 108 test suites)**.
 
 
+### Milestone 178: Geometric Math Formula Parser Expansion (`\Delta`, `\div`, `\pm`) & Multi-Stroke Fusion
+- **Mathematical Symbol Classification & Closed-Loop Disambiguation (`\Delta` vs `0`)**:
+  - Implemented circularity analysis ($C = \frac{4\pi \cdot \text{Area}}{\text{Perimeter}^2}$) and polygon approximation (`cv2.approxPolyDP`) in `GeometricMathParser._classify_single_stroke` (`src/services/smart_ink_ocr.py`).
+  - Successfully disambiguated triangle strokes ($C \approx 0.60$, 3 vertices) as `\Delta` (quadratic discriminant / delta operator) from circular loops ($C \approx 1.00$, $\ge 4$ vertices) representing `0` or `O`.
+- **Multi-Stroke Operator Fusion (`\div`, `\pm`, 3-Stroke `\Delta`)**:
+  - Added Pass 0.1 for division symbol `\div`: detects 1 horizontal bar with 1 dot strictly above and 1 dot strictly below within proximity bounds, preventing misclassification as dot fractions.
+  - Added Pass 0.2 for plus-minus symbol `\pm`: detects 1 vertical bar intersected by a crossing horizontal bar with a second horizontal bar positioned directly underneath.
+  - Added Pass 0.3 for 3-stroke tent triangle `\Delta`: detects 1 base horizontal bar with positive and negative diagonal legs meeting at the apex.
+  - Refined dot classification boundaries (`max(w, h) <= 8.0`) and diagonal line angle intervals (`25.0 <= abs_ang <= 70.0`) to prevent short fraction numerators from being misidentified as dots.
+  - Added `\pm` to operator spacing table in `_build_sub_expr`.
+- **Test Suite Verification**:
+  - Added 3 unit tests in `TestGeometricMathParser` (`tests/test_services_and_storage.py`):
+    - `test_parse_division_symbol`
+    - `test_parse_plus_minus_symbol`
+    - `test_parse_delta_triangle_symbol`
+  - Total passing tests raised from 1,508 to **1,511 passed tests (100% pass rate across 108 test suites)**.
+
+---
+
 ### Milestone 177: Geometric Shape Serialization & High-Fidelity Lesson Presentation Export
 - **SnappedShape Dual-Directional JSON Serialization (`to_dict` / `from_dict`)**:
   - Implemented `SnappedShape.to_dict() -> dict` in `src/core/stroke_beautifier.py` converting numpy arrays (`render_points`, polygon vertices, bounding boxes) and floating-point scalars into standard JSON serializable data structures.
@@ -283,8 +302,8 @@
 
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **108 Test Suites**
-- **Total Passing Tests**: **1,508 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1508 passed (100%)**
+- **Total Passing Tests**: **1,511 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1511 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
