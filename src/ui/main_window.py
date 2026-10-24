@@ -3512,9 +3512,7 @@ class MainWindow(QMainWindow):
                     last_dist = getattr(self, "_last_bimanual_pinch_dist", None)
                     if last_dist is not None and last_dist > 0.001:
                         delta = dist - last_dist
-                        if abs(delta) > 0.008:
-                            scale_factor = 1.0 + delta * 2.2
-                            self._zoom_ctrl.set_zoom_factor(self._zoom_ctrl.zoom_factor() * scale_factor)
+                        self._zoom_ctrl.apply_pinch_delta(delta)
                     self._last_bimanual_pinch_dist = dist
                     for h in hands:
                         self._finalize_hand_stroke(h.track_id)

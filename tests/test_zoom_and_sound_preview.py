@@ -240,6 +240,90 @@ def test_canvas_zoom_controller_wheel_event_filtering(qapp):
     assert ctrl.zoom_factor() > initial_zoom
 
 
+def test_canvas_zoom_apply_pinch_delta_deadband_and_clamping(qapp):
+    """Verify apply_pinch_delta deadband, velocity clamping, and limits."""
+    scene = QGraphicsScene(0, 0, 1920, 1080)
+    view = QGraphicsView(scene)
+    ctrl = CanvasZoomController(view, scene)
+    assert ctrl.zoom_factor() == 1.0
+
+    # Deadband check: delta below 0.006 should be ignored
+    z_deadband = ctrl.apply_pinch_delta(0.003)
+    assert z_deadband == 1.0
+
+    z_deadband_neg = ctrl.apply_pinch_delta(-0.004)
+    assert z_deadband_neg == 1.0
+
+    # Normal delta check: positive delta zooms in smoothly
+    z_zoomed = ctrl.apply_pinch_delta(0.02)
+    assert z_zoomed > 1.0
+
+    # Extreme positive delta (e.g. +0.8 teleport) should be clamped safely to max_step (12%)
+    ctrl.reset_zoom()
+    z_before = ctrl.zoom_factor()
+    z_after = ctrl.apply_pinch_delta(0.8)
+    assert z_after <= z_before * 1.121
+    assert z_after > z_before
+
+    # Extreme negative delta (e.g. -0.8 teleport) should be clamped safely to 1.0 - max_step (88%)
+    ctrl.reset_zoom()
+    z_before = ctrl.zoom_factor()
+    z_after = ctrl.apply_pinch_delta(-0.8)
+    assert z_after >= z_before * 0.879
+    assert z_after < z_before
+
+
+def test_canvas_zoom_pan_by_anti_teleport_clamping(qapp):
+    """Verify pan_by ignores micro-jitters (<1px) and clamps massive teleport offsets."""
+    scene = QGraphicsScene(0, 0, 1920, 1080)
+    view = QGraphicsView(scene)
+    view.resize(800, 600)
+    view.show()
+
+    ctrl = CanvasZoomController(view, scene)
+    h_bar = view.horizontalScrollBar()
+    v_bar = view.verticalScrollBar()
+    h_bar.setRange(0, 1000)
+    v_bar.setRange(0, 1000)
+    h_bar.setValue(500)
+    v_bar.setValue(500)
+
+    # Micro-movement deadband (< 1.0 px)
+    ctrl.pan_by(0.4, -0.3)
+    assert h_bar.value() == 500
+    assert v_bar.value() == 500
+
+    # Normal pan
+    ctrl.pan_by(20.0, 15.0)
+    assert h_bar.value() == 480
+    assert v_bar.value() == 485
+
+    # Extreme teleport pan: 2000px displacement clamped to max_pan_step=120px
+    ctrl.pan_by(2000.0, -3000.0)
+    assert h_bar.value() == 480 - 120
+    assert v_bar.value() == 485 + 120
+
+
+def test_canvas_zoom_fit_to_width_and_height(qapp):
+    """Verify fit_to_width and fit_to_height correctly scale to viewport dimensions."""
+    scene = QGraphicsScene(0, 0, 1920, 1080)
+    view = QGraphicsView(scene)
+    view.resize(960, 540)
+    view.show()
+
+    ctrl = CanvasZoomController(view, scene)
+
+    # Fit width
+    fw = ctrl.fit_to_width(margin=0.0)
+    assert MIN_ZOOM_FACTOR <= fw <= MAX_ZOOM_FACTOR
+    assert ctrl.zoom_factor() == fw
+
+    # Fit height
+    fh = ctrl.fit_to_height(margin=0.0)
+    assert MIN_ZOOM_FACTOR <= fh <= MAX_ZOOM_FACTOR
+    assert ctrl.zoom_factor() == fh
+
+
 # ── 4. MainWindow Zoom & Pan Integration Tests ────────────────────────────────
 
 

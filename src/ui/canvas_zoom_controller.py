@@ -265,7 +265,7 @@ class CanvasZoomController(QObject):
         new_zoom = max(MIN_ZOOM_FACTOR, self._zoom_factor * step)
         return self.set_zoom_factor(new_zoom)
 
-    def set_zoom_factor(self, factor: float) -> float:
+    def set_zoom_factor(self, factor: float, play_sound: bool = True) -> float:
         """Set absolute zoom factor, clamped to [MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR]."""
         clamped = max(MIN_ZOOM_FACTOR, min(MAX_ZOOM_FACTOR, float(factor)))
         if abs(clamped - self._zoom_factor) < 0.001:
@@ -281,13 +281,39 @@ class CanvasZoomController(QObject):
             self._minimap.update_viewport()
 
         # Trigger acoustic click feedback
-        try:
-            from src.utils.audio_feedback import AudioFeedbackManager
-            AudioFeedbackManager.instance().play_click()
-        except Exception:
-            pass
+        if play_sound:
+            try:
+                from src.utils.audio_feedback import AudioFeedbackManager
+                AudioFeedbackManager.instance().play_click()
+            except Exception:
+                pass
 
         return self._zoom_factor
+
+    def apply_pinch_delta(self, delta: float, sensitivity: float = 1.8, max_step: float = 0.12) -> float:
+        """
+        Apply incremental normalized distance delta from bimanual gesture with velocity clamping
+        and sound-flood prevention.
+
+        Args:
+            delta: Normalized distance change (dist - last_dist).
+            sensitivity: Multiplier for normalized distance delta.
+            max_step: Maximum fractional change in zoom factor allowed per frame (e.g., 0.12 = 12%).
+
+        Returns:
+            Updated zoom factor.
+        """
+        # Deadband to suppress sensor tremor
+        if abs(delta) < 0.006:
+            return self._zoom_factor
+
+        # Clamp raw delta to prevent single-frame tracking teleports
+        clamped_delta = max(-0.06, min(0.06, float(delta)))
+        raw_scale = 1.0 + clamped_delta * sensitivity
+
+        # Enforce strict ratio bounds around 1.0
+        scale_ratio = max(1.0 - max_step, min(1.0 + max_step, raw_scale))
+        return self.set_zoom_factor(self._zoom_factor * scale_ratio, play_sound=False)
 
     def reset_zoom(self) -> None:
         """Reset view transformation back to fit the entire scene (100%)."""
@@ -307,14 +333,34 @@ class CanvasZoomController(QObject):
         except Exception:
             pass
 
-    def pan_by(self, dx: float, dy: float) -> None:
-        """Pan view scrollbars by offset delta (in viewport pixels)."""
+    def fit_to_width(self, margin: float = 20.0) -> float:
+        """Fit scene width to viewport width, clamping within [MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR]."""
+        scene_rect = self._scene.sceneRect()
+        vw = max(100.0, float(self._view.viewport().width()) - margin * 2.0)
+        sw = max(100.0, float(scene_rect.width()))
+        target_factor = vw / sw
+        return self.set_zoom_factor(target_factor)
+
+    def fit_to_height(self, margin: float = 20.0) -> float:
+        """Fit scene height to viewport height, clamping within [MIN_ZOOM_FACTOR, MAX_ZOOM_FACTOR]."""
+        scene_rect = self._scene.sceneRect()
+        vh = max(100.0, float(self._view.viewport().height()) - margin * 2.0)
+        sh = max(100.0, float(scene_rect.height()))
+        target_factor = vh / sh
+        return self.set_zoom_factor(target_factor)
+
+    def pan_by(self, dx: float, dy: float, max_pan_step: float = 120.0) -> None:
+        """Pan view scrollbars by offset delta (in viewport pixels) with anti-teleport clamping."""
+        if abs(dx) < 1.0 and abs(dy) < 1.0:
+            return
+        clamped_dx = max(-max_pan_step, min(max_pan_step, float(dx)))
+        clamped_dy = max(-max_pan_step, min(max_pan_step, float(dy)))
         h_bar = self._view.horizontalScrollBar()
         v_bar = self._view.verticalScrollBar()
         if h_bar:
-            h_bar.setValue(int(h_bar.value() - dx))
+            h_bar.setValue(int(h_bar.value() - clamped_dx))
         if v_bar:
-            v_bar.setValue(int(v_bar.value() - dy))
+            v_bar.setValue(int(v_bar.value() - clamped_dy))
         if hasattr(self, "_minimap") and self._minimap and self._minimap.isVisible():
             self._minimap.update_viewport()
 

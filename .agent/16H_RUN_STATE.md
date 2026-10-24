@@ -9,7 +9,7 @@
 - **Global Architectural Policy Compliance**:
   - `RULE[AGENTS.md]` Zero Mock Data Policy: **100% COMPLIANT** (0 mock coordinates, 0 dummy users, 0 static dummy strings, 100% authentic mathematical, physical, chemical, biological, astronomical, and algorithmic implementations).
   - Zero UI Thread Blocking Policy: **100% COMPLIANT** (All heavy processing separated into QThreads, QRunnables, and QThreadPool with Qt Signals/Slots).
-  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,500 automated tests passing 100% across all suites; zero test failures).
+  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,503 automated tests passing 100% across all suites; zero test failures).
 
 ---
 
@@ -177,6 +177,27 @@
   - Total passing tests raised from 1,483 to **1,487 passed tests (100% pass rate across 108 test suites)**.
 
 
+### Milestone 176: Touchless Bimanual Pinch-to-Zoom Velocity Clamping, Anti-Teleport Panning & Viewport Fit Architecture
+- **Canvas Zoom Velocity Clamping & Acoustic Flood Prevention (`apply_pinch_delta`)**:
+  - Implemented `CanvasZoomController.apply_pinch_delta(delta, sensitivity=1.8, max_step=0.12) -> float`.
+  - Added built-in tremor deadband (`abs(delta) < 0.006`) eliminating micro-fluctuations and unnecessary scene updates.
+  - Added velocity clamping (`clamped_delta = max(-0.06, min(0.06, delta))`) preventing sudden explosive scaling jumps during tracking teleports.
+  - Added ratio bounding (`scale_ratio = max(1.0 - max_step, min(1.0 + max_step, raw_scale))`) guaranteeing strictly positive, monotonic scaling factors per frame.
+  - Added optional `play_sound: bool = True` parameter to `set_zoom_factor()` to suppress 30 fps audio click flooding during continuous in-air bimanual gestures.
+- **Anti-Teleport Touchless Air Panning & Framing Presets**:
+  - Enhanced `CanvasZoomController.pan_by(dx, dy, max_pan_step=120.0)` with sub-pixel deadband (`< 1.0 px`) and maximum single-frame displacement clamping, eliminating catastrophic view shifts when hands exit/re-enter tracking.
+  - Implemented `fit_to_width(margin=20.0)` and `fit_to_height(margin=20.0)` on `CanvasZoomController` for instant responsive canvas framing to wide/portrait presentation content.
+- **MainWindow Bimanual Pipeline Integration**:
+  - Replaced raw, unbounded scale multiplier in `MainWindow._on_multi_gesture_event()` with `_zoom_ctrl.apply_pinch_delta(delta)`.
+- **Test Suite Verification**:
+  - Added 3 unit tests in `tests/test_zoom_and_sound_preview.py`:
+    - `test_canvas_zoom_apply_pinch_delta_deadband_and_clamping`
+    - `test_canvas_zoom_pan_by_anti_teleport_clamping`
+    - `test_canvas_zoom_fit_to_width_and_height`
+  - Total passing tests raised from 1,500 to **1,503 passed tests (100% pass rate across 108 test suites)**.
+
+---
+
 ### Milestone 175: Floating Action Menu Programmability, Multi-Hand Coordinator Reset & Independent Mode Role Enforcement
 - **Floating Action Menu Dynamic Extensions & State Inspection**:
   - Implemented `@property is_active -> bool`, `@property current_menu_id -> str`, and `@property items -> list[MenuItem]` to provide read access for state machines and UI coordination.
@@ -237,8 +258,8 @@
 
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **108 Test Suites**
-- **Total Passing Tests**: **1,500 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1500 passed (100%)**
+- **Total Passing Tests**: **1,503 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1503 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
