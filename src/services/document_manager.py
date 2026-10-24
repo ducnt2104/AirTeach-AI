@@ -64,6 +64,8 @@ class StrokeRecord:
     bezier_segments: list[dict] = field(default_factory=list)   # BezierSegment.to_dict()
     timestamps_ms: list[float] = field(default_factory=list)    # per-point timestamp array
     shape_type: str = "FREEFORM"
+    shape_params: dict = field(default_factory=dict)
+    snap_confidence: float = 0.0
 
 
 @dataclass
@@ -640,29 +642,68 @@ class DocumentManager:
 
             # 1. Draw ink strokes
             for stroke in stroke_by_page.get(page_idx, []):
-                eval_pts: list[tuple[int, int]] = []
-                if stroke.bezier_segments:
-                    for b in stroke.bezier_segments:
-                        p0 = np.array(b["p0"], dtype=np.float64)
-                        p1 = np.array(b["p1"], dtype=np.float64)
-                        p2 = np.array(b["p2"], dtype=np.float64)
-                        p3 = np.array(b["p3"], dtype=np.float64)
-                        for t in np.linspace(0.0, 1.0, 8):
-                            u = 1.0 - t
-                            pt = u**3 * p0 + 3 * u**2 * t * p1 + 3 * u * t**2 * p2 + t**3 * p3
-                            ix = int(round((pt[0] - ox) / scale_factor))
-                            iy = int(round((pt[1] - oy) / scale_factor))
-                            eval_pts.append((ix, iy))
-                elif stroke.points:
-                    for p in stroke.points:
-                        ix = int(round((p.x - ox) / scale_factor))
-                        iy = int(round((p.y - oy) / scale_factor))
-                        eval_pts.append((ix, iy))
-
                 color_bgr = _hex_to_bgr(stroke.color_hex)
                 thickness = max(1, int(round(stroke.width / scale_factor)))
-                for j in range(1, len(eval_pts)):
-                    _cv2.line(bgr, eval_pts[j - 1], eval_pts[j], color_bgr, thickness, _cv2.LINE_AA)
+                st = stroke.shape_type.upper()
+                sp = getattr(stroke, "shape_params", {}) or {}
+                rendered_geometric = False
+
+                if st == "LINE" and "start" in sp and "end" in sp:
+                    p_start = (int(round((sp["start"][0] - ox) / scale_factor)), int(round((sp["start"][1] - oy) / scale_factor)))
+                    p_end = (int(round((sp["end"][0] - ox) / scale_factor)), int(round((sp["end"][1] - oy) / scale_factor)))
+                    _cv2.line(bgr, p_start, p_end, color_bgr, thickness, _cv2.LINE_AA)
+                    rendered_geometric = True
+                elif st == "ARROW" and ("shaft_start" in sp or "start" in sp) and ("tip" in sp or "end" in sp):
+                    s_pt = sp.get("shaft_start", sp.get("start"))
+                    e_pt = sp.get("tip", sp.get("end"))
+                    p_start = (int(round((s_pt[0] - ox) / scale_factor)), int(round((s_pt[1] - oy) / scale_factor)))
+                    p_end = (int(round((e_pt[0] - ox) / scale_factor)), int(round((e_pt[1] - oy) / scale_factor)))
+                    _cv2.arrowedLine(bgr, p_start, p_end, color_bgr, thickness, _cv2.LINE_AA, tipLength=0.2)
+                    rendered_geometric = True
+                elif st == "CIRCLE" and "center" in sp and "radius" in sp:
+                    cx = int(round((sp["center"][0] - ox) / scale_factor))
+                    cy = int(round((sp["center"][1] - oy) / scale_factor))
+                    r = max(1, int(round(sp["radius"] / scale_factor)))
+                    _cv2.circle(bgr, (cx, cy), r, color_bgr, thickness, _cv2.LINE_AA)
+                    rendered_geometric = True
+                elif st == "ELLIPSE" and "center" in sp:
+                    cx = int(round((sp["center"][0] - ox) / scale_factor))
+                    cy = int(round((sp["center"][1] - oy) / scale_factor))
+                    rx = max(1, int(round(sp.get("semi_major", 40.0) / scale_factor)))
+                    ry = max(1, int(round(sp.get("semi_minor", 20.0) / scale_factor)))
+                    angle = float(sp.get("angle_deg", 0.0))
+                    _cv2.ellipse(bgr, (cx, cy), (rx, ry), angle, 0, 360, color_bgr, thickness, _cv2.LINE_AA)
+                    rendered_geometric = True
+                elif st in ("RECTANGLE", "TRIANGLE") and "corners" in sp and len(sp["corners"]) >= 3:
+                    pts_poly = np.array([
+                        [int(round((c[0] - ox) / scale_factor)), int(round((c[1] - oy) / scale_factor))]
+                        for c in sp["corners"]
+                    ], dtype=np.int32)
+                    _cv2.polylines(bgr, [pts_poly], isClosed=True, color=color_bgr, thickness=thickness, lineType=_cv2.LINE_AA)
+                    rendered_geometric = True
+
+                if not rendered_geometric:
+                    eval_pts: list[tuple[int, int]] = []
+                    if stroke.bezier_segments:
+                        for b in stroke.bezier_segments:
+                            p0 = np.array(b["p0"], dtype=np.float64)
+                            p1 = np.array(b["p1"], dtype=np.float64)
+                            p2 = np.array(b["p2"], dtype=np.float64)
+                            p3 = np.array(b["p3"], dtype=np.float64)
+                            for t in np.linspace(0.0, 1.0, 8):
+                                u = 1.0 - t
+                                pt = u**3 * p0 + 3 * u**2 * t * p1 + 3 * u * t**2 * p2 + t**3 * p3
+                                ix = int(round((pt[0] - ox) / scale_factor))
+                                iy = int(round((pt[1] - oy) / scale_factor))
+                                eval_pts.append((ix, iy))
+                    elif stroke.points:
+                        for p in stroke.points:
+                            ix = int(round((p.x - ox) / scale_factor))
+                            iy = int(round((p.y - oy) / scale_factor))
+                            eval_pts.append((ix, iy))
+
+                    for j in range(1, len(eval_pts)):
+                        _cv2.line(bgr, eval_pts[j - 1], eval_pts[j], color_bgr, thickness, _cv2.LINE_AA)
 
             # 2. Render recognized items (LaTeX formulas, text labels)
             for rec in recognized_by_page.get(page_idx, []):
@@ -794,6 +835,8 @@ def _stroke_to_dict(s: StrokeRecord) -> dict:
         "color_hex": s.color_hex,
         "width": s.width,
         "shape_type": s.shape_type,
+        "shape_params": s.shape_params,
+        "snap_confidence": s.snap_confidence,
         "points": [
             {"x": p.x, "y": p.y, "t_ms": p.t_ms, "pressure": p.pressure}
             for p in s.points
@@ -816,6 +859,8 @@ def _dict_to_stroke(d: dict) -> StrokeRecord:
         color_hex=d["color_hex"],
         width=d["width"],
         shape_type=d.get("shape_type", "FREEFORM"),
+        shape_params=d.get("shape_params", {}),
+        snap_confidence=float(d.get("snap_confidence", 0.0)),
         points=points,
         bezier_segments=d.get("bezier_segments", []),
         timestamps_ms=d.get("timestamps_ms", []),

@@ -9,7 +9,7 @@
 - **Global Architectural Policy Compliance**:
   - `RULE[AGENTS.md]` Zero Mock Data Policy: **100% COMPLIANT** (0 mock coordinates, 0 dummy users, 0 static dummy strings, 100% authentic mathematical, physical, chemical, biological, astronomical, and algorithmic implementations).
   - Zero UI Thread Blocking Policy: **100% COMPLIANT** (All heavy processing separated into QThreads, QRunnables, and QThreadPool with Qt Signals/Slots).
-  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,503 automated tests passing 100% across all suites; zero test failures).
+  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,508 automated tests passing 100% across all suites; zero test failures).
 
 ---
 
@@ -177,6 +177,31 @@
   - Total passing tests raised from 1,483 to **1,487 passed tests (100% pass rate across 108 test suites)**.
 
 
+### Milestone 177: Geometric Shape Serialization & High-Fidelity Lesson Presentation Export
+- **SnappedShape Dual-Directional JSON Serialization (`to_dict` / `from_dict`)**:
+  - Implemented `SnappedShape.to_dict() -> dict` in `src/core/stroke_beautifier.py` converting numpy arrays (`render_points`, polygon vertices, bounding boxes) and floating-point scalars into standard JSON serializable data structures.
+  - Implemented `SnappedShape.from_dict(cls, data: dict) -> SnappedShape` with graceful fallback for unrecognized shape types and reconstruction of numpy geometry arrays.
+- **StrokeRecord Geometric Metadata Enhancement**:
+  - Enhanced `StrokeRecord` in `src/services/document_manager.py` with `shape_params: dict` and `snap_confidence: float` fields.
+  - Updated `_stroke_to_dict` and `_dict_to_stroke` serialization routines in `DocumentManager` to fully persist geometric shape data in `ink/strokes.json` within `.airteach` lesson bundles.
+- **High-Fidelity Document & Slide Export (`export_annotated_pdf` / `export_annotated_pages`)**:
+  - Enhanced document export rendering pipeline to draw crisp, anti-aliased geometric primitives directly using OpenCV drawing APIs (`cv2.circle`, `cv2.line`, `cv2.arrowedLine`, `cv2.ellipse`, `cv2.polylines`) when strokes possess snapped geometric parameters.
+  - Maintained seamless fallback to Bézier spline interpolation and point polyline rendering for freeform strokes and unparameterized items.
+- **MainWindow Lesson Save/Open Pipeline Integration**:
+  - Synchronized `MainWindow` stroke export to populate `shape_params` and `snap_confidence` on all geometric strokes.
+  - Reconstructed `SnappedShape` items with precise geometric parameters upon opening saved `.airteach` lessons.
+- **Test Suite Verification**:
+  - Added 3 unit tests in `TestSnappedShapeSerialization` (`tests/test_core_algorithms.py`):
+    - `test_circle_serialization_roundtrip`
+    - `test_rectangle_and_line_serialization`
+    - `test_freeform_serialization`
+  - Added 2 unit tests in `TestDocumentManager` (`tests/test_services_and_storage.py`):
+    - `test_stroke_record_with_geometric_shapes_roundtrip`
+    - `test_export_annotated_pdf_with_geometric_shapes`
+  - Total passing tests raised from 1,503 to **1,508 passed tests (100% pass rate across 108 test suites)**.
+
+---
+
 ### Milestone 176: Touchless Bimanual Pinch-to-Zoom Velocity Clamping, Anti-Teleport Panning & Viewport Fit Architecture
 - **Canvas Zoom Velocity Clamping & Acoustic Flood Prevention (`apply_pinch_delta`)**:
   - Implemented `CanvasZoomController.apply_pinch_delta(delta, sensitivity=1.8, max_step=0.12) -> float`.
@@ -258,8 +283,8 @@
 
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **108 Test Suites**
-- **Total Passing Tests**: **1,503 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1503 passed (100%)**
+- **Total Passing Tests**: **1,508 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1508 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

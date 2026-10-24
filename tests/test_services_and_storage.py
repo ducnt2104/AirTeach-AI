@@ -25,6 +25,7 @@ import time
 import zipfile
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -1404,6 +1405,108 @@ class TestDocumentManager:
                 strokes=[],
                 output_pdf_path=tmp_dir / "fail.pdf",
             )
+
+    def test_stroke_record_with_geometric_shapes_roundtrip(self, tmp_dir: Path):
+        """Verify save_lesson and open_lesson preserve geometric shape parameters."""
+        dm = DocumentManager(work_root=tmp_dir / "work")
+        p1 = tmp_dir / "p1.png"
+        img = np.full((600, 800, 3), 255, dtype=np.uint8)
+        cv2.imwrite(str(p1), img)
+
+        strokes = [
+            StrokeRecord(
+                stroke_id="s_circle",
+                page_index=0,
+                color_hex="#ff0000",
+                width=3.0,
+                shape_type="CIRCLE",
+                shape_params={"center": [400, 300], "radius": 50},
+                snap_confidence=0.99,
+            ),
+            StrokeRecord(
+                stroke_id="s_rect",
+                page_index=0,
+                color_hex="#0000ff",
+                width=2.5,
+                shape_type="RECTANGLE",
+                shape_params={"corners": [[100, 100], [300, 100], [300, 200], [100, 200]]},
+                snap_confidence=0.95,
+            ),
+            StrokeRecord(
+                stroke_id="s_arrow",
+                page_index=0,
+                color_hex="#00ff00",
+                width=2.0,
+                shape_type="ARROW",
+                shape_params={"shaft_start": [50, 50], "tip": [200, 200]},
+                snap_confidence=0.92,
+            ),
+            StrokeRecord(
+                stroke_id="s_line",
+                page_index=0,
+                color_hex="#111111",
+                width=2.0,
+                shape_type="LINE",
+                shape_params={"start": [10, 500], "end": [700, 500]},
+                snap_confidence=0.98,
+            ),
+            StrokeRecord(
+                stroke_id="s_ellipse",
+                page_index=0,
+                color_hex="#990099",
+                width=2.0,
+                shape_type="ELLIPSE",
+                shape_params={"center": [600, 200], "semi_major": 80, "semi_minor": 40, "angle_deg": 30.0},
+                snap_confidence=0.94,
+            ),
+        ]
+
+        bundle = tmp_dir / "geom.airteach"
+        manifest = AirTeachManifest(title="Geometric Lesson", teacher_id="t_geom")
+        dm.save_lesson(bundle, manifest, [p1], strokes, [])
+        assert bundle.exists()
+
+        _, _, loaded_strokes, _ = dm.open_lesson(bundle)
+        assert len(loaded_strokes) == 5
+        circle_s = next(s for s in loaded_strokes if s.stroke_id == "s_circle")
+        assert circle_s.shape_type == "CIRCLE"
+        assert circle_s.shape_params["radius"] == 50
+        assert circle_s.snap_confidence == 0.99
+
+        rect_s = next(s for s in loaded_strokes if s.stroke_id == "s_rect")
+        assert rect_s.shape_type == "RECTANGLE"
+        assert len(rect_s.shape_params["corners"]) == 4
+
+    def test_export_annotated_pdf_with_geometric_shapes(self, tmp_dir: Path):
+        """Verify export_annotated_pdf and pages render geometric primitives cleanly."""
+        dm = DocumentManager(work_root=tmp_dir / "work")
+        p1 = tmp_dir / "bg.png"
+        img = np.full((800, 1000, 3), 240, dtype=np.uint8)
+        cv2.imwrite(str(p1), img)
+
+        strokes = [
+            StrokeRecord(stroke_id="1", page_index=0, color_hex="#ff0000", width=4.0,
+                         shape_type="CIRCLE", shape_params={"center": [300, 300], "radius": 80}),
+            StrokeRecord(stroke_id="2", page_index=0, color_hex="#00ff00", width=3.0,
+                         shape_type="ARROW", shape_params={"shaft_start": [50, 50], "tip": [250, 250]}),
+            StrokeRecord(stroke_id="3", page_index=0, color_hex="#0000ff", width=2.5,
+                         shape_type="RECTANGLE", shape_params={"corners": [[400, 100], [700, 100], [700, 300], [400, 300]]}),
+            StrokeRecord(stroke_id="4", page_index=0, color_hex="#333333", width=2.0,
+                         shape_type="LINE", shape_params={"start": [100, 600], "end": [800, 600]}),
+            StrokeRecord(stroke_id="5", page_index=0, color_hex="#ff8800", width=3.0,
+                         shape_type="ELLIPSE", shape_params={"center": [500, 500], "semi_major": 100, "semi_minor": 50, "angle_deg": 25}),
+        ]
+
+        out_pdf = tmp_dir / "geometric_export.pdf"
+        dm.export_annotated_pdf([p1], strokes, out_pdf)
+        assert out_pdf.exists()
+        assert out_pdf.stat().st_size > 1000
+
+        out_pages = dm.export_annotated_pages([p1], strokes, tmp_dir / "out_pages")
+        assert len(out_pages) == 1
+        assert out_pages[0].exists()
+        rendered = cv2.imread(str(out_pages[0]))
+        assert rendered.shape == (800, 1000, 3)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

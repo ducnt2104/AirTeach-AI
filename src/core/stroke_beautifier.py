@@ -390,6 +390,49 @@ class SnappedShape:
     def is_geometric(self) -> bool:
         return self.shape_type != ShapeType.FREEFORM
 
+    def to_dict(self) -> dict:
+        """Serialize SnappedShape to JSON-compatible dictionary."""
+        p_dict = {}
+        for k, v in self.params.items():
+            if isinstance(v, np.ndarray):
+                p_dict[k] = v.tolist()
+            elif isinstance(v, (np.floating, np.integer)):
+                p_dict[k] = float(v) if isinstance(v, np.floating) else int(v)
+            elif isinstance(v, (list, tuple)):
+                p_dict[k] = [
+                    [float(coord) for coord in elem] if isinstance(elem, (list, tuple, np.ndarray))
+                    else (float(elem) if isinstance(elem, (float, int, np.number)) else elem)
+                    for elem in v
+                ]
+            else:
+                p_dict[k] = v
+
+        return {
+            "shape_type": self.shape_type.name,
+            "params": p_dict,
+            "confidence": float(self.confidence),
+            "render_points": self.render_points.tolist() if self.render_points is not None else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> SnappedShape:
+        """Reconstruct SnappedShape from dictionary."""
+        st_name = data.get("shape_type", "FREEFORM")
+        try:
+            st = ShapeType[st_name]
+        except KeyError:
+            st = ShapeType.FREEFORM
+
+        raw_rp = data.get("render_points")
+        rp = np.asarray(raw_rp, dtype=np.float64) if raw_rp is not None else None
+
+        return cls(
+            shape_type=st,
+            params=data.get("params", {}),
+            confidence=float(data.get("confidence", 0.0)),
+            render_points=rp,
+        )
+
 
 class GeometricShapeSnapper:
     """

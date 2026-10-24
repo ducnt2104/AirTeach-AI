@@ -4248,7 +4248,11 @@ class MainWindow(QMainWindow):
             if shape_type_str and shape_type_str != "FREEFORM":
                 try:
                     st = ShapeType[shape_type_str]
-                    if getattr(rec, "points", None) and len(rec.points) >= 2:
+                    sp = getattr(rec, "shape_params", None)
+                    conf = float(getattr(rec, "snap_confidence", 1.0))
+                    if sp:
+                        snap = SnapResult(shape_type=st, params=sp, confidence=conf)
+                    elif getattr(rec, "points", None) and len(rec.points) >= 2:
                         pts = np.array([[p.x, p.y] for p in rec.points], dtype=np.float64)
                         snap = self._snapper.snap(pts)
                     else:
@@ -4337,6 +4341,8 @@ class MainWindow(QMainWindow):
                         pts.append(BezierPointRecord(x=float(last_seg.p3[0]), y=float(last_seg.p3[1]), t_ms=last_t))
                     seg_dicts = [seg.to_dict() for seg in ink.segments]
                     shape_str = ink.snap.shape_type.name if ink.snap else "FREEFORM"
+                    shape_params = ink.snap.to_dict()["params"] if (ink.snap and ink.snap.is_geometric()) else {}
+                    snap_conf = float(ink.snap.confidence) if ink.snap else 0.0
                     avg_w = float(np.mean(ink.widths)) if ink.widths else 2.5
                     stroke_records.append(StrokeRecord(
                         stroke_id=ink.stroke_id,
@@ -4347,6 +4353,8 @@ class MainWindow(QMainWindow):
                         bezier_segments=seg_dicts,
                         timestamps_ms=ink.timestamps_ms,
                         shape_type=shape_str,
+                        shape_params=shape_params,
+                        snap_confidence=snap_conf,
                     ))
             page_image_paths = [
                 Path(p.image_path) for p in getattr(self, "_pages", [])

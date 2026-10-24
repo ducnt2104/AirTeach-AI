@@ -981,3 +981,64 @@ class TestEndToEndStrokePipeline:
         assert result.shape_type in (ShapeType.CIRCLE, ShapeType.ELLIPSE), (
             f"Expected CIRCLE/ELLIPSE, got {result.shape_type.name}"
         )
+
+
+class TestSnappedShapeSerialization:
+    """Verify SnappedShape.to_dict and from_dict serialization across all geometric types."""
+
+    def test_circle_serialization_roundtrip(self):
+        shape = SnappedShape(
+            shape_type=ShapeType.CIRCLE,
+            params={"center": (250.0, 300.0), "radius": 75.5},
+            confidence=0.98,
+            render_points=np.array([[200.0, 300.0], [250.0, 375.0], [300.0, 300.0]]),
+        )
+        assert shape.is_geometric() is True
+        d = shape.to_dict()
+        assert d["shape_type"] == "CIRCLE"
+        assert d["confidence"] == 0.98
+        assert d["params"]["center"] == [250.0, 300.0]
+        assert d["params"]["radius"] == 75.5
+        assert isinstance(d["render_points"], list)
+
+        restored = SnappedShape.from_dict(d)
+        assert restored.shape_type == ShapeType.CIRCLE
+        assert restored.confidence == 0.98
+        assert restored.params["center"] == [250.0, 300.0]
+        assert restored.render_points is not None
+        assert restored.render_points.shape == (3, 2)
+
+    def test_rectangle_and_line_serialization(self):
+        corners = np.array([[10, 10], [100, 10], [100, 60], [10, 60]])
+        rect_shape = SnappedShape(
+            shape_type=ShapeType.RECTANGLE,
+            params={"corners": corners, "aspect_ratio": 1.8},
+            confidence=0.95,
+        )
+        d_rect = rect_shape.to_dict()
+        assert d_rect["shape_type"] == "RECTANGLE"
+        assert len(d_rect["params"]["corners"]) == 4
+
+        restored_rect = SnappedShape.from_dict(d_rect)
+        assert restored_rect.shape_type == ShapeType.RECTANGLE
+        assert restored_rect.confidence == 0.95
+
+        line_shape = SnappedShape(
+            shape_type=ShapeType.LINE,
+            params={"start": (0.0, 0.0), "end": (150.0, 200.0)},
+            confidence=0.99,
+        )
+        d_line = line_shape.to_dict()
+        restored_line = SnappedShape.from_dict(d_line)
+        assert restored_line.shape_type == ShapeType.LINE
+        assert restored_line.params["start"] == [0.0, 0.0]
+
+    def test_freeform_serialization(self):
+        ff = SnappedShape(shape_type=ShapeType.FREEFORM, confidence=0.0)
+        assert ff.is_geometric() is False
+        d = ff.to_dict()
+        assert d["shape_type"] == "FREEFORM"
+        assert d["params"] == {}
+        restored = SnappedShape.from_dict(d)
+        assert restored.shape_type == ShapeType.FREEFORM
+        assert restored.is_geometric() is False
