@@ -313,7 +313,10 @@ class InteractiveGeneticsPunnettItem(QGraphicsObject):
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
     def cleanup(self) -> None:
-        pass
+        """Cleans up internal state and clears cell caches."""
+        self._grid_cells.clear()
+        self._male_gametes.clear()
+        self._female_gametes.clear()
 
     def close(self) -> None:
         self.cleanup()

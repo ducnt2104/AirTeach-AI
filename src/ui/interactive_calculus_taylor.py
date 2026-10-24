@@ -300,7 +300,8 @@ class InteractiveCalculusTaylorItem(QGraphicsObject):
         self.stamp_requested.emit()
 
     def cleanup(self) -> None:
-        pass
+        """Cleans up internal state and UI interactive button rects."""
+        self._btn_rects.clear()
 
     # -------------------------------------------------------------------------
     # QGraphicsItem Overrides
