@@ -63,6 +63,12 @@ class TestChemicalFormulaFormatter:
         assert "O₂" in formatted
         assert "2H₂O" in formatted
 
+    def test_reaction_equation_arrows_and_unbraced_superscripts(self):
+        assert format_chemical_formula("N2 + 3H2 <=> 2NH3") == "N₂ + 3H₂ ⇌ 2NH₃"
+        assert format_chemical_formula("2H2 + O2 -> 2H2O") == "2H₂ + O₂ → 2H₂O"
+        assert format_chemical_formula("SO4^2-") == "SO₄²⁻"
+        assert format_chemical_formula("[Fe(CN)6]4-") == "[Fe(CN)₆]⁴⁻"
+
 
 # ─── 2. Math Vector Tools Tests ───────────────────────────────────────────────
 

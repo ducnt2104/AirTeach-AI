@@ -9,7 +9,7 @@
 - **Global Architectural Policy Compliance**:
   - `RULE[AGENTS.md]` Zero Mock Data Policy: **100% COMPLIANT** (0 mock coordinates, 0 dummy users, 0 static dummy strings, 100% authentic mathematical, physical, chemical, biological, astronomical, and algorithmic implementations).
   - Zero UI Thread Blocking Policy: **100% COMPLIANT** (All heavy processing separated into QThreads, QRunnables, and QThreadPool with Qt Signals/Slots).
-  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,511 automated tests passing 100% across all suites; zero test failures).
+  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,512 automated tests passing 100% across all suites; zero test failures).
 
 ---
 
@@ -177,6 +177,20 @@
   - Total passing tests raised from 1,483 to **1,487 passed tests (100% pass rate across 108 test suites)**.
 
 
+### Milestone 179: Chemical Reaction Formula & Equilibrium Arrows Unicode Standardization
+- **Chemical Formula Unicode Engine Enhancements (`format_chemical_formula`)**:
+  - Implemented automatic chemical reaction arrow replacement in `format_chemical_formula` (`src/ui/stem_tools.py`):
+    - Forward reaction arrows: `->` $\to$ `→` (U+2192 Rightwards Arrow)
+    - Dynamic equilibrium arrows: `<=>` $\to$ `⇌` (U+21CC Rightwards Harpoon Over Leftwards Harpoon)
+    - Reversible reaction arrows: `<->` $\to$ `⇄` (U+21C4 Rightwards Arrow Over Leftwards Arrow)
+  - Enhanced unbraced superscript parser: consecutive numeric and ionic charge characters (e.g., `SO4^2-`, `[Fe(CN)6]4-`, `Fe3+`) are now continuously parsed into valid superscript Unicode (`SO₄²⁻`, `[Fe(CN)₆]⁴⁻`, `Fe³⁺`) without requiring curly brace groups.
+  - Resolved trailing negative charge drop: charges following superscript digits (e.g. `^2-` or `^3+`) now correctly map to their superscript equivalents (`⁻`, `⁺`).
+- **Test Suite Verification**:
+  - Added unit test `test_reaction_equation_arrows_and_unbraced_superscripts` in `TestChemicalFormulaFormatter` (`tests/test_stem_and_tracking.py`).
+  - Total passing tests raised from 1,511 to **1,512 passed tests (100% pass rate across 108 test suites)**.
+
+---
+
 ### Milestone 178: Geometric Math Formula Parser Expansion (`\Delta`, `\div`, `\pm`) & Multi-Stroke Fusion
 - **Mathematical Symbol Classification & Closed-Loop Disambiguation (`\Delta` vs `0`)**:
   - Implemented circularity analysis ($C = \frac{4\pi \cdot \text{Area}}{\text{Perimeter}^2}$) and polygon approximation (`cv2.approxPolyDP`) in `GeometricMathParser._classify_single_stroke` (`src/services/smart_ink_ocr.py`).
@@ -302,8 +316,8 @@
 
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **108 Test Suites**
-- **Total Passing Tests**: **1,511 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1511 passed (100%)**
+- **Total Passing Tests**: **1,512 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1512 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

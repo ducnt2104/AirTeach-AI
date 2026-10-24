@@ -89,33 +89,37 @@ def format_chemical_formula(raw: str) -> str:
     """
     Convert raw chemical formulas into clean Unicode formatted formulas.
     E.g. H2SO4 -> H₂SO₄, Ca(OH)2 -> Ca(OH)₂, Cu2+ -> Cu²⁺, Fe3+ -> Fe³⁺, SO4^2- -> SO₄²⁻
+    N2 + 3H2 <=> 2NH3 -> N₂ + 3H₂ ⇌ 2NH₃
+    2H2 + O2 -> 2H2O  -> 2H₂ + O₂ → 2H₂O
     """
+    processed = raw.replace("<=>", "⇌").replace("<->", "⇄").replace("->", "→")
     result = []
     i = 0
-    n = len(raw)
+    n = len(processed)
     while i < n:
-        char = raw[i]
+        char = processed[i]
         if char == '^':
             # Superscript group
             i += 1
-            if i < n and raw[i] == '{':
+            if i < n and processed[i] == '{':
                 i += 1
-                while i < n and raw[i] != '}':
-                    result.append(_SUPERSCRIPT_MAP.get(raw[i], raw[i]))
+                while i < n and processed[i] != '}':
+                    result.append(_SUPERSCRIPT_MAP.get(processed[i], processed[i]))
                     i += 1
-                if i < n and raw[i] == '}':
+                if i < n and processed[i] == '}':
                     i += 1
-            elif i < n:
-                result.append(_SUPERSCRIPT_MAP.get(raw[i], raw[i]))
-                i += 1
+            else:
+                while i < n and (processed[i].isdigit() or processed[i] in ('+', '-', 'n', 'x', 'y')):
+                    result.append(_SUPERSCRIPT_MAP.get(processed[i], processed[i]))
+                    i += 1
         elif char.isdigit():
             # Check if this digit is followed by + or - (ionic charge e.g. 2+, 3-)
-            if i + 1 < n and raw[i + 1] in ('+', '-'):
+            if i + 1 < n and processed[i + 1] in ('+', '-'):
                 result.append(_SUPERSCRIPT_MAP.get(char, char))
-                result.append(_SUPERSCRIPT_MAP.get(raw[i + 1], raw[i + 1]))
+                result.append(_SUPERSCRIPT_MAP.get(processed[i + 1], processed[i + 1]))
                 i += 2
             elif (
-                (i > 0 and (raw[i - 1].isalpha() or raw[i - 1] in (')', ']', '}')))
+                (i > 0 and (processed[i - 1].isalpha() or processed[i - 1] in (')', ']', '}')))
                 or (result and result[-1] in _SUBSCRIPT_MAP.values())
             ):
                 # Subscript index following an element symbol, closing bracket, or another subscript
@@ -125,7 +129,7 @@ def format_chemical_formula(raw: str) -> str:
                 # Leading stoichiometric coefficient (e.g. 2H2O -> 2H₂O)
                 result.append(char)
                 i += 1
-        elif char in ('+', '-') and (i > 0 and (raw[i - 1].isalpha() or raw[i - 1] in _SUBSCRIPT_MAP.values())):
+        elif char in ('+', '-') and (i > 0 and (processed[i - 1].isalpha() or processed[i - 1] in _SUBSCRIPT_MAP.values() or processed[i - 1] in _SUPERSCRIPT_MAP.values())):
             result.append(_SUPERSCRIPT_MAP.get(char, char))
             i += 1
         else:
