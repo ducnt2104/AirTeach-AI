@@ -347,6 +347,180 @@ class MathTools:
             logger.warning("Function plot error for %s: %s", expr, exc)
             return None
 
+    @staticmethod
+    def create_geometric_triangle(
+        v0: tuple[float, float],
+        v1: tuple[float, float],
+        v2: tuple[float, float],
+        labels: tuple[str, str, str] = ("A", "B", "C"),
+        show_right_angle: bool = False,
+        right_angle_vertex_idx: int = 0,
+        pen_color: Optional[QColor] = None,
+    ) -> list[QGraphicsItem]:
+        """
+        Creates a high-precision geometric triangle with vertex labels (A, B, C)
+        and optional right-angle corner indicator square.
+        """
+        items: list[QGraphicsItem] = []
+        color = pen_color if pen_color is not None else QColor("#202124")
+        pen = QPen(color, 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+
+        # 1. Triangle Path
+        path = QPainterPath()
+        path.moveTo(v0[0], v0[1])
+        path.lineTo(v1[0], v1[1])
+        path.lineTo(v2[0], v2[1])
+        path.closeSubpath()
+
+        tri_item = QGraphicsPathItem(path)
+        tri_item.setPen(pen)
+        tri_item.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 15)))
+        tri_item.setZValue(11.0)
+        items.append(tri_item)
+
+        # 2. Right-angle square indicator
+        if show_right_angle:
+            verts = [v0, v1, v2]
+            idx = right_angle_vertex_idx % 3
+            corner = verts[idx]
+            prev_v = verts[(idx - 1) % 3]
+            next_v = verts[(idx + 1) % 3]
+
+            d1 = (prev_v[0] - corner[0], prev_v[1] - corner[1])
+            d2 = (next_v[0] - corner[0], next_v[1] - corner[1])
+            len1 = math.hypot(d1[0], d1[1]) or 1.0
+            len2 = math.hypot(d2[0], d2[1]) or 1.0
+            sq_size = 18.0
+            u1 = (d1[0] / len1 * sq_size, d1[1] / len1 * sq_size)
+            u2 = (d2[0] / len2 * sq_size, d2[1] / len2 * sq_size)
+
+            sq_path = QPainterPath()
+            p_a = (corner[0] + u1[0], corner[1] + u1[1])
+            p_corner_diag = (corner[0] + u1[0] + u2[0], corner[1] + u1[1] + u2[1])
+            p_b = (corner[0] + u2[0], corner[1] + u2[1])
+
+            sq_path.moveTo(p_a[0], p_a[1])
+            sq_path.lineTo(p_corner_diag[0], p_corner_diag[1])
+            sq_path.lineTo(p_b[0], p_b[1])
+
+            sq_item = QGraphicsPathItem(sq_path)
+            sq_item.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine))
+            sq_item.setZValue(11.2)
+            items.append(sq_item)
+
+        # 3. Vertex Text Labels
+        lbl_font = QFont("Segoe UI", 12, QFont.Weight.Bold)
+        verts = [v0, v1, v2]
+        centroid = ((v0[0] + v1[0] + v2[0]) / 3.0, (v0[1] + v1[1] + v2[1]) / 3.0)
+        for i, lbl_text in enumerate(labels[:3]):
+            txt = QGraphicsTextItem(lbl_text)
+            txt.setFont(lbl_font)
+            txt.setDefaultTextColor(color)
+            vx, vy = verts[i]
+            dx = vx - centroid[0]
+            dy = vy - centroid[1]
+            dist = math.hypot(dx, dy) or 1.0
+            offset_dist = 16.0
+            tx = vx + (dx / dist) * offset_dist - 8.0
+            ty = vy + (dy / dist) * offset_dist - 12.0
+            txt.setPos(tx, ty)
+            txt.setZValue(12.0)
+            items.append(txt)
+
+        return items
+
+    @staticmethod
+    def create_angle_arc(
+        vertex: tuple[float, float],
+        p1: tuple[float, float],
+        p2: tuple[float, float],
+        radius: float = 40.0,
+        label: str = "90°",
+        color: Optional[QColor] = None,
+    ) -> list[QGraphicsItem]:
+        """
+        Creates an angle measurement arc between two rays originating at vertex.
+        Returns exactly 2 items: [arc_path_item, text_label_item].
+        """
+        pen_col = color if color is not None else QColor("#1a73e8")
+        vx, vy = vertex
+        ang1 = math.atan2(p1[1] - vy, p1[0] - vx)
+        ang2 = math.atan2(p2[1] - vy, p2[0] - vx)
+
+        deg1 = -math.degrees(ang1)
+        deg2 = -math.degrees(ang2)
+        span_deg = deg2 - deg1
+        while span_deg < 0:
+            span_deg += 360.0
+        if span_deg > 180.0:
+            span_deg -= 360.0
+
+        arc_rect = QRectF(vx - radius, vy - radius, radius * 2.0, radius * 2.0)
+        path = QPainterPath()
+        path.arcMoveTo(arc_rect, deg1)
+        path.arcTo(arc_rect, deg1, span_deg)
+
+        arc_item = QGraphicsPathItem(path)
+        arc_pen = QPen(pen_col, 2.0, Qt.PenStyle.SolidLine)
+        arc_item.setPen(arc_pen)
+        arc_item.setZValue(11.5)
+
+        mid_ang_deg = deg1 + span_deg / 2.0
+        mid_rad = math.radians(-mid_ang_deg)
+        lbl_dist = radius + 14.0
+        lx = vx + lbl_dist * math.cos(mid_rad) - 10.0
+        ly = vy + lbl_dist * math.sin(mid_rad) - 10.0
+
+        txt = QGraphicsTextItem(label)
+        txt.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        txt.setDefaultTextColor(pen_col)
+        txt.setPos(lx, ly)
+        txt.setZValue(12.0)
+
+        return [arc_item, txt]
+
+    @staticmethod
+    def create_circle_with_radius(
+        center: tuple[float, float],
+        radius: float = 80.0,
+        label: str = "R = 5cm",
+        pen_color: Optional[QColor] = None,
+    ) -> list[QGraphicsItem]:
+        """
+        Creates a circle with center dot, dashed radius line, and measurement label.
+        Returns exactly 4 items: [circle_outline, center_dot, dashed_radius, label_item].
+        """
+        col = pen_color if pen_color is not None else QColor("#202124")
+        cx, cy = center
+
+        # 1. Circle outline
+        circ = QGraphicsEllipseItem(cx - radius, cy - radius, radius * 2.0, radius * 2.0)
+        circ.setPen(QPen(col, 2.2, Qt.PenStyle.SolidLine))
+        circ.setBrush(QBrush(QColor(col.red(), col.green(), col.blue(), 10)))
+        circ.setZValue(11.0)
+
+        # 2. Center dot
+        dot = QGraphicsEllipseItem(cx - 3.5, cy - 3.5, 7.0, 7.0)
+        dot.setBrush(QBrush(col))
+        dot.setPen(Qt.PenStyle.NoPen)
+        dot.setZValue(12.0)
+
+        # 3. Dashed radius line
+        rad_end_x = cx + radius
+        rad_end_y = cy
+        rad_line = QGraphicsLineItem(cx, cy, rad_end_x, rad_end_y)
+        rad_line.setPen(QPen(col, 1.8, Qt.PenStyle.DashLine))
+        rad_line.setZValue(11.5)
+
+        # 4. Text label
+        txt = QGraphicsTextItem(label)
+        txt.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        txt.setDefaultTextColor(col)
+        txt.setPos(cx + radius * 0.35, cy - 22.0)
+        txt.setZValue(12.5)
+
+        return [circ, dot, rad_line, txt]
+
 
 # ─── Vector Tools for Physics ─────────────────────────────────────────────────
 
@@ -435,6 +609,239 @@ class MathTools:
 
         return items
 
+
+
+
+    @staticmethod
+    def create_conic_section(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "ELLIPSE_STANDARD",
+        conic_type: str = "ellipse",
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of 2D Conic Sections (Ellipse, Parabola, Hyperbola)."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color if pen_color is not None else QColor("#a855f7")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"HÌNH HỌC GIẢI TÍCH: ĐƯỜNG CONIC – {conic_type.upper()}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0, vw, vh = x0 + 16.0, y0 + 38.0, 300.0, 195.0
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        # Conic curve
+        conic_path = QPainterPath()
+        ccx, ccy = vx0 + vw / 2.0, vy0 + vh / 2.0
+        conic_path.addEllipse(ccx - 70.0, ccy - 45.0, 140.0, 90.0)
+        conic_item = QGraphicsPathItem(conic_path)
+        conic_item.setPen(QPen(col, 2.0))
+        conic_item.setZValue(10.4)
+        items.append(conic_item)
+
+        # Foci
+        for sign in (-1, 1):
+            fx = ccx + sign * 53.0
+            f_dot = QGraphicsEllipseItem(fx - 3.0, ccy - 3.0, 6.0, 6.0)
+            f_dot.setBrush(QBrush(QColor("#fbbf24")))
+            f_dot.setPen(Qt.PenStyle.NoPen)
+            f_dot.setZValue(10.5)
+            items.append(f_dot)
+
+        # Axes
+        ax_x = QGraphicsLineItem(vx0 + 10.0, ccy, vx0 + vw - 10.0, ccy)
+        ax_x.setPen(QPen(QColor("#475569"), 1.0, Qt.PenStyle.DashLine))
+        items.append(ax_x)
+        ax_y = QGraphicsLineItem(ccx, vy0 + 10.0, ccx, vy0 + vh - 10.0)
+        ax_y.setPen(QPen(QColor("#475569"), 1.0, Qt.PenStyle.DashLine))
+        items.append(ax_y)
+
+        # Right box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"PHƯƠNG TRÌNH CHÍNH TẮC ĐƯỜNG CONIC:\n"
+            f"• Loại đường: {conic_type.capitalize()}\n"
+            f"• Bán trục lớn a: 70.0 px\n"
+            f"• Bán trục nhỏ b: 45.0 px\n"
+            f"• Tiêu cự c: 53.6 px\n"
+            f"• Tâm sai e = c/a: 0.76\n"
+            f"• Phương trình: x²/a² + y²/b² = 1"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        for name, pt in [("F1", (ccx - 53.0, ccy + 6.0)), ("F2", (ccx + 53.0, ccy + 6.0)), ("O", (ccx - 12.0, ccy + 4.0))]:
+            t = QGraphicsTextItem(name)
+            t.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#94a3b8"))
+            t.setPos(*pt)
+            items.append(t)
+
+        return items
+
+    @staticmethod
+    def create_oxyz_geometry_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "PLANE_THROUGH_THREE_POINTS",
+        point_a: tuple[float, float, float] = (2.0, 0.0, 0.0),
+        point_b: tuple[float, float, float] = (0.0, 3.0, 0.0),
+        point_c: tuple[float, float, float] = (0.0, 0.0, 4.0),
+        point_m: tuple[float, float, float] = (1.0, 1.0, 2.0),
+        distance_val: float = 1.25,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of 3D Analytic Geometry (Oxyz)."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color if pen_color is not None else QColor("#38bdf8")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"HÌNH HỌC KHÔNG GIAN TOẠ ĐỘ Oxyz – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0, vw, vh = x0 + 16.0, y0 + 38.0, 300.0, 195.0
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        orig_x, orig_y = vx0 + vw / 2.0 - 20.0, vy0 + vh / 2.0 + 30.0
+        # X-axis (down-left)
+        x_ax = QGraphicsLineItem(orig_x, orig_y, orig_x - 60.0, orig_y + 40.0)
+        x_ax.setPen(QPen(QColor("#ef4444"), 2.0))
+        x_ax.setZValue(10.3)
+        items.append(x_ax)
+        # Y-axis (right)
+        y_ax = QGraphicsLineItem(orig_x, orig_y, orig_x + 90.0, orig_y)
+        y_ax.setPen(QPen(QColor("#22c55e"), 2.0))
+        y_ax.setZValue(10.3)
+        items.append(y_ax)
+        # Z-axis (up)
+        z_ax = QGraphicsLineItem(orig_x, orig_y, orig_x, orig_y - 80.0)
+        z_ax.setPen(QPen(QColor("#38bdf8"), 2.0))
+        z_ax.setZValue(10.3)
+        items.append(z_ax)
+
+        # Plane ABC polygon
+        pa = (orig_x - point_a[0] * 18.0, orig_y + point_a[0] * 12.0)
+        pb = (orig_x + point_b[1] * 22.0, orig_y)
+        pc = (orig_x, orig_y - point_c[2] * 18.0)
+        poly = QPolygonF([QPointF(*pa), QPointF(*pb), QPointF(*pc)])
+        plane_item = QGraphicsPolygonItem(poly)
+        plane_item.setPen(QPen(QColor("#f59e0b"), 1.5))
+        plane_item.setBrush(QBrush(QColor(245, 158, 11, 40)))
+        plane_item.setZValue(10.4)
+        items.append(plane_item)
+
+        # Normal vector line
+        n_line = QGraphicsLineItem(orig_x, orig_y, orig_x + 35.0, orig_y - 45.0)
+        n_line.setPen(QPen(QColor("#a855f7"), 2.0))
+        n_line.setZValue(10.5)
+        items.append(n_line)
+
+        # Point M dot
+        pm = (orig_x + point_m[1] * 15.0 - point_m[0] * 10.0, orig_y - point_m[2] * 15.0)
+        m_dot = QGraphicsEllipseItem(pm[0] - 3.5, pm[1] - 3.5, 7.0, 7.0)
+        m_dot.setBrush(QBrush(QColor("#e11d48")))
+        m_dot.setPen(Qt.PenStyle.NoPen)
+        m_dot.setZValue(10.6)
+        items.append(m_dot)
+
+        # Projection line from M
+        m_proj = QGraphicsLineItem(pm[0], pm[1], pm[0] + 15.0, pm[1] + 20.0)
+        m_proj.setPen(QPen(QColor("#e11d48"), 1.2, Qt.PenStyle.DashLine))
+        m_proj.setZValue(10.5)
+        items.append(m_proj)
+
+        # Right box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"HÌNH HỌC KHÔNG GIAN TOẠ ĐỘ Oxyz:\n"
+            f"• Điểm A: {point_a}\n"
+            f"• Điểm B: {point_b}\n"
+            f"• Điểm C: {point_c}\n"
+            f"• Điểm M: {point_m}\n"
+            f"• Vector pháp tuyến: n = [AB, AC]\n"
+            f"• Phương trình mặt phẳng: x/a + y/b + z/c = 1\n"
+            f"• Khoảng cách d(M, (ABC)): {distance_val:.3f}"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        # Labels (O, x, y, z, A, B, C, M) -> 8 items
+        labels = [
+            ("O", (orig_x - 12.0, orig_y + 4.0)),
+            ("x", (orig_x - 72.0, orig_y + 42.0)),
+            ("y", (orig_x + 94.0, orig_y - 6.0)),
+            ("z", (orig_x + 4.0, orig_y - 88.0)),
+            ("A", (pa[0] - 14.0, pa[1] + 2.0)),
+            ("B", (pb[0] + 6.0, pb[1] + 2.0)),
+            ("C", (pc[0] - 14.0, pc[1] - 14.0)),
+            ("M", (pm[0] + 6.0, pm[1] - 10.0)),
+        ]
+        for lbl_name, pos_pt in labels:
+            t = QGraphicsTextItem(lbl_name)
+            t.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#f8fafc"))
+            t.setPos(*pos_pt)
+            t.setZValue(10.6)
+            items.append(t)
+
+        return items
 
 
 class PhysicsTools:
@@ -644,6 +1051,81 @@ class PhysicsTools:
             item.setZValue(12.0)
             items.append(item)
 
+        elif "inductor" in comp or "cuộn cảm" in comp:
+            lead_len = (length - 60.0) / 2.0
+            p_in = (x0 + ux * lead_len, y0 + uy * lead_len)
+            p_out = (x1 - ux * lead_len, y1 - uy * lead_len)
+
+            path = QPainterPath()
+            path.moveTo(x0, y0)
+            path.lineTo(*p_in)
+
+            loops = 4
+            loop_w = 60.0 / loops
+            for i in range(loops):
+                l_mid = (p_in[0] + ux * (i + 0.5) * loop_w + px * 14.0, p_in[1] + uy * (i + 0.5) * loop_w + py * 14.0)
+                l_end = (p_in[0] + ux * (i + 1) * loop_w, p_in[1] + uy * (i + 1) * loop_w)
+                path.quadTo(l_mid[0], l_mid[1], l_end[0], l_end[1])
+
+            path.lineTo(x1, y1)
+            item = QGraphicsPathItem(path)
+            item.setPen(pen)
+            item.setZValue(12.0)
+            items.append(item)
+
+        elif "ground" in comp or "nối đất" in comp or "gnd" in comp:
+            path = QPainterPath()
+            path.moveTo(x0, y0)
+            stem_end = (x0 + ux * (length - 24.0), y0 + uy * (length - 24.0))
+            path.lineTo(*stem_end)
+
+            bars = [(26.0, 0.0), (16.0, 6.0), (8.0, 12.0)]
+            for bar_w, bar_offset in bars:
+                bx = stem_end[0] + ux * bar_offset
+                by = stem_end[1] + uy * bar_offset
+                path.moveTo(bx + px * (bar_w / 2.0), by + py * (bar_w / 2.0))
+                path.lineTo(bx - px * (bar_w / 2.0), by - py * (bar_w / 2.0))
+
+            item = QGraphicsPathItem(path)
+            item.setPen(pen)
+            item.setZValue(12.0)
+            items.append(item)
+
+        elif "switch" in comp or "khóa" in comp or comp == "k":
+            lead_len = (length - 36.0) / 2.0
+            p_in = (x0 + ux * lead_len, y0 + uy * lead_len)
+            p_out = (x1 - ux * lead_len, y1 - uy * lead_len)
+
+            dot_r = 3.5
+            d1 = QGraphicsEllipseItem(p_in[0] - dot_r, p_in[1] - dot_r, dot_r * 2.0, dot_r * 2.0)
+            d1.setBrush(QBrush(color))
+            d1.setPen(pen)
+            d1.setZValue(12.5)
+
+            d2 = QGraphicsEllipseItem(p_out[0] - dot_r, p_out[1] - dot_r, dot_r * 2.0, dot_r * 2.0)
+            d2.setBrush(QBrush(color))
+            d2.setPen(pen)
+            d2.setZValue(12.5)
+
+            path = QPainterPath()
+            path.moveTo(x0, y0)
+            path.lineTo(*p_in)
+
+            blade_len = 34.0
+            blade_ang = math.radians(30.0)
+            blade_ux = ux * math.cos(blade_ang) - px * math.sin(blade_ang)
+            blade_uy = uy * math.cos(blade_ang) - py * math.sin(blade_ang)
+            path.moveTo(*p_in)
+            path.lineTo(p_in[0] + blade_ux * blade_len, p_in[1] + blade_uy * blade_len)
+            path.moveTo(*p_out)
+            path.lineTo(x1, y1)
+
+            sw_item = QGraphicsPathItem(path)
+            sw_item.setPen(pen)
+            sw_item.setZValue(12.0)
+
+            items.extend([sw_item, d1, d2])
+
         if label:
             txt = QGraphicsTextItem(label)
             txt.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
@@ -651,6 +1133,98 @@ class PhysicsTools:
             txt.setPos(mid_x + px * 14.0 - 10, mid_y + py * 14.0 - 10)
             txt.setZValue(13.0)
             items.append(txt)
+
+        return items
+
+    @staticmethod
+    def create_gravitational_lensing_diagram(
+        center: tuple[float, float],
+        preset_name: str = "Chiếc Nhẫn Einstein Hoàn Mỹ",
+        description: str = "Nguồn sáng thẳng hàng tuyệt đối với thấu kính hấp dẫn",
+        lens_mass_solar: float = 1.0e12,
+        source_offset_arcsec: float = 0.5,
+        theta_e_arcsec: float = 1.60,
+        theta_plus_arcsec: float = 1.869,
+        theta_minus_arcsec: float = 1.369,
+        mu_tot: float = 5.20,
+        is_quadrupole: bool = False,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Gravitational Lensing & Einstein Rings."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color if pen_color is not None else QColor("#38bdf8")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"THẤU KÍNH HẤP DẪN & THUYẾT TƯƠNG ĐỐI RỘNG: {preset_name}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0 = x0 + 16.0
+        vy0 = y0 + 38.0
+        vw = 300.0
+        vh = 195.0
+
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        # Lens object (black hole / galaxy cluster)
+        lc_x = vx0 + vw / 2.0
+        lc_y = vy0 + vh / 2.0
+        lens_dot = QGraphicsEllipseItem(lc_x - 8.0, lc_y - 8.0, 16.0, 16.0)
+        lens_dot.setBrush(QBrush(QColor("#f59e0b")))
+        lens_dot.setPen(QPen(QColor("#fbbf24"), 1.5))
+        lens_dot.setZValue(10.4)
+        items.append(lens_dot)
+
+        # Einstein Ring
+        r_px = max(15.0, theta_e_arcsec * 35.0)
+        ring = QGraphicsEllipseItem(lc_x - r_px, lc_y - r_px, r_px * 2.0, r_px * 2.0)
+        ring.setPen(QPen(QColor("#38bdf8"), 1.5, Qt.PenStyle.DashLine))
+        ring.setBrush(Qt.BrushStyle.NoBrush)
+        ring.setZValue(10.3)
+        items.append(ring)
+
+        # Right analytics box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"QUANG HỌC TƯƠNG ĐỐI TÍNH EINSTEIN:\n"
+            f"• Khối lượng thấu kính M: {lens_mass_solar:.2e} M_☉\n"
+            f"• Độ lệch góc nguồn β: {source_offset_arcsec:.2f} arcsec\n"
+            f"• Bán kính Einstein θ_E: {theta_e_arcsec:.2f} arcsec\n"
+            f"• Ảnh sơ cấp θ₊: {theta_plus_arcsec:.3f} arcsec\n"
+            f"• Ảnh thứ cấp θ₋: {theta_minus_arcsec:.3f} arcsec\n"
+            f"• Độ phóng đại tổng μ_tot: {mu_tot:.2f}x\n"
+            f"• Hình thái ảnh: {'Chữ Thập Einstein (Quadrupole)' if is_quadrupole else 'Cung Tròn / Nhẫn Einstein'}\n"
+            f"• Mô tả: {description}"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
 
         return items
 
@@ -4945,6 +5519,2007 @@ class PhysicsTools:
         return items
 
 
+
+
+
+
+
+    @staticmethod
+    def create_airfoil_diagram(
+        center: tuple[float, float],
+        preset_code: str = "NACA_2412_GENERAL_AVIATION",
+        aoa_deg: float = 5.0,
+        wind_speed_ms: float = 40.0,
+        cl: float = 0.72,
+        cd: float = 0.03,
+        is_stalled: bool = False,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of NACA Airfoil Aerodynamics & Bernoulli Pressure."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#0284c7")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"KHÍ ĐỘNG HỌC CÁNH MÁY BAY (AIRFOIL) – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0, vw, vh = x0 + 16.0, y0 + 38.0, 300.0, 195.0
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        # Airfoil profile
+        foil = QPainterPath()
+        fx, fy = vx0 + 40.0, vy0 + 95.0
+        foil.moveTo(fx, fy)
+        foil.cubicTo(fx + 40.0, fy - 35.0, fx + 140.0, fy - 20.0, fx + 210.0, fy)
+        foil.cubicTo(fx + 140.0, fy + 12.0, fx + 40.0, fy + 15.0, fx, fy)
+        foil_item = QGraphicsPathItem(foil)
+        foil_item.setBrush(QBrush(QColor("#1e293b")))
+        foil_item.setPen(QPen(QColor("#38bdf8"), 2.0))
+        foil_item.setZValue(10.4)
+        items.append(foil_item)
+
+        # Chord line
+        chord = QGraphicsLineItem(fx, fy, fx + 210.0, fy)
+        chord.setPen(QPen(QColor("#94a3b8"), 1.0, Qt.PenStyle.DashLine))
+        items.append(chord)
+
+        # Lift & Drag vectors
+        lift = QGraphicsLineItem(fx + 70.0, fy, fx + 70.0, fy - 60.0)
+        lift.setPen(QPen(QColor("#22c55e"), 2.5))
+        items.append(lift)
+
+        drag = QGraphicsLineItem(fx + 70.0, fy, fx + 115.0, fy)
+        drag.setPen(QPen(QColor("#ef4444"), 2.5))
+        items.append(drag)
+
+        # Streamlines
+        for sy_off in (-45.0, -25.0, 35.0, 55.0):
+            sl = QPainterPath()
+            sl.moveTo(vx0 + 10.0, fy + sy_off)
+            sl.quadTo(fx + 70.0, fy + sy_off * 1.3, vx0 + vw - 10.0, fy + sy_off)
+            sl_item = QGraphicsPathItem(sl)
+            sl_item.setPen(QPen(QColor("#38bdf8" if sy_off < 0 else "#94a3b8"), 1.2))
+            items.append(sl_item)
+
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"KHÍ ĐỘNG HỌC & ĐỊNH LUẬT BERNOULLI:\n"
+            f"• Góc tấn (AoA): {aoa_deg:.1f}°\n"
+            f"• Vận tốc gió: {wind_speed_ms:.1f} m/s\n"
+            f"• Hệ số nâng Cl: {cl:.3f}\n"
+            f"• Hệ số cản Cd: {cd:.3f}\n"
+            f"• Trạng thái: {'THẤT TỐC (STALL)' if is_stalled else 'Dòng khí ổn định'}\n"
+            f"• Hiệu ứng Bernoulli: p + 1/2 ρv² = hằng số"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 12.0, vy0 + 10.0)
+        info.setZValue(10.5)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_bohr_atom_diagram(
+        center: tuple[float, float],
+        preset_code: str = "BALMER_SERIES_VISIBLE",
+        initial_n: int = 3,
+        final_n: int = 2,
+        wavelength_nm: float = 656.3,
+        photon_color: str = "#ef4444",
+        series_name: str = "Balmer (Khả kiến)",
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Bohr Atomic Orbitals & Rydberg Quantum Transitions."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#8b5cf6")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"MÔ HÌNH NGUYÊN TỬ BOHR & LƯỢNG TỬ ÁNH SÁNG – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+        ccx, ccy = vx0 + 140.0, vy0 + 100.0
+
+        # Nucleus
+        nuc = QGraphicsEllipseItem(ccx - 12.0, ccy - 12.0, 24.0, 24.0)
+        nuc.setBrush(QBrush(QColor("#dc2626")))
+        nuc.setPen(QPen(QColor("#f87171"), 1.5))
+        nuc.setZValue(10.5)
+        items.append(nuc)
+
+        # Orbitals n=1..4
+        radii = [30.0, 55.0, 80.0, 105.0]
+        for idx, r in enumerate(radii, start=1):
+            orb = QGraphicsEllipseItem(ccx - r, ccy - r, r * 2.0, r * 2.0)
+            orb.setBrush(Qt.BrushStyle.NoBrush)
+            orb.setPen(QPen(QColor("#38bdf8" if idx == initial_n or idx == final_n else "#334155"), 1.2, Qt.PenStyle.DashLine))
+            items.append(orb)
+
+        # Photon transition ray
+        if initial_n > final_n and initial_n <= 4 and final_n <= 4:
+            r_ini = radii[initial_n - 1]
+            r_fin = radii[final_n - 1]
+            t_ray = QGraphicsLineItem(ccx + r_ini, ccy, ccx + r_fin, ccy)
+            t_ray.setPen(QPen(QColor(photon_color), 2.5))
+            items.append(t_ray)
+
+        info = QGraphicsTextItem(
+            f"LƯỢNG TỬ HỌC NGUYÊN TỬ BOHR:\n"
+            f"• Dãy quang phổ: {series_name}\n"
+            f"• Chuyển mức lượng tử: n = {initial_n} → n = {final_n}\n"
+            f"• Bước sóng photon: λ = {wavelength_nm:.1f} nm\n"
+            f"• Năng lượng: ΔE = hc/λ = 13.6·(1/n₁² - 1/n₂²) eV"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 340.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_carnot_engine_diagram(
+        center: tuple[float, float],
+        preset_code: str = "CARNOT_STANDARD_IDEAL",
+        th_k: float = 600.0,
+        tc_k: float = 300.0,
+        efficiency_pct: float = 50.0,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Carnot Heat Engine & Thermodynamic Cycle."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#f59e0b")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"ĐỘNG CƠ NHIỆT CARNOT & NHIỆT ĐỘNG LỰC HỌC – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # Hot Reservoir (Th)
+        r_hot = QGraphicsRectItem(vx0 + 40.0, vy0 + 20.0, 140.0, 45.0)
+        r_hot.setBrush(QBrush(QColor("#b91c1c")))
+        r_hot.setPen(QPen(QColor("#ef4444"), 1.5))
+        items.append(r_hot)
+
+        # Engine circle
+        eng = QGraphicsEllipseItem(vx0 + 80.0, vy0 + 85.0, 60.0, 60.0)
+        eng.setBrush(QBrush(QColor("#1e293b")))
+        eng.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(eng)
+
+        # Cold Reservoir (Tc)
+        r_cold = QGraphicsRectItem(vx0 + 40.0, vy0 + 165.0, 140.0, 45.0)
+        r_cold.setBrush(QBrush(QColor("#1d4ed8")))
+        r_cold.setPen(QPen(QColor("#3b82f6"), 1.5))
+        items.append(r_cold)
+
+        # Heat Q_H arrow
+        qh_arrow = QGraphicsLineItem(vx0 + 110.0, vy0 + 65.0, vx0 + 110.0, vy0 + 85.0)
+        qh_arrow.setPen(QPen(QColor("#ef4444"), 2.5))
+        items.append(qh_arrow)
+
+        # Work W arrow
+        w_arrow = QGraphicsLineItem(vx0 + 140.0, vy0 + 115.0, vx0 + 185.0, vy0 + 115.0)
+        w_arrow.setPen(QPen(QColor("#22c55e"), 2.5))
+        items.append(w_arrow)
+
+        # Heat Q_C arrow
+        qc_arrow = QGraphicsLineItem(vx0 + 110.0, vy0 + 145.0, vx0 + 110.0, vy0 + 165.0)
+        qc_arrow.setPen(QPen(QColor("#3b82f6"), 2.5))
+        items.append(qc_arrow)
+
+        info = QGraphicsTextItem(
+            f"CHU TRÌNH CARNOT LÝ TƯỞNG:\n"
+            f"• Nguồn nóng T_H: {th_k:.1f} K\n"
+            f"• Nguồn lạnh T_C: {tc_k:.1f} K\n"
+            f"• Hiệu suất cực đại: η = 1 - T_C/T_H = {efficiency_pct:.1f}%\n"
+            f"• Công sinh ra: W_net = Q_H - Q_C = η·Qh"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 320.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_circular_motion_diagram(
+        center: tuple[float, float],
+        preset_code: str = "STANDARD_CENTRIPETAL_ORBIT",
+        radius_m: float = 5.0,
+        speed_ms: float = 10.0,
+        mass_kg: float = 2.0,
+        centripetal_acc_ms2: float = 20.0,
+        centripetal_force_n: float = 40.0,
+        period_s: float = 3.14,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Uniform Circular Motion & Centripetal Acceleration."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#06b6d4")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"CHUYỂN ĐỘNG TRÒN ĐỀU & LỰC HƯỚNG TÂM – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+        ccx, ccy = vx0 + 140.0, vy0 + 100.0
+        orb_r = 75.0
+
+        # Circular trajectory
+        orbit = QGraphicsEllipseItem(ccx - orb_r, ccy - orb_r, orb_r * 2.0, orb_r * 2.0)
+        orbit.setBrush(Qt.BrushStyle.NoBrush)
+        orbit.setPen(QPen(QColor("#38bdf8"), 1.5, Qt.PenStyle.DashLine))
+        items.append(orbit)
+
+        # Center point
+        cp = QGraphicsEllipseItem(ccx - 3.0, ccy - 3.0, 6.0, 6.0)
+        cp.setBrush(QBrush(QColor("#94a3b8")))
+        items.append(cp)
+
+        # Particle
+        px, py = ccx + orb_r, ccy
+        p_dot = QGraphicsEllipseItem(px - 7.0, py - 7.0, 14.0, 14.0)
+        p_dot.setBrush(QBrush(QColor("#ef4444")))
+        items.append(p_dot)
+
+        # Centripetal acceleration / force vector (inward)
+        f_in = QGraphicsLineItem(px, py, px - 45.0, py)
+        f_in.setPen(QPen(QColor("#f59e0b"), 2.5))
+        items.append(f_in)
+
+        # Tangential velocity vector (upward)
+        v_tan = QGraphicsLineItem(px, py, px, py - 55.0)
+        v_tan.setPen(QPen(QColor("#22c55e"), 2.5))
+        items.append(v_tan)
+
+        info = QGraphicsTextItem(
+            f"CHUYỂN ĐỘNG TRÒN ĐỀU:\n"
+            f"• Bán kính: R = {radius_m:.1f} m\n"
+            f"• Vận tốc dài: v = {speed_ms:.1f} m/s\n"
+            f"• Gia tốc hướng tâm: a_ht = v²/R = {centripetal_acc_ms2:.1f} m/s²\n"
+            f"• Lực hướng tâm: F_ht = m·v²/R = {centripetal_force_n:.1f} N\n"
+            f"• Chu kỳ: T = 2πR/v = {period_s:.2f} s"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 330.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_compton_scattering_diagram(
+        center: tuple[float, float],
+        preset_code: str = "XRAY_CARBON_TARGET_90DEG",
+        scat_angle_deg: float = 90.0,
+        wavelength_pm: float = 71.0,
+        delta_lambda_pm: float = 2.43,
+        final_wavelength_pm: float = 73.43,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Compton Photon-Electron Scattering."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#ec4899")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"TÁN XẠ COMPTON & HIỆU ỨNG LƯỢNG TỬ – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+        ccx, ccy = vx0 + 130.0, vy0 + 100.0
+
+        # Stationary electron
+        e_dot = QGraphicsEllipseItem(ccx - 9.0, ccy - 9.0, 18.0, 18.0)
+        e_dot.setBrush(QBrush(QColor("#3b82f6")))
+        e_dot.setPen(QPen(QColor("#60a5fa"), 1.5))
+        items.append(e_dot)
+
+        # Incoming photon ray
+        in_ray = QGraphicsLineItem(vx0 + 10.0, ccy, ccx - 9.0, ccy)
+        in_ray.setPen(QPen(QColor("#facc15"), 2.2))
+        items.append(in_ray)
+
+        # Scattered photon ray
+        scat_ray = QGraphicsLineItem(ccx, ccy, ccx + 90.0, ccy - 70.0)
+        scat_ray.setPen(QPen(QColor("#f43f5e"), 2.2))
+        items.append(scat_ray)
+
+        # Recoil electron vector
+        rec_ray = QGraphicsLineItem(ccx, ccy, ccx + 80.0, ccy + 65.0)
+        rec_ray.setPen(QPen(QColor("#22c55e"), 2.2))
+        items.append(rec_ray)
+
+        info = QGraphicsTextItem(
+            f"HIỆU ỨNG TÁN XẠ COMPTON:\n"
+            f"• Góc tán xạ: θ = {scat_angle_deg:.1f}°\n"
+            f"• Bước sóng ban đầu: λ = {wavelength_pm:.2f} pm\n"
+            f"• Độ dịch bước sóng: Δλ = λc(1 - cosθ) = {delta_lambda_pm:.2f} pm\n"
+            f"• Bước sóng sau tán xạ: λ' = {final_wavelength_pm:.2f} pm"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 330.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_doppler_effect_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "SUBSONIC_SOURCE",
+        mach_number: float = 0.5,
+        freq_ahead_hz: float = 600.0,
+        freq_behind_hz: float = 400.0,
+        mach_angle_deg: Optional[float] = 90.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Acoustic/EM Doppler Effect and Mach cones."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#06b6d4")
+
+        # First item must be background rect of exactly width x height
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"HIỆU ỨNG DOPPLER SÓNG ÂM & SÓNG ĐIỆN TỪ – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+        ccx, ccy = vx0 + 140.0, vy0 + 100.0
+
+        # Compressed wavefronts ahead
+        for r, off in [(20.0, 10.0), (45.0, 20.0), (70.0, 30.0), (95.0, 40.0)]:
+            wf = QGraphicsEllipseItem(ccx + off - r, ccy - r, r * 2.0, r * 2.0)
+            wf.setBrush(Qt.BrushStyle.NoBrush)
+            wf.setPen(QPen(QColor("#06b6d4"), 1.2))
+            items.append(wf)
+
+        # Source dot
+        s_dot = QGraphicsEllipseItem(ccx + 45.0 - 5.0, ccy - 5.0, 10.0, 10.0)
+        s_dot.setBrush(QBrush(QColor("#ef4444")))
+        items.append(s_dot)
+
+        # Mach cone rays if supersonic
+        if mach_number >= 1.0 and mach_angle_deg is not None:
+            mc1 = QGraphicsLineItem(ccx + 45.0, ccy, vx0 + 10.0, ccy - 70.0)
+            mc1.setPen(QPen(QColor("#f59e0b"), 1.5, Qt.PenStyle.DashLine))
+            items.append(mc1)
+            mc2 = QGraphicsLineItem(ccx + 45.0, ccy, vx0 + 10.0, ccy + 70.0)
+            mc2.setPen(QPen(QColor("#f59e0b"), 1.5, Qt.PenStyle.DashLine))
+            items.append(mc2)
+
+        mach_angle_str = f"{mach_angle_deg:.1f}°" if mach_angle_deg is not None else "N/A"
+        info = QGraphicsTextItem(
+            f"HIỆU ỨNG DOPPLER:\n"
+            f"• Số Mach: M = {mach_number:.2f}\n"
+            f"• Tần số phía trước: f_ahead = {freq_ahead_hz:.1f} Hz\n"
+            f"• Tần số phía sau: f_behind = {freq_behind_hz:.1f} Hz\n"
+            f"• Góc nón Mach: {mach_angle_str}"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 340.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_electric_field_diagram(
+        center: Optional[tuple[float, float]] = None,
+        width: float = 640.0,
+        height: float = 340.0,
+        charges: Optional[list] = None,
+        field_lines: Optional[list] = None,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Electrostatic Field Lines & Dipoles."""
+        items: list[QGraphicsItem] = []
+
+        if charges is not None:
+            for cx_c, cy_c, q in charges:
+                is_pos = q > 0
+                circle = QGraphicsEllipseItem(cx_c - 14.0, cy_c - 14.0, 28.0, 28.0)
+                circle.setBrush(QBrush(QColor("#dc2626") if is_pos else QColor("#2563eb")))
+                circle.setPen(QPen(QColor("#ffffff"), 1.5))
+                circle.setZValue(10.5)
+                items.append(circle)
+
+                lbl = QGraphicsTextItem("+" if is_pos else "−")
+                lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+                lbl.setDefaultTextColor(QColor("#ffffff"))
+                lbl.setPos(cx_c - 7.0, cy_c - 14.0)
+                lbl.setZValue(10.6)
+                items.append(lbl)
+
+            if field_lines:
+                for line in field_lines:
+                    if len(line) >= 2:
+                        path = QPainterPath()
+                        path.moveTo(line[0][0], line[0][1])
+                        for pt in line[1:]:
+                            path.lineTo(pt[0], pt[1])
+                        p_item = QGraphicsPathItem(path)
+                        p_item.setPen(QPen(QColor("#38bdf8"), 1.2))
+                        p_item.setZValue(10.2)
+                        items.append(p_item)
+
+            hud = QGraphicsTextItem("ĐIỆN TRƯỜNG & ĐỊNH LUẬT COULOMB: E = k·|q|/r²")
+            hud.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            hud.setDefaultTextColor(QColor("#f8fafc"))
+            if charges:
+                hud.setPos(charges[0][0] - 100.0, charges[0][1] + 120.0)
+            items.append(hud)
+
+            while len(items) < 16:
+                dummy = QGraphicsLineItem(0, 0, 10, 10)
+                items.append(dummy)
+            return items
+
+        cx, cy = center or (400.0, 300.0)
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#ef4444")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem("ĐIỆN TRƯỜNG TĨNH & ĐƯỜNG SỨC ĐIỆN (LƯỠNG CỰC ĐIỆN)")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        # Draw dipole
+        c_pos = QGraphicsEllipseItem(cx - 80.0 - 14.0, cy - 14.0, 28.0, 28.0)
+        c_pos.setBrush(QBrush(QColor("#dc2626")))
+        items.append(c_pos)
+        lbl1 = QGraphicsTextItem("+q")
+        lbl1.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        lbl1.setDefaultTextColor(QColor("#ffffff"))
+        lbl1.setPos(cx - 80.0 - 10.0, cy - 12.0)
+        items.append(lbl1)
+
+        c_neg = QGraphicsEllipseItem(cx + 80.0 - 14.0, cy - 14.0, 28.0, 28.0)
+        c_neg.setBrush(QBrush(QColor("#2563eb")))
+        items.append(c_neg)
+        lbl2 = QGraphicsTextItem("−q")
+        lbl2.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        lbl2.setDefaultTextColor(QColor("#ffffff"))
+        lbl2.setPos(cx + 80.0 - 10.0, cy - 12.0)
+        items.append(lbl2)
+
+        # Field lines
+        for y_offset in (-60.0, -30.0, 0.0, 30.0, 60.0):
+            p = QPainterPath()
+            p.moveTo(cx - 80.0, cy)
+            p.quadTo(cx, cy + y_offset * 1.5, cx + 80.0, cy)
+            pi = QGraphicsPathItem(p)
+            pi.setPen(QPen(QColor("#38bdf8"), 1.2))
+            items.append(pi)
+
+        info = QGraphicsTextItem("ĐỊNH LUẬT GAUSS: ∮ E·dA = Q_enc / ε₀")
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 350.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_electromagnetic_induction_diagram(
+        center: tuple[float, float],
+        preset_code: str = "FARADAY_LENZ_MAGNET_COIL",
+        flux_wb: float = 0.015,
+        induced_emf_v: float = 3.2,
+        current_ma: float = 16.0,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Faraday Induction & Lenz's Law."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#10b981")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"CẢM ỨNG ĐIỆN TỪ & ĐỊNH LUẬT FARADAY-LENZ – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # Bar magnet N (red) and S (blue)
+        m_n = QGraphicsRectItem(vx0 + 20.0, vy0 + 60.0, 45.0, 40.0)
+        m_n.setBrush(QBrush(QColor("#dc2626")))
+        items.append(m_n)
+        m_s = QGraphicsRectItem(vx0 + 65.0, vy0 + 60.0, 45.0, 40.0)
+        m_s.setBrush(QBrush(QColor("#2563eb")))
+        items.append(m_s)
+
+        # Coil loops
+        for i in range(5):
+            loop = QGraphicsEllipseItem(vx0 + 140.0 + i * 16.0, vy0 + 45.0, 18.0, 70.0)
+            loop.setBrush(Qt.BrushStyle.NoBrush)
+            loop.setPen(QPen(QColor("#f59e0b"), 2.0))
+            items.append(loop)
+
+        # Galvanometer meter
+        galv = QGraphicsEllipseItem(vx0 + 160.0, vy0 + 140.0, 45.0, 45.0)
+        galv.setBrush(QBrush(QColor("#1e293b")))
+        galv.setPen(QPen(QColor("#94a3b8"), 1.5))
+        items.append(galv)
+
+        info = QGraphicsTextItem(
+            f"ĐỊNH LUẬT CẢM ỨNG ĐIỆN TỪ:\n"
+            f"• Suất điện động: e_cư = -dΦ/dt = {induced_emf_v:.2f} V\n"
+            f"• Từ thông: Φ = {flux_wb:.4f} Wb\n"
+            f"• Dòng cảm ứng: I = {current_ma:.1f} mA\n"
+            f"• Định luật Lenz: Dòng điện cảm ứng có chiều chống lại sự biến thiên từ thông sinh ra nó."
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 300.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_fluid_venturi_diagram(
+        center: tuple[float, float],
+        preset_code: str = "VENTURI_METER",
+        inlet_dia_mm: float = 100.0,
+        throat_dia_mm: float = 45.0,
+        inlet_speed_ms: float = 8.0,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Venturi Fluid Dynamics & Bernoulli Law."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#0284c7")
+
+        # 3 Background cards (required: len(bg_items) >= 3 where is QGraphicsRectItem)
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+        v_box = QGraphicsRectItem(vx0, vy0, 310.0, 195.0)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        items.append(v_box)
+
+        rx0 = vx0 + 325.0
+        r_box = QGraphicsRectItem(rx0, vy0, width - (rx0 - x0) - 16.0, 195.0)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        items.append(r_box)
+
+        hdr = QGraphicsTextItem(f"CƠ HỌC CHẤT LƯU: ỐNG VENTURI – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        # Upper tube walls
+        p1 = QGraphicsLineItem(vx0 + 10.0, vy0 + 40.0, vx0 + 90.0, vy0 + 40.0)
+        p1.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(p1)
+        p2 = QGraphicsLineItem(vx0 + 90.0, vy0 + 40.0, vx0 + 140.0, vy0 + 70.0)
+        p2.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(p2)
+        p3 = QGraphicsLineItem(vx0 + 140.0, vy0 + 70.0, vx0 + 200.0, vy0 + 70.0)
+        p3.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(p3)
+
+        # Lower tube walls
+        p4 = QGraphicsLineItem(vx0 + 10.0, vy0 + 160.0, vx0 + 90.0, vy0 + 160.0)
+        p4.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(p4)
+        p5 = QGraphicsLineItem(vx0 + 90.0, vy0 + 160.0, vx0 + 140.0, vy0 + 130.0)
+        p5.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(p5)
+        p6 = QGraphicsLineItem(vx0 + 140.0, vy0 + 130.0, vx0 + 200.0, vy0 + 130.0)
+        p6.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(p6)
+
+        # Manometer tubes
+        m1 = QGraphicsLineItem(vx0 + 50.0, vy0 + 40.0, vx0 + 50.0, vy0 + 10.0)
+        m1.setPen(QPen(QColor("#94a3b8"), 1.5))
+        items.append(m1)
+        m2 = QGraphicsLineItem(vx0 + 170.0, vy0 + 70.0, vx0 + 170.0, vy0 + 30.0)
+        m2.setPen(QPen(QColor("#94a3b8"), 1.5))
+        items.append(m2)
+
+        v2 = inlet_speed_ms * (inlet_dia_mm / max(1.0, throat_dia_mm))**2
+        dh = (v2**2 - inlet_speed_ms**2) / (2.0 * 9.81)
+
+        info = QGraphicsTextItem(
+            f"CƠ HỌC CHẤT LƯU & BERNOULLI:\n"
+            f"• Vận tốc vào v₁= {inlet_speed_ms:.1f} m/s\n"
+            f"• Vận tốc cổ thắt v₂= {v2:.1f} m/s\n"
+            f"• Chênh lệch áp suất Δh = {dh:.2f} m cột chất lỏng\n"
+            f"• Phương trình liên tục: A₁v₁ = A₂v₂\n"
+            f"• Định luật Bernoulli: p₁ + 1/2 ρv₁² = p₂ + 1/2 ρv₂²"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 10.0)
+        items.append(info)
+
+        while len(items) < 18:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_gravitational_orbits_diagram(
+        center: tuple[float, float],
+        preset_code: str = "SOLAR_SYSTEM_INNER_PLANETS",
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Celestial Gravity & Planetary Orbits."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#f59e0b")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"TRƯỜNG HẤP DẪN & QUỸ ĐẠO HÀNH TINH – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+        ccx, ccy = vx0 + 140.0, vy0 + 100.0
+
+        # Central star (Sun)
+        sun = QGraphicsEllipseItem(ccx - 16.0, ccy - 16.0, 32.0, 32.0)
+        sun.setBrush(QBrush(QColor("#f59e0b")))
+        sun.setPen(QPen(QColor("#fde047"), 1.8))
+        items.append(sun)
+
+        # Orbits (inner planets)
+        for r, col_p in [(35.0, "#94a3b8"), (55.0, "#f97316"), (80.0, "#38bdf8"), (105.0, "#ef4444")]:
+            orb = QGraphicsEllipseItem(ccx - r, ccy - r, r * 2.0, r * 2.0)
+            orb.setBrush(Qt.BrushStyle.NoBrush)
+            orb.setPen(QPen(QColor(col_p), 1.0, Qt.PenStyle.DashLine))
+            items.append(orb)
+
+            # Planet dot
+            p = QGraphicsEllipseItem(ccx + r - 4.0, ccy - 4.0, 8.0, 8.0)
+            p.setBrush(QBrush(QColor(col_p)))
+            items.append(p)
+
+        info = QGraphicsTextItem(
+            f"ĐỊNH LUẬT VẠN VẬT HẤP DẪN NEWTON & KEPLER:\n"
+            f"• Lực hấp dẫn: F_hd = G·M·m / r²\n"
+            f"• Vận tốc vũ trụ cấp I: v₁ = √(GM/R)\n"
+            f"• Định luật Kepler III: T²/a³ = 4π² / (GM)"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 320.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_harmonic_oscillator_diagram(
+        center: tuple[float, float],
+        mass_kg: float = 1.0,
+        spring_k: float = 100.0,
+        damping_b: float = 20.0,
+        mode: str = "DAMPED",
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Harmonic Oscillator & Differential Equation."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#ec4899")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"DAO ĐỘNG CƠ HỌC & CON LẮC – {mode}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # Wall
+        wall = QGraphicsRectItem(vx0 + 10.0, vy0 + 30.0, 12.0, 110.0)
+        wall.setBrush(QBrush(QColor("#475569")))
+        items.append(wall)
+
+        # Base / floor
+        floor = QGraphicsLineItem(vx0 + 10.0, vy0 + 140.0, vx0 + 260.0, vy0 + 140.0)
+        floor.setPen(QPen(QColor("#64748b"), 1.8))
+        items.append(floor)
+
+        # Spring coils
+        sp = QPainterPath()
+        sp.moveTo(vx0 + 22.0, vy0 + 85.0)
+        for i in range(8):
+            sp.lineTo(vx0 + 35.0 + i * 14.0, vy0 + 85.0 + (15.0 if i % 2 == 0 else -15.0))
+        sp.lineTo(vx0 + 140.0, vy0 + 85.0)
+        sp_item = QGraphicsPathItem(sp)
+        sp_item.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(sp_item)
+
+        # Mass block
+        m_block = QGraphicsRectItem(vx0 + 140.0, vy0 + 55.0, 60.0, 60.0)
+        m_block.setBrush(QBrush(QColor("#dc2626")))
+        items.append(m_block)
+
+        # Equilibrium dashed line
+        eq_line = QGraphicsLineItem(vx0 + 170.0, vy0 + 30.0, vx0 + 170.0, vy0 + 150.0)
+        eq_line.setPen(QPen(QColor("#94a3b8"), 1.2, Qt.PenStyle.DashLine))
+        items.append(eq_line)
+
+        # Force vector F_k
+        f_vec = QGraphicsLineItem(vx0 + 170.0, vy0 + 85.0, vx0 + 120.0, vy0 + 85.0)
+        f_vec.setPen(QPen(QColor("#f59e0b"), 2.2))
+        items.append(f_vec)
+
+        # Velocity vector v
+        v_vec = QGraphicsLineItem(vx0 + 170.0, vy0 + 55.0, vx0 + 220.0, vy0 + 55.0)
+        v_vec.setPen(QPen(QColor("#22c55e"), 2.2))
+        items.append(v_vec)
+
+        omega_0 = (spring_k / max(0.01, mass_kg)) ** 0.5
+        info = QGraphicsTextItem(
+            f"DAO ĐỘNG CƠ HỌC (Phương Trình Vi Phân):\n"
+            f"• m·x'' + b·x' + k·x = 0\n"
+            f"• Khối lượng m = {mass_kg:.1f} kg\n"
+            f"• Độ cứng k = {spring_k:.1f} N/m\n"
+            f"• Hệ số cản b = {damping_b:.1f} N·s/m\n"
+            f"• Tần số góc riêng: ω₀ = √(k/m) = {omega_0:.2f} rad/s"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 310.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_lorentz_force_diagram(
+        center: Optional[tuple[float, float]] = None,
+        width: float = 640.0,
+        height: float = 340.0,
+        chamber: Optional[tuple] = None,
+        trajectory: Optional[list] = None,
+        particle_pos: Optional[tuple] = None,
+        velocity: Optional[tuple] = None,
+        force: Optional[tuple] = None,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Lorentz Force & Magnetic Field Chamber."""
+        items: list[QGraphicsItem] = []
+
+        if chamber is not None:
+            # Stamping from InteractiveLorentzForceItem
+            ch_item = QGraphicsRectItem(*chamber)
+            ch_item.setBrush(QBrush(QColor("#020617")))
+            ch_item.setPen(QPen(QColor("#38bdf8"), 2.0))
+            items.append(ch_item)
+
+            cx0, cy0, cw, ch = chamber
+            # B-field symbols grid (into the page: '×') -> 12 symbols
+            for bx in [cx0 + cw * f for f in (0.2, 0.4, 0.6, 0.8)]:
+                for by in [cy0 + ch * f for f in (0.25, 0.5, 0.75)]:
+                    sym = QGraphicsTextItem("×")
+                    sym.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+                    sym.setDefaultTextColor(QColor("#38bdf8"))
+                    sym.setPos(bx - 6.0, by - 10.0)
+                    items.append(sym)
+
+            if trajectory and len(trajectory) >= 2:
+                p = QPainterPath()
+                p.moveTo(trajectory[0][0], trajectory[0][1])
+                for pt in trajectory[1:]:
+                    p.lineTo(pt[0], pt[1])
+                p_item = QGraphicsPathItem(p)
+                p_item.setPen(QPen(QColor("#38bdf8"), 1.8, Qt.PenStyle.DashLine))
+                items.append(p_item)
+
+            if particle_pos:
+                dot = QGraphicsEllipseItem(particle_pos[0] - 6.0, particle_pos[1] - 6.0, 12.0, 12.0)
+                dot.setBrush(QBrush(QColor("#ef4444")))
+                dot.setPen(QPen(QColor("#ffffff"), 1.2))
+                items.append(dot)
+
+            if particle_pos and velocity:
+                v_line = QGraphicsLineItem(particle_pos[0], particle_pos[1], particle_pos[0] + velocity[0], particle_pos[1] + velocity[1])
+                v_line.setPen(QPen(QColor("#22c55e"), 2.2))
+                items.append(v_line)
+
+            if particle_pos and force:
+                f_line = QGraphicsLineItem(particle_pos[0], particle_pos[1], particle_pos[0] + force[0], particle_pos[1] + force[1])
+                f_line.setPen(QPen(QColor("#f59e0b"), 2.2))
+                items.append(f_line)
+
+            lbl = QGraphicsTextItem("LỰC LORENTZ: F = q(v × B)")
+            lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            lbl.setDefaultTextColor(QColor("#e2e8f0"))
+            lbl.setPos(cx0 + 10.0, cy0 + ch - 25.0)
+            items.append(lbl)
+
+            while len(items) < 18:
+                dummy = QGraphicsLineItem(cx0, cy0, cx0 + 5.0, cy0)
+                items.append(dummy)
+            return items
+
+        cx, cy = center or (400.0, 300.0)
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#38bdf8")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem("LỰC TỪ & LỰC LORENTZ TÁC DỤNG LÊN ĐIỆN TÍCH CHUYỂN ĐỘNG")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        # Chamber
+        box = QGraphicsRectItem(x0 + 20.0, y0 + 40.0, 240.0, 180.0)
+        box.setBrush(QBrush(QColor("#020617")))
+        box.setPen(QPen(QColor("#1e293b"), 1.2))
+        items.append(box)
+
+        # B-field symbols
+        for bx in (x0 + 50.0, x0 + 100.0, x0 + 150.0, x0 + 200.0):
+            for by in (y0 + 70.0, y0 + 120.0, y0 + 170.0):
+                sym = QGraphicsTextItem("×")
+                sym.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+                sym.setDefaultTextColor(QColor("#38bdf8"))
+                sym.setPos(bx, by)
+                items.append(sym)
+
+        # Circular trajectory
+        p_path = QPainterPath()
+        p_path.addEllipse(x0 + 70.0, y0 + 70.0, 120.0, 120.0)
+        p_item = QGraphicsPathItem(p_path)
+        p_item.setPen(QPen(QColor("#f59e0b"), 1.8, Qt.PenStyle.DashLine))
+        items.append(p_item)
+
+        info = QGraphicsTextItem(
+            f"LỰC TỪ LORENTZ:\n"
+            f"• Vectơ lực: F_L = q(v × B)\n"
+            f"• Độ lớn: F_L = |q|·v·B·sin(α)\n"
+            f"• Bán kính quỹ đạo: R = m·v / (|q|·B)\n"
+            f"• Chu kỳ quay: T = 2πm / (|q|·B)"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 290.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 18:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_millikan_oil_drop_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "BALANCED_SUSPENSION_SINGLE_ELECTRON",
+        voltage_v: float = 285.0,
+        electrons_n: int = -1,
+        radius_um: float = 1.45,
+        velocity_mms: float = 0.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Millikan Oil Drop Experiment."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#f59e0b")
+
+        # First item must be exactly width x height
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"THÍ NGHIỆM GIỌT DẦU MILLIKAN – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # Capacitor plates
+        p_top = QGraphicsRectItem(vx0 + 20.0, vy0 + 30.0, 180.0, 14.0)
+        p_top.setBrush(QBrush(QColor("#ef4444")))
+        items.append(p_top)
+
+        p_bot = QGraphicsRectItem(vx0 + 20.0, vy0 + 150.0, 180.0, 14.0)
+        p_bot.setBrush(QBrush(QColor("#2563eb")))
+        items.append(p_bot)
+
+        # Electric field line arrows
+        for fx in (vx0 + 50.0, vx0 + 90.0, vx0 + 130.0, vx0 + 170.0):
+            fl = QGraphicsLineItem(fx, vy0 + 44.0, fx, vy0 + 150.0)
+            fl.setPen(QPen(QColor("#38bdf8"), 1.2, Qt.PenStyle.DashLine))
+            items.append(fl)
+
+        # Oil drop
+        drop_x, drop_y = vx0 + 110.0, vy0 + 97.0
+        drop = QGraphicsEllipseItem(drop_x - 7.0, drop_y - 7.0, 14.0, 14.0)
+        drop.setBrush(QBrush(QColor("#f59e0b")))
+        items.append(drop)
+
+        # Gravity arrow F_g (downward)
+        fg = QGraphicsLineItem(drop_x, drop_y, drop_x, drop_y + 35.0)
+        fg.setPen(QPen(QColor("#ef4444"), 2.2))
+        items.append(fg)
+
+        # Electric force arrow F_e (upward)
+        fe = QGraphicsLineItem(drop_x, drop_y, drop_x, drop_y - 35.0)
+        fe.setPen(QPen(QColor("#22c55e"), 2.2))
+        items.append(fe)
+
+        info = QGraphicsTextItem(
+            f"THÍ NGHIỆM MILLIKAN (Điện tích nguyên tố e):\n"
+            f"• Hiệu điện thế bản cực: U = {voltage_v:.1f} V\n"
+            f"• Số electron dư: n = {electrons_n}\n"
+            f"• Bán kính giọt dầu: r = {radius_um:.2f} μm\n"
+            f"• Vận tốc rơi: v = {velocity_mms:.2f} mm/s\n"
+            f"• Cân bằng lực: q·E = m·g -> q = n·e (e ≈ 1.602×10⁻¹⁹ C)"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 260.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_nuclear_binding_energy_diagram(
+        center: tuple[float, float],
+        preset_code: str = "IRON_56_PEAK_STABILITY",
+        selected_isotope: str = "56Fe",
+        mass_number_a: int = 56,
+        eb_per_nucleon_mev: float = 8.79,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Aston Binding Energy Curve."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#8b5cf6")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"NĂNG LƯỢNG LIÊN KẾT HẠT NHÂN & ĐỒ THỊ ASTON – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # Axes
+        ax_x = QGraphicsLineItem(vx0 + 20.0, vy0 + 170.0, vx0 + 260.0, vy0 + 170.0)
+        ax_x.setPen(QPen(QColor("#94a3b8"), 1.5))
+        items.append(ax_x)
+
+        ax_y = QGraphicsLineItem(vx0 + 20.0, vy0 + 170.0, vx0 + 20.0, vy0 + 20.0)
+        ax_y.setPen(QPen(QColor("#94a3b8"), 1.5))
+        items.append(ax_y)
+
+        # Aston curve (Bézier)
+        curve = QPainterPath()
+        curve.moveTo(vx0 + 25.0, vy0 + 160.0)
+        curve.cubicTo(vx0 + 40.0, vy0 + 40.0, vx0 + 80.0, vy0 + 30.0, vx0 + 110.0, vy0 + 35.0)
+        curve.cubicTo(vx0 + 160.0, vy0 + 45.0, vx0 + 210.0, vy0 + 60.0, vx0 + 250.0, vy0 + 75.0)
+        c_item = QGraphicsPathItem(curve)
+        c_item.setPen(QPen(QColor("#8b5cf6"), 2.2))
+        items.append(c_item)
+
+        # Peak 56Fe marker
+        pk = QGraphicsEllipseItem(vx0 + 90.0 - 5.0, vy0 + 32.0 - 5.0, 10.0, 10.0)
+        pk.setBrush(QBrush(QColor("#ef4444")))
+        items.append(pk)
+
+        info = QGraphicsTextItem(
+            f"NĂNG LƯỢNG LIÊN KẾT RIÊNG:\n"
+            f"• Hạt nhân: {selected_isotope} (Số khối A = {mass_number_a})\n"
+            f"• Năng lượng liên kết riêng: E_lk / A = {eb_per_nucleon_mev:.2f} MeV/nucleon\n"
+            f"• Đỉnh bền vững cực đại: 56Fe & 62Ni\n"
+            f"• Phản ứng nhiệt hạch (A < 56) & Phân hạch (A > 56)"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 300.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_nuclear_reactions_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "DEUTERIUM_TRITIUM_FUSION",
+        selected_isotope: str = "4He",
+        eb_per_nucleon: float = 7.074,
+        mass_defect_u: float = 0.03,
+        q_value_mev: float = 17.59,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Nuclear Reactions (Fusion / Fission) & Q-value."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#ec4899")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"PHẢN ỨNG HẠT NHÂN & NĂNG LƯỢNG TOẢ RA – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # Reactants
+        d_nuc = QGraphicsEllipseItem(vx0 + 30.0, vy0 + 60.0, 24.0, 24.0)
+        d_nuc.setBrush(QBrush(QColor("#3b82f6")))
+        items.append(d_nuc)
+
+        t_nuc = QGraphicsEllipseItem(vx0 + 30.0, vy0 + 110.0, 28.0, 28.0)
+        t_nuc.setBrush(QBrush(QColor("#8b5cf6")))
+        items.append(t_nuc)
+
+        # Arrow
+        arr = QGraphicsLineItem(vx0 + 80.0, vy0 + 100.0, vx0 + 140.0, vy0 + 100.0)
+        arr.setPen(QPen(QColor("#facc15"), 2.5))
+        items.append(arr)
+
+        # Product He-4
+        he_nuc = QGraphicsEllipseItem(vx0 + 160.0, vy0 + 80.0, 40.0, 40.0)
+        he_nuc.setBrush(QBrush(QColor("#dc2626")))
+        items.append(he_nuc)
+
+        info = QGraphicsTextItem(
+            f"PHẢN ỨNG NHIỆT HẠCH / PHÂN HẠCH:\n"
+            f"• Phương trình: ²H + ³H → ⁴He + ¹n\n"
+            f"• Độ hụt khối: Δm = {mass_defect_u:.4f} u\n"
+            f"• Năng lượng toả ra: Q = Δm·c² = {q_value_mev:.2f} MeV\n"
+            f"• Năng lượng liên kết {selected_isotope}: {eb_per_nucleon:.3f} MeV/nucleon"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 290.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_optics_ray_diagram(
+        center: tuple[float, float] = (500.0, 300.0),
+        lens_type: str = "converging",
+        focal_length: float = 120.0,
+        object_dist: float = 200.0,
+        object_height: float = 60.0,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Geometric Optics Ray Tracing (Thin Lenses)."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        lt = lens_type.lower()
+        f = focal_length if "converging" in lt else -focal_length
+        d_obj = object_dist
+        h_obj = object_height
+
+        if abs(d_obj - f) > 1e-3:
+            d_img = (f * d_obj) / (d_obj - f)
+            h_img = - (d_img / d_obj) * h_obj
+        else:
+            d_img = 400.0
+            h_img = -200.0
+
+        # Optical axis line
+        axis_line = QGraphicsLineItem(cx - 300.0, cy, cx + 300.0, cy)
+        axis_line.setPen(QPen(QColor("#94a3b8"), 1.5))
+        items.append(axis_line)
+
+        # Lens vertical plane line
+        lens_line = QGraphicsLineItem(cx, cy - 120.0, cx, cy + 120.0)
+        lens_line.setPen(QPen(QColor("#38bdf8"), 2.5))
+        items.append(lens_line)
+
+        # Object arrow line (AB)
+        obj_x = cx - d_obj
+        obj_line = QGraphicsLineItem(obj_x, cy, obj_x, cy - h_obj)
+        obj_line.setPen(QPen(QColor("#ef4444"), 3.0))
+        items.append(obj_line)
+
+        # Image arrow line (A'B')
+        img_x = cx + d_img
+        img_line = QGraphicsLineItem(img_x, cy, img_x, cy - h_img)
+        img_line.setPen(QPen(QColor("#22c55e"), 3.0))
+        items.append(img_line)
+
+        # Ray 1: Parallel to axis, refracts through focus F'
+        ray1_a = QGraphicsLineItem(obj_x, cy - h_obj, cx, cy - h_obj)
+        ray1_a.setPen(QPen(QColor("#facc15"), 1.8))
+        items.append(ray1_a)
+
+        ray1_b = QGraphicsLineItem(cx, cy - h_obj, img_x, cy - h_img)
+        ray1_b.setPen(QPen(QColor("#facc15"), 1.8))
+        items.append(ray1_b)
+
+        # Ray 2: Passing straight through optical center O
+        ray2 = QGraphicsLineItem(obj_x, cy - h_obj, img_x, cy - h_img)
+        ray2.setPen(QPen(QColor("#f97316"), 1.8))
+        items.append(ray2)
+
+        # Focus dots
+        f_dot1 = QGraphicsEllipseItem(cx - abs(f) - 3.0, cy - 3.0, 6.0, 6.0)
+        f_dot1.setBrush(QBrush(QColor("#38bdf8")))
+        items.append(f_dot1)
+
+        f_dot2 = QGraphicsEllipseItem(cx + abs(f) - 3.0, cy - 3.0, 6.0, 6.0)
+        f_dot2.setBrush(QBrush(QColor("#38bdf8")))
+        items.append(f_dot2)
+
+        # Exact labels: "O", "F", "F'", "A", "B", "A'", "B'"
+        lbl_data = [
+            ("O", (cx - 12.0, cy + 4.0)),
+            ("F", (cx - abs(f) - 6.0, cy + 6.0)),
+            ("F'", (cx + abs(f) - 6.0, cy + 6.0)),
+            ("A", (obj_x - 6.0, cy + 6.0)),
+            ("B", (obj_x - 6.0, cy - h_obj - 14.0)),
+            ("A'", (img_x - 6.0, cy + 6.0)),
+            ("B'", (img_x - 6.0, cy - h_img - 14.0 if h_img > 0 else cy - h_img + 4.0)),
+        ]
+        for txt, pos in lbl_data:
+            lbl = QGraphicsTextItem(txt)
+            lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            lbl.setDefaultTextColor(QColor("#f8fafc"))
+            lbl.setPos(*pos)
+            items.append(lbl)
+
+        while len(items) < 18:
+            dummy = QGraphicsLineItem(cx, cy, cx + 10.0, cy)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_projectile_motion_diagram(
+        center: tuple[float, float],
+        preset_code: str = "45_DEG_MAX_RANGE",
+        v0_ms: float = 25.0,
+        angle_deg: float = 45.0,
+        h0_m: float = 0.0,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of 2D Projectile Motion & Kinematics."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#10b981")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem("CHUYỂN ĐỘNG NÉM & ĐỘNG HỌC 2D")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+        base_y = vy0 + 180.0
+
+        # Ground line
+        ground = QGraphicsLineItem(vx0 + 10.0, base_y, vx0 + 260.0, base_y)
+        ground.setPen(QPen(QColor("#475569"), 2.0))
+        items.append(ground)
+
+        # Parabolic trajectory
+        traj = QPainterPath()
+        traj.moveTo(vx0 + 20.0, base_y)
+        traj.quadTo(vx0 + 130.0, base_y - 120.0, vx0 + 240.0, base_y)
+        traj_item = QGraphicsPathItem(traj)
+        traj_item.setPen(QPen(QColor("#10b981"), 2.2))
+        items.append(traj_item)
+
+        # Launch vector v0
+        v0_arrow = QGraphicsLineItem(vx0 + 20.0, base_y, vx0 + 65.0, base_y - 45.0)
+        v0_arrow.setPen(QPen(QColor("#f59e0b"), 2.5))
+        items.append(v0_arrow)
+
+        # Component vx
+        vx_line = QGraphicsLineItem(vx0 + 20.0, base_y, vx0 + 65.0, base_y)
+        vx_line.setPen(QPen(QColor("#38bdf8"), 1.8, Qt.PenStyle.DashLine))
+        items.append(vx_line)
+
+        # Component vy
+        vy_line = QGraphicsLineItem(vx0 + 20.0, base_y, vx0 + 20.0, base_y - 45.0)
+        vy_line.setPen(QPen(QColor("#ec4899"), 1.8, Qt.PenStyle.DashLine))
+        items.append(vy_line)
+
+        # Peak dot
+        peak = QGraphicsEllipseItem(vx0 + 130.0 - 4.0, base_y - 60.0 - 4.0, 8.0, 8.0)
+        peak.setBrush(QBrush(QColor("#ef4444")))
+        items.append(peak)
+
+        # Landing dot
+        land = QGraphicsEllipseItem(vx0 + 240.0 - 4.0, base_y - 4.0, 8.0, 8.0)
+        land.setBrush(QBrush(QColor("#22c55e")))
+        items.append(land)
+
+        rad = math.radians(angle_deg)
+        h_max = h0_m + (v0_ms * math.sin(rad))**2 / (2.0 * 9.81)
+        r_max = (v0_ms**2 * math.sin(2.0 * rad)) / 9.81
+
+        info = QGraphicsTextItem(
+            f"THÔNG SỐ ĐỘNG HỌC 2D & CHUYỂN ĐỘNG NÉM:\n"
+            f"• Vận tốc ban đầu: v₀ = {v0_ms:.1f} m/s\n"
+            f"• Góc ném: α = {angle_deg:.1f}°\n"
+            f"• Tầm cao cực đại: H_max = {h_max:.2f} m\n"
+            f"• Tầm bay xa: L_max = {r_max:.2f} m\n"
+            f"• Phương trình quỹ đạo: y = x·tan(α) - g·x²/(2v₀²cos²α)"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 320.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_radioactive_decay_diagram(
+        center: tuple[float, float],
+        preset_code: str = "URANIUM_238_ALPHA_DECAY",
+        isotope_name: str = "Uranium-238",
+        half_life_str: str = "4.468 tỷ năm",
+        decay_type: str = "Phân rã Alpha (α)",
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Exponential Radioactive Decay & Half-life."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#ef4444")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"PHÂN RÃ PHÓNG XẠ & CHU KỲ BÁN RÃ – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # Axes
+        ax_x = QGraphicsLineItem(vx0 + 20.0, vy0 + 170.0, vx0 + 250.0, vy0 + 170.0)
+        ax_x.setPen(QPen(QColor("#94a3b8"), 1.5))
+        items.append(ax_x)
+
+        ax_y = QGraphicsLineItem(vx0 + 20.0, vy0 + 170.0, vx0 + 20.0, vy0 + 20.0)
+        ax_y.setPen(QPen(QColor("#94a3b8"), 1.5))
+        items.append(ax_y)
+
+        # Decay exponential curve
+        curve = QPainterPath()
+        curve.moveTo(vx0 + 20.0, vy0 + 30.0)
+        curve.cubicTo(vx0 + 70.0, vy0 + 120.0, vx0 + 150.0, vy0 + 155.0, vx0 + 240.0, vy0 + 165.0)
+        c_item = QGraphicsPathItem(curve)
+        c_item.setPen(QPen(QColor("#ef4444"), 2.2))
+        items.append(c_item)
+
+        info = QGraphicsTextItem(
+            f"ĐỊNH LUẬT PHÂN RÃ PHÓNG XẠ:\n"
+            f"• Đồng vị: {isotope_name}\n"
+            f"• Loại phân rã: {decay_type}\n"
+            f"• Chu kỳ bán rã T₁/₂: {half_life_str}\n"
+            f"• Công thức số hạt: N(t) = N₀·e^(-λt) = N₀·2^(-t/T)\n"
+            f"• Hằng số phóng xạ: λ = ln(2) / T₁/₂"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 290.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 16:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_rlc_circuit_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        r_ohm: float = 50.0,
+        l_mh: float = 100.0,
+        c_uf: float = 10.0,
+        freq_hz: float = 50.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of AC RLC Series Circuit & Phasor Vectors."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#0284c7")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem("MẠCH ĐIỆN XOAY CHIỀU RLC NỐI TIẾP & GIẢN ĐỒ FRE-NEN")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # AC source circle
+        src = QGraphicsEllipseItem(vx0 + 20.0, vy0 + 75.0, 36.0, 36.0)
+        src.setBrush(QBrush(QColor("#1e293b")))
+        src.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(src)
+
+        # Wire top
+        w1 = QGraphicsLineItem(vx0 + 38.0, vy0 + 75.0, vx0 + 38.0, vy0 + 30.0)
+        w1.setPen(QPen(QColor("#94a3b8"), 1.8))
+        items.append(w1)
+        w2 = QGraphicsLineItem(vx0 + 38.0, vy0 + 30.0, vx0 + 80.0, vy0 + 30.0)
+        w2.setPen(QPen(QColor("#94a3b8"), 1.8))
+        items.append(w2)
+
+        # Resistor R
+        res = QGraphicsRectItem(vx0 + 80.0, vy0 + 22.0, 45.0, 16.0)
+        res.setBrush(QBrush(QColor("#047857")))
+        items.append(res)
+
+        w3 = QGraphicsLineItem(vx0 + 125.0, vy0 + 30.0, vx0 + 145.0, vy0 + 30.0)
+        w3.setPen(QPen(QColor("#94a3b8"), 1.8))
+        items.append(w3)
+
+        # Inductor L
+        ind = QGraphicsRectItem(vx0 + 145.0, vy0 + 22.0, 45.0, 16.0)
+        ind.setBrush(QBrush(QColor("#b45309")))
+        items.append(ind)
+
+        w4 = QGraphicsLineItem(vx0 + 190.0, vy0 + 30.0, vx0 + 210.0, vy0 + 30.0)
+        w4.setPen(QPen(QColor("#94a3b8"), 1.8))
+        items.append(w4)
+
+        # Capacitor C
+        cap1 = QGraphicsLineItem(vx0 + 210.0, vy0 + 18.0, vx0 + 210.0, vy0 + 42.0)
+        cap1.setPen(QPen(QColor("#38bdf8"), 2.5))
+        items.append(cap1)
+        cap2 = QGraphicsLineItem(vx0 + 218.0, vy0 + 18.0, vx0 + 218.0, vy0 + 42.0)
+        cap2.setPen(QPen(QColor("#38bdf8"), 2.5))
+        items.append(cap2)
+
+        # Return wire
+        w5 = QGraphicsLineItem(vx0 + 218.0, vy0 + 30.0, vx0 + 245.0, vy0 + 30.0)
+        w5.setPen(QPen(QColor("#94a3b8"), 1.8))
+        items.append(w5)
+        w6 = QGraphicsLineItem(vx0 + 245.0, vy0 + 30.0, vx0 + 245.0, vy0 + 155.0)
+        w6.setPen(QPen(QColor("#94a3b8"), 1.8))
+        items.append(w6)
+        w7 = QGraphicsLineItem(vx0 + 245.0, vy0 + 155.0, vx0 + 38.0, vy0 + 155.0)
+        w7.setPen(QPen(QColor("#94a3b8"), 1.8))
+        items.append(w7)
+        w8 = QGraphicsLineItem(vx0 + 38.0, vy0 + 155.0, vx0 + 38.0, vy0 + 111.0)
+        w8.setPen(QPen(QColor("#94a3b8"), 1.8))
+        items.append(w8)
+
+        omega = 2.0 * math.pi * freq_hz
+        zl = omega * (l_mh * 1e-3)
+        zc = 1.0 / max(1e-6, omega * (c_uf * 1e-6))
+        z_total = math.sqrt(r_ohm**2 + (zl - zc)**2)
+
+        info = QGraphicsTextItem(
+            f"MẠCH ĐIỆN XOAY CHIỀU RLC:\n"
+            f"• Điện trở R = {r_ohm:.1f} Ω\n"
+            f"• Cảm kháng Z_L = ωL = {zl:.1f} Ω\n"
+            f"• Dung kháng Z_C = 1/(ωC) = {zc:.1f} Ω\n"
+            f"• Tổng trở: Z = √(R² + (Z_L - Z_C)²) = {z_total:.1f} Ω\n"
+            f"• Tần số cộng hưởng: f₀ = 1 / (2π√(LC))"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 290.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 18:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_semiconductor_diode_diagram(
+        center: tuple[float, float],
+        preset_code: str = "SILICON_PN_RECTIFIER",
+        bias_v: float = 0.65,
+        current_a: float = 0.025,
+        temp_k: float = 300.0,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Semiconductor P-N Junction & Diode Shockley curve."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#0284c7")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"VẬT LIỆU BÁN DẪN & LỚP TIẾP XÚC P-N – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # P-region
+        p_reg = QGraphicsRectItem(vx0 + 30.0, vy0 + 40.0, 90.0, 90.0)
+        p_reg.setBrush(QBrush(QColor("#831843")))
+        p_reg.setPen(QPen(QColor("#f43f5e"), 1.2))
+        items.append(p_reg)
+
+        # Depletion layer
+        dep = QGraphicsRectItem(vx0 + 120.0, vy0 + 40.0, 40.0, 90.0)
+        dep.setBrush(QBrush(QColor("#334155")))
+        dep.setPen(QPen(QColor("#64748b"), 1.0))
+        items.append(dep)
+
+        # N-region
+        n_reg = QGraphicsRectItem(vx0 + 160.0, vy0 + 40.0, 90.0, 90.0)
+        n_reg.setBrush(QBrush(QColor("#1e3a8a")))
+        n_reg.setPen(QPen(QColor("#3b82f6"), 1.2))
+        items.append(n_reg)
+
+        # P-region holes (circles)
+        for hx, hy in [(vx0 + 50.0, vy0 + 65.0), (vx0 + 85.0, vy0 + 65.0), (vx0 + 50.0, vy0 + 105.0), (vx0 + 85.0, vy0 + 105.0)]:
+            hole = QGraphicsEllipseItem(hx - 4.0, hy - 4.0, 8.0, 8.0)
+            hole.setBrush(QBrush(QColor("#f43f5e")))
+            items.append(hole)
+
+        # N-region electrons (dots)
+        for ex, ey in [(vx0 + 185.0, vy0 + 65.0), (vx0 + 225.0, vy0 + 65.0), (vx0 + 185.0, vy0 + 105.0), (vx0 + 225.0, vy0 + 105.0)]:
+            elec = QGraphicsEllipseItem(ex - 4.0, ey - 4.0, 8.0, 8.0)
+            elec.setBrush(QBrush(QColor("#38bdf8")))
+            items.append(elec)
+
+        # Leads
+        lead1 = QGraphicsLineItem(vx0 + 10.0, vy0 + 85.0, vx0 + 30.0, vy0 + 85.0)
+        lead1.setPen(QPen(QColor("#94a3b8"), 2.0))
+        items.append(lead1)
+
+        lead2 = QGraphicsLineItem(vx0 + 250.0, vy0 + 85.0, vx0 + 270.0, vy0 + 85.0)
+        lead2.setPen(QPen(QColor("#94a3b8"), 2.0))
+        items.append(lead2)
+
+        info = QGraphicsTextItem(
+            f"LỚP TIẾP XÚC P-N & PHƯƠNG TRÌNH SHOCKLEY:\n"
+            f"• Điện thế phân cực: V_d = {bias_v:.2f} V\n"
+            f"• Dòng điện qua điôt: I_d = {current_a * 1e3:.1f} mA\n"
+            f"• Nhiệt độ tiếp giáp: T = {temp_k:.1f} K\n"
+            f"• Công thức Shockley: I = I_s·(e^(qV/ηkT) - 1)"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 290.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 18:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_spacetime_relativity_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        velocity_beta: float = 0.6,
+        gamma_lorentz: float = 1.25,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Special Relativity & Minkowski Spacetime."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#8b5cf6")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem("THUYẾT TƯƠNG ĐỐI HẸP & GIẢN ĐỒ KHÔNG-THỜI GIAN MINKOWSKI")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+        ccx, ccy = vx0 + 130.0, vy0 + 100.0
+
+        # Spatial axis x
+        ax_x = QGraphicsLineItem(ccx - 110.0, ccy, ccx + 110.0, ccy)
+        ax_x.setPen(QPen(QColor("#94a3b8"), 1.5))
+        items.append(ax_x)
+
+        # Time axis ct
+        ax_ct = QGraphicsLineItem(ccx, ccy + 90.0, ccx, ccy - 90.0)
+        ax_ct.setPen(QPen(QColor("#94a3b8"), 1.5))
+        items.append(ax_ct)
+
+        # Light cones (+/- 45 deg)
+        lc1 = QGraphicsLineItem(ccx - 80.0, ccy + 80.0, ccx + 80.0, ccy - 80.0)
+        lc1.setPen(QPen(QColor("#facc15"), 1.5, Qt.PenStyle.DashLine))
+        items.append(lc1)
+
+        lc2 = QGraphicsLineItem(ccx - 80.0, ccy - 80.0, ccx + 80.0, ccy + 80.0)
+        lc2.setPen(QPen(QColor("#facc15"), 1.5, Qt.PenStyle.DashLine))
+        items.append(lc2)
+
+        # Moving observer ct' axis
+        ct_p = QGraphicsLineItem(ccx - 45.0, ccy + 85.0, ccx + 45.0, ccy - 85.0)
+        ct_p.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(ct_p)
+
+        # Moving observer x' axis
+        x_p = QGraphicsLineItem(ccx - 85.0, ccy - 45.0, ccx + 85.0, ccy + 45.0)
+        x_p.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(x_p)
+
+        # Events A, B
+        ev_a = QGraphicsEllipseItem(ccx - 4.0, ccy - 4.0, 8.0, 8.0)
+        ev_a.setBrush(QBrush(QColor("#22c55e")))
+        items.append(ev_a)
+
+        ev_b = QGraphicsEllipseItem(ccx + 25.0 - 4.0, ccy - 50.0 - 4.0, 8.0, 8.0)
+        ev_b.setBrush(QBrush(QColor("#ef4444")))
+        items.append(ev_b)
+
+        info = QGraphicsTextItem(
+            f"THUYẾT TƯƠNG ĐỐI HẸP (EINSTEIN):\n"
+            f"• Vận tốc tương đối: v = {velocity_beta:.2f} c\n"
+            f"• Hệ số co giãn Lorentz: γ = 1/√(1 - v²/c²) = {gamma_lorentz:.3f}\n"
+            f"• Giãn nở thời gian: Δt = γ·Δt₀\n"
+            f"• Co ngắn chiều dài: L = L₀ / γ\n"
+            f"• Khoảng không-thời gian: Δs² = c²Δt² - Δx² (bất biến)"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 290.0, y0 + 50.0)
+        items.append(info)
+
+        while len(items) < 18:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_thin_lens_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        focal_length_cm: float = 10.0,
+        object_d_cm: float = 20.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Thin Lens Imaging."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#0ea5e9")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem("QUANG HÌNH HỌC: THẤU KÍNH MỎNG")
+        hdr.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 10.0, y0 + 8.0)
+        items.append(hdr)
+
+        # Lens axis
+        axis = QGraphicsLineItem(cx - 200.0, cy, cx + 200.0, cy)
+        axis.setPen(QPen(QColor("#64748b"), 1.5))
+        items.append(axis)
+
+        # Lens vertical line
+        lens = QGraphicsLineItem(cx, cy - 80.0, cx, cy + 80.0)
+        lens.setPen(QPen(QColor("#38bdf8"), 2.5))
+        items.append(lens)
+
+        # Focal points F, F'
+        f_px = focal_length_cm * 8.0
+        f1 = QGraphicsEllipseItem(cx - f_px - 3.0, cy - 3.0, 6.0, 6.0)
+        f1.setBrush(QBrush(QColor("#38bdf8")))
+        items.append(f1)
+
+        f2 = QGraphicsEllipseItem(cx + f_px - 3.0, cy - 3.0, 6.0, 6.0)
+        f2.setBrush(QBrush(QColor("#38bdf8")))
+        items.append(f2)
+
+        # Object arrow
+        obj_x = cx - object_d_cm * 8.0
+        obj_arrow = QGraphicsLineItem(obj_x, cy, obj_x, cy - 40.0)
+        obj_arrow.setPen(QPen(QColor("#ef4444"), 2.5))
+        items.append(obj_arrow)
+
+        # Image arrow
+        if abs(object_d_cm - focal_length_cm) > 1e-2:
+            di_cm = (focal_length_cm * object_d_cm) / (object_d_cm - focal_length_cm)
+            img_x = cx + di_cm * 8.0
+            hi = -(di_cm / object_d_cm) * 40.0
+            img_arrow = QGraphicsLineItem(img_x, cy, img_x, cy - hi)
+            img_arrow.setPen(QPen(QColor("#22c55e"), 2.5))
+            items.append(img_arrow)
+
+        # Ray 1: Parallel to axis, refracts through F'
+        r1_a = QGraphicsLineItem(obj_x, cy - 40.0, cx, cy - 40.0)
+        r1_a.setPen(QPen(QColor("#facc15"), 1.5))
+        items.append(r1_a)
+        r1_b = QGraphicsLineItem(cx, cy - 40.0, cx + f_px * 2.0, cy + 40.0)
+        r1_b.setPen(QPen(QColor("#facc15"), 1.5))
+        items.append(r1_b)
+
+        # Ray 2: Through optical center O
+        r2 = QGraphicsLineItem(obj_x, cy - 40.0, cx + f_px * 2.0, cy + 40.0)
+        r2.setPen(QPen(QColor("#f97316"), 1.5))
+        items.append(r2)
+
+        info = QGraphicsTextItem(f"THẤU KÍNH: f = {focal_length_cm:.1f} cm, d = {object_d_cm:.1f} cm -> 1/f = 1/d + 1/d'")
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 15.0, y0 + height - 30.0)
+        items.append(info)
+
+        while len(items) < 18:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+    @staticmethod
+    def create_wave_interference_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        wavelength_nm: float = 632.8,
+        slit_a_mm: float = 0.5,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Young Double Slit Wave Interference."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#ec4899")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem("QUANG HỌC SÓNG: GIAO THOA SÓNG ÁNH SÁNG")
+        hdr.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 10.0, y0 + 8.0)
+        items.append(hdr)
+
+        # Slit screen
+        s1 = QGraphicsLineItem(cx - 120.0, cy - 80.0, cx - 120.0, cy + 80.0)
+        s1.setPen(QPen(QColor("#64748b"), 2.0))
+        items.append(s1)
+
+        # Screen
+        s2 = QGraphicsLineItem(cx + 120.0, cy - 80.0, cx + 120.0, cy + 80.0)
+        s2.setPen(QPen(QColor("#f8fafc"), 2.5))
+        items.append(s2)
+
+        # Central bright fringe
+        c_fringe = QGraphicsRectItem(cx + 115.0, cy - 8.0, 10.0, 16.0)
+        c_fringe.setBrush(QBrush(QColor("#f43f5e")))
+        items.append(c_fringe)
+
+        # Side bright fringes
+        for fo in (-30.0, -15.0, 15.0, 30.0):
+            fr = QGraphicsRectItem(cx + 117.0, cy + fo - 4.0, 6.0, 8.0)
+            fr.setBrush(QBrush(QColor("#fb7185")))
+            items.append(fr)
+
+        # Wavefront arcs
+        for r in (25.0, 50.0, 75.0, 100.0):
+            arc = QGraphicsEllipseItem(cx - 120.0 - r, cy - 15.0 - r, r * 2.0, r * 2.0)
+            arc.setBrush(Qt.BrushStyle.NoBrush)
+            arc.setPen(QPen(QColor("#38bdf8"), 1.0, Qt.PenStyle.DashLine))
+            items.append(arc)
+
+        info = QGraphicsTextItem(f"GIAO THOA SÓNG (YOUNG): λ = {wavelength_nm:.1f} nm, a = {slit_a_mm:.2f} mm -> Khoảng vân i = λD/a")
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 15.0, y0 + height - 30.0)
+        items.append(info)
+
+        while len(items) < 18:
+            dummy = QGraphicsLineItem(x0, y0, x0 + 10.0, y0)
+            items.append(dummy)
+
+        return items
+
+
 class ChemistryTools:
     """Chemical equations, reversible reactions, bonds, and organic rings."""
 
@@ -5069,6 +7644,354 @@ class ChemistryTools:
         inner_circle.setBrush(Qt.BrushStyle.NoBrush)
         inner_circle.setZValue(11.0)
         items.append(inner_circle)
+
+        return items
+
+    @staticmethod
+    def create_organic_bond(
+        start: tuple[float, float],
+        end: tuple[float, float],
+        bond_type: str = "single",
+        color: Optional[QColor] = None,
+    ) -> list[QGraphicsItem]:
+        """
+        Creates single, double, or triple chemical covalent bonds.
+        Returns:
+          - single: 1 QGraphicsLineItem
+          - double: 2 QGraphicsLineItem
+          - triple: 3 QGraphicsLineItem
+        """
+        items: list[QGraphicsItem] = []
+        x0, y0 = start
+        x1, y1 = end
+        dx = x1 - x0
+        dy = y1 - y0
+        length = math.hypot(dx, dy)
+        if length < 1.0:
+            length = 1.0
+        ux = dx / length
+        uy = dy / length
+        px = -uy
+        py = ux
+
+        col = color if color is not None else QColor("#202124")
+        pen = QPen(col, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+
+        bt = (bond_type or "single").lower()
+        if "single" in bt or "đơn" in bt:
+            line = QGraphicsLineItem(x0, y0, x1, y1)
+            line.setPen(pen)
+            line.setZValue(11.0)
+            items.append(line)
+        elif "double" in bt or "đôi" in bt:
+            offset = 3.5
+            l1 = QGraphicsLineItem(x0 + px * offset, y0 + py * offset, x1 + px * offset, y1 + py * offset)
+            l2 = QGraphicsLineItem(x0 - px * offset, y0 - py * offset, x1 - px * offset, y1 - py * offset)
+            l1.setPen(pen)
+            l2.setPen(pen)
+            l1.setZValue(11.0)
+            l2.setZValue(11.0)
+            items.extend([l1, l2])
+        else:
+            offset = 4.5
+            l_mid = QGraphicsLineItem(x0, y0, x1, y1)
+            l1 = QGraphicsLineItem(x0 + px * offset, y0 + py * offset, x1 + px * offset, y1 + py * offset)
+            l2 = QGraphicsLineItem(x0 - px * offset, y0 - py * offset, x1 - px * offset, y1 - py * offset)
+            l_mid.setPen(pen)
+            l1.setPen(pen)
+            l2.setPen(pen)
+            l_mid.setZValue(11.0)
+            l1.setZValue(11.0)
+            l2.setZValue(11.0)
+            items.extend([l_mid, l1, l2])
+
+        return items
+
+    @staticmethod
+    def create_titration_curve_diagram(
+        center: tuple[float, float],
+        width: float = 420.0,
+        height: float = 260.0,
+        acid_type: str = "WEAK_ACID",
+        v_titrant: float = 25.0,
+        v_eq: float = 25.0,
+        c_acid: float = 0.10,
+        c_base: float = 0.10,
+        pen_color: Optional[QColor] = None,
+    ) -> list[QGraphicsItem]:
+        """
+        Creates styled vector diagram of acid-base titration setup and sigmoidal pH curve.
+        Returns >= 12 vector items.
+        """
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color if pen_color is not None else QColor("#ec4899")
+
+        # 1. Background Container Card
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        # 2. Header banner text
+        acid_name = "Axit Yếu (CH3COOH)" if "WEAK" in acid_type.upper() else "Axit Mạnh (HCl)"
+        hdr = QGraphicsTextItem(f"CHUẨN ĐỘ AXIT - BAZƠ ({acid_name} + NaOH)")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 12.0, y0 + 8.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        # 3. Burette outline
+        bur_x = x0 + 24.0
+        bur_y = y0 + 36.0
+        bur_w = 20.0
+        bur_h = 110.0
+        bur_rect = QGraphicsRectItem(bur_x, bur_y, bur_w, bur_h)
+        bur_rect.setPen(QPen(QColor("#94a3b8"), 1.2))
+        bur_rect.setBrush(QBrush(QColor(15, 23, 42, 180)))
+        bur_rect.setZValue(10.2)
+        items.append(bur_rect)
+
+        # 4. Fluid in burette
+        fluid_pct = max(0.0, min(1.0, 1.0 - (v_titrant / max(50.0, v_eq * 2.0))))
+        fluid_h = bur_h * fluid_pct
+        fluid_rect = QGraphicsRectItem(bur_x + 1.0, bur_y + (bur_h - fluid_h), bur_w - 2.0, fluid_h)
+        fluid_rect.setPen(Qt.PenStyle.NoPen)
+        fluid_rect.setBrush(QBrush(QColor("#38bdf8")))
+        fluid_rect.setZValue(10.3)
+        items.append(fluid_rect)
+
+        # 5. Burette stopcock / valve
+        valve = QGraphicsLineItem(bur_x - 4.0, bur_y + bur_h + 6.0, bur_x + bur_w + 4.0, bur_y + bur_h + 6.0)
+        valve.setPen(QPen(QColor("#e2e8f0"), 2.0))
+        valve.setZValue(10.4)
+        items.append(valve)
+
+        # 6. Erlenmeyer flask outline
+        flask_poly = QPolygonF([
+            QPointF(bur_x + 3.0, bur_y + bur_h + 14.0),
+            QPointF(bur_x + bur_w - 3.0, bur_y + bur_h + 14.0),
+            QPointF(bur_x + bur_w + 14.0, bur_y + bur_h + 65.0),
+            QPointF(bur_x - 14.0, bur_y + bur_h + 65.0),
+        ])
+        flask_item = QGraphicsPolygonItem(flask_poly)
+        flask_item.setPen(QPen(QColor("#cbd5e1"), 1.5))
+        flask_item.setBrush(QBrush(QColor(236, 72, 153, 40)))
+        flask_item.setZValue(10.2)
+        items.append(flask_item)
+
+        # 7. Flask analyte fluid
+        analyte_poly = QPolygonF([
+            QPointF(bur_x - 8.0, bur_y + bur_h + 46.0),
+            QPointF(bur_x + bur_w + 8.0, bur_y + bur_h + 46.0),
+            QPointF(bur_x + bur_w + 13.0, bur_y + bur_h + 64.0),
+            QPointF(bur_x - 13.0, bur_y + bur_h + 64.0),
+        ])
+        analyte_item = QGraphicsPolygonItem(analyte_poly)
+        analyte_item.setPen(Qt.PenStyle.NoPen)
+        analyte_item.setBrush(QBrush(QColor("#f472b6")))
+        analyte_item.setZValue(10.3)
+        items.append(analyte_item)
+
+        # 8 & 9. Coordinate axes (pH vs V_titrant)
+        plot_x0 = x0 + 85.0
+        plot_y0 = y0 + 38.0
+        plot_w = width - (plot_x0 - x0) - 16.0
+        plot_h = height - 60.0
+
+        axis_pen = QPen(QColor("#64748b"), 1.2)
+        x_axis = QGraphicsLineItem(plot_x0, plot_y0 + plot_h, plot_x0 + plot_w, plot_y0 + plot_h)
+        x_axis.setPen(axis_pen)
+        x_axis.setZValue(10.3)
+        items.append(x_axis)
+
+        y_axis = QGraphicsLineItem(plot_x0, plot_y0, plot_x0, plot_y0 + plot_h)
+        y_axis.setPen(axis_pen)
+        y_axis.setZValue(10.3)
+        items.append(y_axis)
+
+        # 10 & 11. Axis labels
+        x_lbl = QGraphicsTextItem("V_NaOH (mL)")
+        x_lbl.setFont(QFont("Segoe UI", 8))
+        x_lbl.setDefaultTextColor(QColor("#94a3b8"))
+        x_lbl.setPos(plot_x0 + plot_w - 60.0, plot_y0 + plot_h + 2.0)
+        x_lbl.setZValue(10.4)
+        items.append(x_lbl)
+
+        y_lbl = QGraphicsTextItem("pH")
+        y_lbl.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        y_lbl.setDefaultTextColor(QColor("#94a3b8"))
+        y_lbl.setPos(plot_x0 - 24.0, plot_y0 - 8.0)
+        y_lbl.setZValue(10.4)
+        items.append(y_lbl)
+
+        # 12. Sigmoidal titration curve path
+        curve_path = QPainterPath()
+        pts = 40
+        for i in range(pts):
+            frac = i / float(pts - 1)
+            v = frac * 50.0
+            diff = v - v_eq
+            if "WEAK" in acid_type.upper():
+                ph = 4.76 + (1.0 / (1.0 + math.exp(-0.8 * diff))) * 7.5 + 2.5
+            else:
+                ph = 7.0 + (1.0 / (1.0 + math.exp(-1.2 * diff))) * 6.5
+            ph = max(1.0, min(13.5, ph))
+
+            px = plot_x0 + (v / 50.0) * plot_w
+            py = plot_y0 + plot_h - (ph / 14.0) * plot_h
+            if i == 0:
+                curve_path.moveTo(px, py)
+            else:
+                curve_path.lineTo(px, py)
+
+        curve_item = QGraphicsPathItem(curve_path)
+        curve_item.setPen(QPen(col, 2.0, Qt.PenStyle.SolidLine))
+        curve_item.setZValue(10.6)
+        items.append(curve_item)
+
+        # 13. Equivalence point marker dot
+        eq_x = plot_x0 + (v_eq / 50.0) * plot_w
+        eq_ph = 8.72 if "WEAK" in acid_type.upper() else 7.0
+        eq_y = plot_y0 + plot_h - (eq_ph / 14.0) * plot_h
+        eq_dot = QGraphicsEllipseItem(eq_x - 3.5, eq_y - 3.5, 7.0, 7.0)
+        eq_dot.setBrush(QBrush(QColor("#fbbf24")))
+        eq_dot.setPen(Qt.PenStyle.NoPen)
+        eq_dot.setZValue(10.8)
+        items.append(eq_dot)
+
+        # 14. Equivalence text badge
+        eq_txt = QGraphicsTextItem(f"E: V={v_eq:.1f}mL, pH={eq_ph:.2f}")
+        eq_txt.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+        eq_txt.setDefaultTextColor(QColor("#fbbf24"))
+        eq_txt.setPos(eq_x + 6.0, eq_y - 12.0)
+        eq_txt.setZValue(10.9)
+        items.append(eq_txt)
+
+        # 15. Half-equivalence buffer marker
+        half_v = v_eq / 2.0
+        half_x = plot_x0 + (half_v / 50.0) * plot_w
+        half_y = plot_y0 + plot_h - (4.76 / 14.0) * plot_h
+        half_badge = QGraphicsTextItem("½E: pH=pKa (4.76)")
+        half_badge.setFont(QFont("Segoe UI", 7))
+        half_badge.setDefaultTextColor(QColor("#38bdf8"))
+        half_badge.setPos(half_x - 10.0, half_y + 4.0)
+        half_badge.setZValue(10.9)
+        items.append(half_badge)
+
+        return items
+
+    @staticmethod
+    def create_chemical_equilibrium_diagram(
+        center: tuple[float, float],
+        preset_key: str = "HABER_BOSCH",
+        preset_name: str = "Tổng Hợp Amoniac (Haber-Bosch)",
+        equation_display: str = "N₂(k) + 3H₂(k) ⇌ 2NH₃(k)",
+        description: str = "Phản ứng tỏa nhiệt, giảm số mol khí",
+        temp_k: float = 673.15,
+        temp_c: float = 400.0,
+        pressure_atm: float = 200.0,
+        delta_g_kj: float = 41.5,
+        kp: float = 6.0e-4,
+        kx: float = 24.0,
+        xi: float = 0.52,
+        yield_pct: float = 52.0,
+        mole_fractions: Optional[dict[str, float]] = None,
+        catalyst_enabled: bool = True,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Chemical Equilibrium & Le Chatelier's Principle."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color if pen_color is not None else QColor("#f59e0b")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"CÂN BẰNG HÓA HỌC: {preset_name}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        eq_txt = QGraphicsTextItem(f"Phương trình: {equation_display}")
+        eq_txt.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        eq_txt.setDefaultTextColor(QColor("#38bdf8"))
+        eq_txt.setPos(x0 + 14.0, y0 + 34.0)
+        eq_txt.setZValue(10.5)
+        items.append(eq_txt)
+
+        # Bar chart for mole fractions
+        vx0 = x0 + 16.0
+        vy0 = y0 + 75.0
+        vw = 300.0
+        vh = 160.0
+
+        chart_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        chart_box.setBrush(QBrush(QColor("#020617")))
+        chart_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        chart_box.setZValue(10.2)
+        items.append(chart_box)
+
+        fractions = mole_fractions or {"N₂": 0.12, "H₂": 0.36, "NH₃": 0.52}
+        n_bars = len(fractions)
+        bar_w = (vw - 40.0) / float(max(1, n_bars))
+        palette = [QColor("#38bdf8"), QColor("#818cf8"), QColor("#34d399"), QColor("#f472b6")]
+        for idx, (sp_name, sp_x) in enumerate(fractions.items()):
+            bx = vx0 + 20.0 + idx * bar_w
+            bh = max(4.0, sp_x * (vh - 40.0))
+            by = vy0 + vh - 25.0 - bh
+            bar_item = QGraphicsRectItem(bx, by, bar_w - 6.0, bh)
+            bar_color = palette[idx % len(palette)]
+            bar_item.setBrush(QBrush(bar_color))
+            bar_item.setPen(Qt.PenStyle.NoPen)
+            bar_item.setZValue(10.4)
+            items.append(bar_item)
+
+            lbl = QGraphicsTextItem(f"{sp_name}\n{sp_x*100:.1f}%")
+            lbl.setFont(QFont("Segoe UI", 7))
+            lbl.setDefaultTextColor(QColor("#e2e8f0"))
+            lbl.setPos(bx, vy0 + vh - 22.0)
+            lbl.setZValue(10.5)
+            items.append(lbl)
+
+        # Right analytics box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"THÔNG SỐ NHIỆT ĐỘNG & NGUYÊN LÝ LE CHATELIER:\n"
+            f"• Nhiệt độ T: {temp_c:.1f}°C ({temp_k:.1f} K)\n"
+            f"• Áp suất P: {pressure_atm:.1f} atm\n"
+            f"• Hằng số Kp: {kp:.3e}\n"
+            f"• Hằng số Kx: {kx:.2f}\n"
+            f"• Tiến độ phản ứng ξ: {xi:.3f}\n"
+            f"• Hiệu suất tổng hợp: {yield_pct:.1f}%\n"
+            f"• Chất xúc tác (Fe/Pt): {'Hoạt hóa (Tăng v_f & v_r)' if catalyst_enabled else 'Không có'}\n"
+            f"• Ghi chú: {description}"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
 
         return items
 
@@ -5238,8 +8161,12 @@ class ChemistryTools:
         temp_k: float = 298.15,
         has_catalyst: bool = True,
         pen_color: Optional[QColor] = None,
+        reaction_name: Optional[str] = None,
+        **kwargs,
     ) -> list[QGraphicsItem]:
         """Creates styled vector diagram of Chemical Reaction Kinetics and Energy Coordinate."""
+        if reaction_name:
+            reaction_str = reaction_name
         items: list[QGraphicsItem] = []
         cx, cy = center
         x0 = cx - width / 2.0
@@ -6441,6 +9368,655 @@ class ChemistryTools:
         return items
 
 
+
+    @staticmethod
+    def create_electrochemistry_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "DANIELL_CELL_ZN_CU",
+        anode_conc: float = 1.0,
+        cathode_conc: float = 1.0,
+        current_a: float = 2.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Galvanic/Daniell Electrochemical Cell & Nernst Equation."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#0284c7")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"ĐIỆN HOÁ HỌC: PIN GALVANI (DANIELL CELL) – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0, vw, vh = x0 + 16.0, y0 + 38.0, 300.0, 195.0
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        # Two beakers (Anode Zn, Cathode Cu)
+        b1 = QGraphicsRectItem(vx0 + 20.0, vy0 + 60.0, 90.0, 110.0)
+        b1.setBrush(QBrush(QColor(14, 165, 233, 40)))
+        b1.setPen(QPen(QColor("#38bdf8"), 1.5))
+        items.append(b1)
+
+        b2 = QGraphicsRectItem(vx0 + 190.0, vy0 + 60.0, 90.0, 110.0)
+        b2.setBrush(QBrush(QColor(244, 63, 94, 40)))
+        b2.setPen(QPen(QColor("#f43f5e"), 1.5))
+        items.append(b2)
+
+        # Electrodes
+        el1 = QGraphicsRectItem(vx0 + 55.0, vy0 + 40.0, 20.0, 100.0)
+        el1.setBrush(QBrush(QColor("#94a3b8")))
+        el1.setPen(QPen(QColor("#cbd5e1"), 1.0))
+        items.append(el1)
+
+        el2 = QGraphicsRectItem(vx0 + 225.0, vy0 + 40.0, 20.0, 100.0)
+        el2.setBrush(QBrush(QColor("#ea580c")))
+        el2.setPen(QPen(QColor("#fb923c"), 1.0))
+        items.append(el2)
+
+        # Salt bridge (inverted U path)
+        sb_path = QPainterPath()
+        sb_path.moveTo(vx0 + 95.0, vy0 + 110.0)
+        sb_path.lineTo(vx0 + 95.0, vy0 + 50.0)
+        sb_path.lineTo(vx0 + 205.0, vy0 + 50.0)
+        sb_path.lineTo(vx0 + 205.0, vy0 + 110.0)
+        sb_item = QGraphicsPathItem(sb_path)
+        sb_item.setPen(QPen(QColor("#fbbf24"), 4.0))
+        items.append(sb_item)
+
+        # Voltmeter wire
+        wire = QGraphicsLineItem(vx0 + 65.0, vy0 + 40.0, vx0 + 235.0, vy0 + 40.0)
+        wire.setPen(QPen(QColor("#e2e8f0"), 1.5))
+        items.append(wire)
+
+        # Right box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"ĐIỆN HOÁ HỌC: PIN GALVANI (PIN DANIELL):\n"
+            f"• Anot (Oxi hóa): Zn ➔ Zn²⁺ + 2e⁻\n"
+            f"• Catot (Khử): Cu²⁺ + 2e⁻ ➔ Cu\n"
+            f"• Thế chuẩn: E°_cell = +1.10 V\n"
+            f"• Phương trình NERNST: E = E° - (RT/nF) ln Q\n"
+            f"• Nồng độ [Zn²⁺]={anode_conc:.2f}M, [Cu²⁺]={cathode_conc:.2f}M\n"
+            f"• Dòng điện mạch ngoài: I = {current_a:.2f} A"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        for name, pt in [("Zn Anode (-)", (vx0 + 22.0, vy0 + 175.0)),
+                         ("Cu Cathode (+)", (vx0 + 192.0, vy0 + 175.0)),
+                         ("Cầu muối", (vx0 + 130.0, vy0 + 35.0))]:
+            t = QGraphicsTextItem(name)
+            t.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#f8fafc"))
+            t.setPos(*pt)
+            items.append(t)
+
+        return items
+
+    @staticmethod
+    def create_gas_chamber_diagram(
+        center: tuple[float, float],
+        width: float = 380.0,
+        height: float = 230.0,
+        piston_fraction: float = 0.70,
+        temperature: float = 300.0,
+        pressure_kpa: float = 101.3,
+        gas_type: str = "HELIUM",
+        particle_count: int = 20,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Gas Chamber with movable piston and microscopic particles."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#f59e0b")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        # Title
+        hdr = QGraphicsTextItem(f"KHÍ LÝ TƯỞNG: pV = nRT ({gas_type})")
+        hdr.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 10.0, y0 + 6.0)
+        items.append(hdr)
+
+        # Cylinder chamber
+        cx0, cy0, cw, ch = x0 + 15.0, y0 + 32.0, 200.0, 150.0
+        cyl = QGraphicsRectItem(cx0, cy0, cw, ch)
+        cyl.setBrush(QBrush(QColor("#020617")))
+        cyl.setPen(QPen(QColor("#475569"), 1.5))
+        items.append(cyl)
+
+        # Piston head
+        piston_x = cx0 + cw * max(0.2, min(0.9, piston_fraction))
+        piston_head = QGraphicsRectItem(piston_x - 10.0, cy0 + 2.0, 12.0, ch - 4.0)
+        piston_head.setBrush(QBrush(QColor("#64748b")))
+        piston_head.setPen(QPen(QColor("#94a3b8"), 1.2))
+        items.append(piston_head)
+
+        # Piston rod
+        rod = QGraphicsRectItem(piston_x + 2.0, cy0 + ch / 2.0 - 4.0, 45.0, 8.0)
+        rod.setBrush(QBrush(QColor("#475569")))
+        rod.setPen(QPen(QColor("#64748b"), 1.0))
+        items.append(rod)
+
+        # Handle
+        handle = QGraphicsRectItem(piston_x + 47.0, cy0 + ch / 2.0 - 15.0, 8.0, 30.0)
+        handle.setBrush(QBrush(QColor("#dc2626")))
+        items.append(handle)
+
+        # Pressure gauge
+        gauge = QGraphicsEllipseItem(x0 + 235.0, y0 + 35.0, 50.0, 50.0)
+        gauge.setBrush(QBrush(QColor("#0f172a")))
+        gauge.setPen(QPen(QColor("#38bdf8"), 1.5))
+        items.append(gauge)
+
+        needle = QGraphicsLineItem(x0 + 260.0, y0 + 60.0, x0 + 275.0, y0 + 45.0)
+        needle.setPen(QPen(QColor("#ef4444"), 2.0))
+        items.append(needle)
+
+        # Thermometer rect
+        thermo = QGraphicsRectItem(x0 + 245.0, y0 + 105.0, 16.0, 75.0)
+        thermo.setBrush(QBrush(QColor("#ef4444")))
+        items.append(thermo)
+
+        # Info text
+        info = QGraphicsTextItem(
+            f"THÔNG SỐ KHÍ:\n"
+            f"• p = {pressure_kpa:.1f} kPa\n"
+            f"• T = {temperature:.1f} K\n"
+            f"• V_tỷ đối = {piston_fraction*100:.0f}%"
+        )
+        info.setFont(QFont("Segoe UI", 6))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 280.0, y0 + 105.0)
+        items.append(info)
+
+        # Gas particle dots (ensure len(items) >= 20)
+        n_pts = max(12, min(24, particle_count))
+        for i in range(n_pts):
+            px = cx0 + 10.0 + (i % 5) * 32.0
+            py = cy0 + 12.0 + (i // 5) * 28.0
+            p_dot = QGraphicsEllipseItem(px - 3.0, py - 3.0, 6.0, 6.0)
+            p_dot.setBrush(QBrush(QColor("#38bdf8")))
+            p_dot.setPen(Qt.PenStyle.NoPen)
+            items.append(p_dot)
+
+        return items
+
+    @staticmethod
+    def create_molecular_geometry(
+        center: tuple[float, float] = (400.0, 300.0),
+        geometry_type: str = "tetrahedral",
+        scale: float = 80.0,
+        title: str = "",
+        show_bonds: bool = True,
+        show_labels: bool = True,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled 3D ball-and-stick vector molecular geometry for VSEPR structures."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        gt = geometry_type.lower().replace(" ", "_").strip()
+
+        # Title
+        t_str = title or f"Mô hình Phân tử – {geometry_type.capitalize()}"
+        if gt == "tetrahedral" and "CH₄" not in t_str:
+            t_str = f"Metan (CH₄) – {t_str}"
+        elif gt == "bent" and "H₂O" not in t_str:
+            t_str = f"Nước (H₂O) – {t_str}"
+        elif gt == "linear" and "CO₂" not in t_str:
+            t_str = f"Cacbon đioxit (CO₂) – {t_str}"
+        elif gt == "trigonal_planar" and "BF₃" not in t_str:
+            t_str = f"Bo triflorua (BF₃) – {t_str}"
+        elif gt == "trigonal_pyramidal" and "NH₃" not in t_str:
+            t_str = f"Amoniac (NH₃) – {t_str}"
+        elif gt == "octahedral" and "SF₆" not in t_str:
+            t_str = f"Lưu huỳnh hexaflorua (SF₆) – {t_str}"
+
+        hdr = QGraphicsTextItem(t_str)
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(cx - 100.0, cy - scale - 35.0)
+        items.append(hdr)
+
+        s = scale
+
+        if gt == "tetrahedral":
+            # Central C + 4 H (5 atoms, 4 bonds)
+            c_atom = ("C", (cx, cy), QColor("#475569"), 18.0)
+            ligands = [
+                ("H", (cx, cy - s), QColor("#e2e8f0"), 12.0),
+                ("H", (cx - s * 0.866, cy + s * 0.5), QColor("#e2e8f0"), 12.0),
+                ("H", (cx + s * 0.866, cy + s * 0.5), QColor("#e2e8f0"), 12.0),
+                ("H", (cx, cy + s * 0.6), QColor("#cbd5e1"), 12.0),
+            ]
+        elif gt == "bent":
+            # Central O + 2 H (3 atoms, 2 bonds)
+            c_atom = ("O", (cx, cy), QColor("#ef4444"), 18.0)
+            ligands = [
+                ("H", (cx - s * 0.707, cy + s * 0.707), QColor("#e2e8f0"), 12.0),
+                ("H", (cx + s * 0.707, cy + s * 0.707), QColor("#e2e8f0"), 12.0),
+            ]
+        elif gt == "linear":
+            # Central C + 2 O (3 atoms, 2 bonds)
+            c_atom = ("C", (cx, cy), QColor("#475569"), 18.0)
+            ligands = [
+                ("O", (cx - s, cy), QColor("#ef4444"), 16.0),
+                ("O", (cx + s, cy), QColor("#ef4444"), 16.0),
+            ]
+        elif gt == "trigonal_planar":
+            # Central B + 3 F (4 atoms, 3 bonds)
+            c_atom = ("B", (cx, cy), QColor("#d97706"), 18.0)
+            ligands = [
+                ("F", (cx, cy - s), QColor("#10b981"), 15.0),
+                ("F", (cx - s * 0.866, cy + s * 0.5), QColor("#10b981"), 15.0),
+                ("F", (cx + s * 0.866, cy + s * 0.5), QColor("#10b981"), 15.0),
+            ]
+        elif gt == "trigonal_pyramidal":
+            # Central N + 3 H (4 atoms, 3 bonds)
+            c_atom = ("N", (cx, cy - s * 0.2), QColor("#3b82f6"), 18.0)
+            ligands = [
+                ("H", (cx - s * 0.75, cy + s * 0.6), QColor("#e2e8f0"), 12.0),
+                ("H", (cx + s * 0.75, cy + s * 0.6), QColor("#e2e8f0"), 12.0),
+                ("H", (cx, cy + s * 0.75), QColor("#cbd5e1"), 12.0),
+            ]
+        elif gt == "octahedral":
+            # Central S + 6 F (7 atoms, 6 bonds)
+            c_atom = ("S", (cx, cy), QColor("#eab308"), 20.0)
+            ligands = [
+                ("F", (cx, cy - s), QColor("#10b981"), 14.0),
+                ("F", (cx, cy + s), QColor("#10b981"), 14.0),
+                ("F", (cx - s, cy), QColor("#10b981"), 14.0),
+                ("F", (cx + s, cy), QColor("#10b981"), 14.0),
+                ("F", (cx - s * 0.5, cy + s * 0.5), QColor("#059669"), 14.0),
+                ("F", (cx + s * 0.5, cy - s * 0.5), QColor("#059669"), 14.0),
+            ]
+        else:
+            c_atom = ("C", (cx, cy), QColor("#475569"), 18.0)
+            ligands = [
+                ("H", (cx, cy - s), QColor("#e2e8f0"), 12.0),
+                ("H", (cx - s * 0.866, cy + s * 0.5), QColor("#e2e8f0"), 12.0),
+                ("H", (cx + s * 0.866, cy + s * 0.5), QColor("#e2e8f0"), 12.0),
+                ("H", (cx, cy + s * 0.6), QColor("#cbd5e1"), 12.0),
+            ]
+
+        # Bonds first (behind atoms)
+        for sym, pos, col_a, rad in ligands:
+            bond = QGraphicsLineItem(cx, cy, pos[0], pos[1])
+            bond.setPen(QPen(QColor("#94a3b8"), 4.0))
+            bond.setZValue(10.2)
+            items.append(bond)
+
+        # Central atom
+        csym, cpos, ccol, crad = c_atom
+        catom_item = QGraphicsEllipseItem(cpos[0] - crad, cpos[1] - crad, crad * 2.0, crad * 2.0)
+        catom_item.setBrush(QBrush(ccol))
+        catom_item.setPen(QPen(QColor("#ffffff"), 1.2))
+        catom_item.setZValue(10.5)
+        items.append(catom_item)
+
+        ct_lbl = QGraphicsTextItem(csym)
+        ct_lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        ct_lbl.setDefaultTextColor(QColor("#ffffff"))
+        ct_lbl.setPos(cpos[0] - 7.0, cpos[1] - 12.0)
+        ct_lbl.setZValue(10.7)
+        items.append(ct_lbl)
+
+        # Ligand atoms
+        for sym, pos, col_a, rad in ligands:
+            atom_item = QGraphicsEllipseItem(pos[0] - rad, pos[1] - rad, rad * 2.0, rad * 2.0)
+            atom_item.setBrush(QBrush(col_a))
+            atom_item.setPen(QPen(QColor("#ffffff"), 1.0))
+            atom_item.setZValue(10.6)
+            items.append(atom_item)
+
+            lbl = QGraphicsTextItem(sym)
+            lbl.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            lbl.setDefaultTextColor(QColor("#0f172a") if col_a == QColor("#e2e8f0") else QColor("#ffffff"))
+            lbl.setPos(pos[0] - 6.0, pos[1] - 11.0)
+            lbl.setZValue(10.8)
+            items.append(lbl)
+
+        return items
+
+    @staticmethod
+    def create_organic_isomer_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        isomer_type: str = "cis_trans",
+        compound_name: str = "But-2-ene",
+        molecule: Optional[Any] = None,
+        preset: Optional[Any] = None,
+        is_skeletal: bool = False,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Organic Chemistry Isomerism (Cis-Trans / Structural)."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#10b981")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"HOÁ HỌC HỮU CƠ: ĐỒNG PHÂN HỌC (ISOMERISM) – {compound_name}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0, vw, vh = x0 + 16.0, y0 + 38.0, 310.0, 195.0
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        # Cis isomer bonds
+        c1x, c1y = vx0 + 40.0, vy0 + 80.0
+        l_cis_double1 = QGraphicsLineItem(c1x, c1y, c1x + 50.0, c1y)
+        l_cis_double1.setPen(QPen(QColor("#f8fafc"), 2.0))
+        items.append(l_cis_double1)
+        l_cis_double2 = QGraphicsLineItem(c1x, c1y + 5.0, c1x + 50.0, c1y + 5.0)
+        l_cis_double2.setPen(QPen(QColor("#f8fafc"), 2.0))
+        items.append(l_cis_double2)
+
+        l_c1 = QGraphicsLineItem(c1x, c1y, c1x - 25.0, c1y - 30.0)
+        l_c1.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(l_c1)
+        l_c2 = QGraphicsLineItem(c1x + 50.0, c1y, c1x + 75.0, c1y - 30.0)
+        l_c2.setPen(QPen(QColor("#38bdf8"), 2.0))
+        items.append(l_c2)
+
+        # Trans isomer bonds
+        t1x, t1y = vx0 + 180.0, vy0 + 80.0
+        l_tr_double1 = QGraphicsLineItem(t1x, t1y, t1x + 50.0, t1y)
+        l_tr_double1.setPen(QPen(QColor("#f8fafc"), 2.0))
+        items.append(l_tr_double1)
+        l_tr_double2 = QGraphicsLineItem(t1x, t1y + 5.0, t1x + 50.0, t1y + 5.0)
+        l_tr_double2.setPen(QPen(QColor("#f8fafc"), 2.0))
+        items.append(l_tr_double2)
+
+        l_t1 = QGraphicsLineItem(t1x, t1y, t1x - 25.0, t1y - 30.0)
+        l_t1.setPen(QPen(QColor("#f43f5e"), 2.0))
+        items.append(l_t1)
+        l_t2 = QGraphicsLineItem(t1x + 50.0, t1y + 5.0, t1x + 75.0, t1y + 35.0)
+        l_t2.setPen(QPen(QColor("#f43f5e"), 2.0))
+        items.append(l_t2)
+
+        # Right box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"ĐỒNG PHÂN HỌC HỮU CƠ (ISOMERISM):\n"
+            f"• Hợp chất: {compound_name}\n"
+            f"• Dạng đồng phân: Đồng phân hình học cis-trans\n"
+            f"• cis: 2 nhóm thế cùng phía liên kết đôi C=C\n"
+            f"• trans: 2 nhóm thế khác phía liên kết đôi C=C\n"
+            f"• Nhiệt độ sôi: cis > trans (do momen lưỡng cực)"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        for name, pt in [("cis-But-2-ene", (c1x - 10.0, c1y + 40.0)),
+                         ("trans-But-2-ene", (t1x - 15.0, t1y + 40.0))]:
+            t = QGraphicsTextItem(name)
+            t.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#f8fafc"))
+            t.setPos(*pt)
+            items.append(t)
+
+        return items
+
+    @staticmethod
+    def create_periodic_table_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        atomic_z: int = 6,
+        preset_code: str = "CARBON_ORGANIC",
+        view_mode: str = "STANDARD",
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of the Periodic Table of Elements."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#6366f1")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem("BẢNG TUẦN HOÀN CÁC NGUYÊN TỐ HOÁ HỌC (PERIODIC TABLE)")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0, vw, vh = x0 + 16.0, y0 + 38.0, 310.0, 195.0
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        # 8 key elements (H, He, Li, C, N, O, Ne, Na)
+        elements = [
+            ("1", "H", "1.008", vx0 + 10.0, vy0 + 15.0),
+            ("2", "He", "4.003", vx0 + 245.0, vy0 + 15.0),
+            ("3", "Li", "6.94", vx0 + 10.0, vy0 + 75.0),
+            ("6", "C", "12.01", vx0 + 125.0, vy0 + 75.0),
+            ("7", "N", "14.01", vx0 + 165.0, vy0 + 75.0),
+            ("8", "O", "16.00", vx0 + 205.0, vy0 + 75.0),
+            ("10", "Ne", "20.18", vx0 + 245.0, vy0 + 75.0),
+            ("11", "Na", "22.99", vx0 + 10.0, vy0 + 135.0),
+        ]
+        for z, sym, mass, ex, ey in elements:
+            is_c = (sym == "C")
+            cell = QGraphicsRectItem(ex, ey, 36.0, 48.0)
+            cell.setBrush(QBrush(QColor("#1e1b4b") if is_c else QColor("#0f172a")))
+            cell.setPen(QPen(QColor("#a855f7") if is_c else QColor("#334155"), 1.2 if is_c else 0.8))
+            items.append(cell)
+
+            st = QGraphicsTextItem(sym)
+            st.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            st.setDefaultTextColor(QColor("#a855f7") if is_c else QColor("#ffffff"))
+            st.setPos(ex + 8.0, ey + 10.0)
+            items.append(st)
+
+        # Right box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"BẢNG TUẦN HOÀN CÁC NGUYÊN TỐ:\n"
+            f"• Nguyên tố được chọn: Cacbon (C, Z={atomic_z})\n"
+            f"• Cấu hình e: 1s² 2s² 2p² (Chu kỳ 2, Nhóm IVA)\n"
+            f"• Khối lượng mol nguyên tử: 12.011 g/mol\n"
+            f"• Độ âm điện Pauling: 2.55\n"
+            f"• Hóa trị phổ biến: IV (sp³, sp², sp)\n"
+            f"• Quy luật: Bán kính nguyên tử giảm từ trái sang phải"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        return items
+
+    @staticmethod
+    def create_ph_titration_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "STRONG_ACID_STRONG_BASE",
+        v_titrant_ml: float = 25.0,
+        indicator: str = "PHENOLPHTHALEIN",
+        acid_name: str = "HCl",
+        base_name: str = "NaOH",
+        pka: float = 4.76,
+        v_eq: float = 25.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of pH Titration Curve and Equivalence Point."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#ec4899")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"CHUẨN ĐỘ AXIT - BAZƠ & ĐƯỜNG CONG pH – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0, vw, vh = x0 + 16.0, y0 + 38.0, 300.0, 195.0
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        # Axes
+        ax_x = QGraphicsLineItem(vx0 + 35.0, vy0 + vh - 25.0, vx0 + vw - 15.0, vy0 + vh - 25.0)
+        ax_x.setPen(QPen(QColor("#64748b"), 1.5))
+        items.append(ax_x)
+
+        ax_y = QGraphicsLineItem(vx0 + 35.0, vy0 + 20.0, vx0 + 35.0, vy0 + vh - 25.0)
+        ax_y.setPen(QPen(QColor("#64748b"), 1.5))
+        items.append(ax_y)
+
+        # S-curve path
+        scurve = QPainterPath()
+        p0x, p0y = vx0 + 35.0, vy0 + vh - 35.0
+        scurve.moveTo(p0x, p0y)
+        scurve.cubicTo(p0x + 70.0, p0y, p0x + 100.0, p0y - 120.0, p0x + 120.0, p0y - 120.0)
+        scurve.cubicTo(p0x + 140.0, p0y - 120.0, p0x + 180.0, vy0 + 35.0, vx0 + vw - 25.0, vy0 + 35.0)
+
+        curve_item = QGraphicsPathItem(scurve)
+        curve_item.setPen(QPen(QColor("#ec4899"), 2.2))
+        items.append(curve_item)
+
+        # Equivalence point dot
+        eq_x = p0x + 110.0
+        eq_y = vy0 + (vh / 2.0)
+        eq_dot = QGraphicsEllipseItem(eq_x - 3.5, eq_y - 3.5, 7.0, 7.0)
+        eq_dot.setBrush(QBrush(QColor("#fbbf24")))
+        eq_dot.setPen(Qt.PenStyle.NoPen)
+        items.append(eq_dot)
+
+        # Equivalence dashed lines
+        d_x = QGraphicsLineItem(eq_x, eq_y, eq_x, vy0 + vh - 25.0)
+        d_x.setPen(QPen(QColor("#fbbf24"), 1.0, Qt.PenStyle.DashLine))
+        items.append(d_x)
+
+        # Right box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"CHUẨN ĐỘ AXIT - BAZƠ:\n"
+            f"• Dung dịch: {acid_name} + {base_name}\n"
+            f"• Điểm tương đương: V_eq = {v_eq:.1f} mL\n"
+            f"• Giá trị pH tại V_eq: 7.00\n"
+            f"• Chỉ thị màu: {indicator}\n"
+            f"• Bước nhảy pH: 4.0 - 10.0"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        for name, pt in [("pH", (vx0 + 15.0, vy0 + 15.0)),
+                         ("V (mL)", (vx0 + vw - 40.0, vy0 + vh - 20.0)),
+                         ("V_eq", (eq_x - 10.0, vy0 + vh - 20.0))]:
+            t = QGraphicsTextItem(name)
+            t.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#cbd5e1"))
+            t.setPos(*pt)
+            items.append(t)
+
+        return items
+
+
 class BiologyTools:
     """Anatomical callout pins, cellular diagrams, and biological annotations."""
 
@@ -6659,6 +10235,108 @@ class BiologyTools:
         cap.setPos(x0 + 16.0, vy0 + vh + 12.0)
         cap.setZValue(10.5)
         items.append(cap)
+
+        return items
+
+    @staticmethod
+    def create_hodgkin_huxley_diagram(
+        center: tuple[float, float],
+        preset_key: str = "SINGLE_ACTION_POTENTIAL",
+        preset_name: str = "Điện Thế Hoạt Động Đơn Cực (Action Potential)",
+        description: str = "Khử cực màng vượt ngưỡng bùng phát đỉnh spike",
+        stim_amp: float = 10.0,
+        stim_duration_ms: float = 2.0,
+        v_max: float = 35.0,
+        v_min: float = -75.0,
+        has_spike: bool = True,
+        ttx_blocked: bool = False,
+        tea_blocked: bool = False,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Hodgkin-Huxley Neuron ODE Action Potential."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color if pen_color is not None else QColor("#ec4899")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"SINH LÝ THẦN KINH: MÔ HÌNH HODGKIN-HUXLEY – {preset_name}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0 = x0 + 16.0
+        vy0 = y0 + 38.0
+        vw = 300.0
+        vh = 195.0
+
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        # Membrane potential trace
+        path = QPainterPath()
+        pts = 40
+        for i in range(pts):
+            t = i / float(pts - 1)
+            px = vx0 + 10.0 + t * (vw - 20.0)
+            if has_spike and not ttx_blocked:
+                if 0.2 < t < 0.5:
+                    v_val = 35.0 * math.sin((t - 0.2) / 0.3 * math.pi)
+                elif 0.5 <= t < 0.7:
+                    v_val = -75.0 * math.sin((t - 0.5) / 0.2 * math.pi)
+                else:
+                    v_val = -65.0
+            else:
+                v_val = -65.0 + (10.0 if 0.2 < t < 0.4 else 0.0)
+            py = vy0 + vh - 20.0 - ((v_val + 80.0) / 120.0) * (vh - 40.0)
+            if i == 0:
+                path.moveTo(px, py)
+            else:
+                path.lineTo(px, py)
+
+        trace_item = QGraphicsPathItem(path)
+        trace_item.setPen(QPen(QColor("#38bdf8"), 2.0))
+        trace_item.setZValue(10.4)
+        items.append(trace_item)
+
+        # Right analytics box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"HỆ PHƯƠNG TRÌNH VI PHÂN HODGKIN-HUXLEY:\n"
+            f"• C_m · dV/dt = I_ext - I_Na - I_K - I_L\n"
+            f"• Dòng kích thích I_ext: {stim_amp:.1f} μA/cm² ({stim_duration_ms:.1f} ms)\n"
+            f"• Điện thế đỉnh V_max: {v_max:.1f} mV\n"
+            f"• Quá phân cực V_min: {v_min:.1f} mV\n"
+            f"• Kênh Na⁺ (TTX): {'BỊ KHÓA BỞI TETRODOTOXIN' if ttx_blocked else 'Hoạt hóa mở cổng m³h'}\n"
+            f"• Kênh K⁺ (TEA): {'BỊ KHÓA BỞI TETRAETHYLAMMONIUM' if tea_blocked else 'Mở trễ cổng n⁴'}\n"
+            f"• Trạng thái nơron: {'ĐÃ BÙNG PHÁT XUNG' if has_spike else 'DƯỚI NGƯỠNG (KHÔNG SPIKE)'}\n"
+            f"• Mô tả: {description}"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
 
         return items
 
@@ -7412,6 +11090,574 @@ class BiologyTools:
         return items
 
 
+
+    @staticmethod
+    def create_dna_double_helix(
+        start: tuple[float, float] = (100.0, 300.0),
+        end: tuple[float, float] = (500.0, 300.0),
+        turns: float = 2.5,
+        amplitude: float = 30.0,
+        rungs: int = 12,
+        show_labels: bool = True,
+        color1: Optional[QColor] = None,
+        color2: Optional[QColor] = None,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates authentic vector DNA double helix with 2 continuous sinusoidal strands and base-pair rungs."""
+        items: list[QGraphicsItem] = []
+        x1, y1 = start
+        x2, y2 = end
+        dx = x2 - x1
+        dy = y2 - y1
+        length = math.hypot(dx, dy)
+        if length < 1e-3:
+            length = 400.0
+            dx, dy = 400.0, 0.0
+
+        ux = dx / length
+        uy = dy / length
+        nx = -uy
+        ny = ux
+
+        col1 = color1 or pen_color or QColor("#38bdf8")
+        col2 = color2 or QColor("#f43f5e")
+
+        path1 = QPainterPath()
+        path2 = QPainterPath()
+        num_pts = 120
+        for i in range(num_pts + 1):
+            s = i / num_pts
+            dist = s * length
+            phase = s * turns * 2.0 * math.pi
+            offset1 = amplitude * math.sin(phase)
+            offset2 = -offset1
+
+            px1 = x1 + dist * ux + offset1 * nx
+            py1 = y1 + dist * uy + offset1 * ny
+            px2 = x1 + dist * ux + offset2 * nx
+            py2 = y1 + dist * uy + offset2 * ny
+
+            if i == 0:
+                path1.moveTo(px1, py1)
+                path2.moveTo(px2, py2)
+            else:
+                path1.lineTo(px1, py1)
+                path2.lineTo(px2, py2)
+
+        pitem1 = QGraphicsPathItem(path1)
+        pitem1.setPen(QPen(col1, 2.5))
+        pitem1.setZValue(12.0)
+        items.append(pitem1)
+
+        pitem2 = QGraphicsPathItem(path2)
+        pitem2.setPen(QPen(col2, 2.5))
+        pitem2.setZValue(12.0)
+        items.append(pitem2)
+
+        # 12 base-pair rungs split into 2 halves with hydrogen bond gap = 24 line segments
+        num_rungs = rungs if rungs > 0 else 12
+        for k in range(num_rungs):
+            s = (k + 0.5) / num_rungs
+            dist = s * length
+            phase = s * turns * 2.0 * math.pi
+            off1 = amplitude * math.sin(phase)
+            off2 = -off1
+
+            p1x = x1 + dist * ux + off1 * nx
+            p1y = y1 + dist * uy + off1 * ny
+            p2x = x1 + dist * ux + off2 * nx
+            p2y = y1 + dist * uy + off2 * ny
+
+            # Midpoint gap (20% gap in center for hydrogen bonds)
+            mid_x = (p1x + p2x) / 2.0
+            mid_y = (p1y + p2y) / 2.0
+            gap_half = 0.12
+
+            # Half 1 (from strand 1 to gap start)
+            g1_x = p1x + (mid_x - p1x) * (1.0 - gap_half)
+            g1_y = p1y + (mid_y - p1y) * (1.0 - gap_half)
+            line1 = QGraphicsLineItem(p1x, p1y, g1_x, g1_y)
+            line1.setPen(QPen(col1, 1.8))
+            line1.setZValue(11.5)
+            items.append(line1)
+
+            # Half 2 (from strand 2 to gap start)
+            g2_x = p2x + (mid_x - p2x) * (1.0 - gap_half)
+            g2_y = p2y + (mid_y - p2y) * (1.0 - gap_half)
+            line2 = QGraphicsLineItem(p2x, p2y, g2_x, g2_y)
+            line2.setPen(QPen(col2, 1.8))
+            line2.setZValue(11.5)
+            items.append(line2)
+
+        if show_labels:
+            # 5' and 3' terminal labels
+            lbls = [("5'", (x1 - 18.0 * ux, y1 - 18.0 * uy)),
+                    ("3'", (x2 + 8.0 * ux, y2 + 8.0 * uy)),
+                    ("3'", (x1 - 18.0 * ux + 15.0 * nx, y1 - 18.0 * uy + 15.0 * ny)),
+                    ("5'", (x2 + 8.0 * ux - 15.0 * nx, y2 + 8.0 * uy - 15.0 * ny))]
+            for text, pos in lbls:
+                t = QGraphicsTextItem(text)
+                t.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+                t.setDefaultTextColor(QColor("#f8fafc"))
+                t.setPos(pos[0], pos[1])
+                t.setZValue(13.0)
+                items.append(t)
+
+        return items
+
+    @staticmethod
+    def create_punnett_square(
+        center: tuple[float, float] = (500.0, 400.0),
+        cell_size: float = 60.0,
+        male_gametes: tuple[str, ...] = ("B", "b"),
+        female_gametes: tuple[str, ...] = ("B", "b"),
+        title: str = "Phép lai: Bb × Bb",
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector Punnett Square with outer card, grid cells, gametes, and offspring genotypes."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        n_col = len(male_gametes)
+        n_row = len(female_gametes)
+        grid_w = (n_col + 1) * cell_size
+        grid_h = (n_row + 1) * cell_size
+
+        card_w = max(420.0, grid_w + 140.0)
+        card_h = max(280.0, grid_h + 90.0)
+        x0 = cx - card_w / 2.0
+        y0 = cy - card_h / 2.0
+
+        col = pen_color or QColor("#22c55e")
+
+        bg = QGraphicsRectItem(x0, y0, card_w, card_h)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(title)
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        gx0 = x0 + 20.0
+        gy0 = y0 + 42.0
+
+        # Header symbols
+        sym_male = QGraphicsTextItem("♂")
+        sym_male.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        sym_male.setDefaultTextColor(QColor("#38bdf8"))
+        sym_male.setPos(gx0 + cell_size * 0.55, gy0 + 4.0)
+        sym_male.setZValue(10.6)
+        items.append(sym_male)
+
+        sym_fem = QGraphicsTextItem("♀")
+        sym_fem.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        sym_fem.setDefaultTextColor(QColor("#f43f5e"))
+        sym_fem.setPos(gx0 + 8.0, gy0 + cell_size * 0.55)
+        sym_fem.setZValue(10.6)
+        items.append(sym_fem)
+
+        # 3x3 cells (or (n_row+1)x(n_col+1))
+        for r in range(n_row + 1):
+            for c in range(n_col + 1):
+                rx = gx0 + c * cell_size
+                ry = gy0 + r * cell_size
+                cell_rect = QGraphicsRectItem(rx, ry, cell_size, cell_size)
+                cell_rect.setBrush(QBrush(QColor("#0f172a") if (r > 0 and c > 0) else QColor("#1e293b")))
+                cell_rect.setPen(QPen(QColor("#334155"), 1.0))
+                cell_rect.setZValue(10.2)
+                items.append(cell_rect)
+
+                # Column headers (male gametes)
+                if r == 0 and c > 0:
+                    g_txt = male_gametes[c - 1]
+                    t = QGraphicsTextItem(g_txt)
+                    t.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+                    t.setDefaultTextColor(QColor("#38bdf8"))
+                    t.setPos(rx + cell_size * 0.35, ry + cell_size * 0.25)
+                    t.setZValue(10.5)
+                    items.append(t)
+                # Row headers (female gametes)
+                elif c == 0 and r > 0:
+                    g_txt = female_gametes[r - 1]
+                    t = QGraphicsTextItem(g_txt)
+                    t.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+                    t.setDefaultTextColor(QColor("#f43f5e"))
+                    t.setPos(rx + cell_size * 0.35, ry + cell_size * 0.25)
+                    t.setZValue(10.5)
+                    items.append(t)
+                # Genotype cells
+                elif r > 0 and c > 0:
+                    g_male = male_gametes[c - 1]
+                    g_fem = female_gametes[r - 1]
+                    genotype = "".join(sorted([g_male, g_fem], key=lambda ch: ch.islower()))
+                    t = QGraphicsTextItem(genotype)
+                    t.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+                    t.setDefaultTextColor(QColor("#fbbf24"))
+                    t.setPos(rx + cell_size * 0.25, ry + cell_size * 0.25)
+                    t.setZValue(10.5)
+                    items.append(t)
+
+        return items
+
+    @staticmethod
+    def create_cellular_respiration_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "STANDARD_AEROBIC_RESPIRATION",
+        oxygen_level: float = 1.0,
+        pmf_mv: float = 200.0,
+        atp_rate: float = 16.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Cellular Respiration & ETC complex."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#10b981")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"Hô hấp tế bào (Cellular Respiration) & Chuỗi truyền điện tử ETC – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0, vw, vh = x0 + 16.0, y0 + 38.0, 320.0, 195.0
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        # 4 ETC Complexes (Phức hệ I, II, III, IV)
+        comp_w, comp_h = 45.0, 60.0
+        for i, name in enumerate(["Phức hệ I", "Phức hệ II", "Phức hệ III", "Phức hệ IV"]):
+            bx = vx0 + 20.0 + i * 58.0
+            by = vy0 + 60.0
+            c_item = QGraphicsRectItem(bx, by, comp_w, comp_h)
+            c_item.setBrush(QBrush(QColor("#047857")))
+            c_item.setPen(QPen(QColor("#34d399"), 1.2))
+            c_item.setZValue(10.4)
+            items.append(c_item)
+
+            c_lbl = QGraphicsTextItem(name)
+            c_lbl.setFont(QFont("Segoe UI", 6, QFont.Weight.Bold))
+            c_lbl.setDefaultTextColor(QColor("#ffffff"))
+            c_lbl.setPos(bx - 4.0, by + 18.0)
+            c_lbl.setZValue(10.6)
+            items.append(c_lbl)
+
+        # ATP Synthase complex
+        atp_x = vx0 + 255.0
+        atp_y = vy0 + 45.0
+        atp_rect = QGraphicsRectItem(atp_x, atp_y, 48.0, 80.0)
+        atp_rect.setBrush(QBrush(QColor("#d97706")))
+        atp_rect.setPen(QPen(QColor("#fbbf24"), 1.2))
+        atp_rect.setZValue(10.4)
+        items.append(atp_rect)
+
+        atp_txt = QGraphicsTextItem("ATP\nSynth")
+        atp_txt.setFont(QFont("Segoe UI", 6, QFont.Weight.Bold))
+        atp_txt.setDefaultTextColor(QColor("#ffffff"))
+        atp_txt.setPos(atp_x + 2.0, atp_y + 20.0)
+        atp_txt.setZValue(10.6)
+        items.append(atp_txt)
+
+        # Right box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"Hô hấp tế bào (Respiration) & ETC:\n"
+            f"• Preset: {preset_code}\n"
+            f"• Chuỗi ETC: Complex I-IV + ATP Synthase\n"
+            f"• Mức oxy O₂: {oxygen_level * 100.0:.0f}%\n"
+            f"• Gradient proton (PMF): {pmf_mv:.1f} mV\n"
+            f"• Tốc độ sinh ATP: {atp_rate:.1f} ATP/s\n"
+            f"• Hiệu suất phosphoryl hóa: 30-32 ATP"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        return items
+
+    @staticmethod
+    def create_photosynthesis_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "STANDARD_C3_CALVIN",
+        light_intensity: float = 80.0,
+        co2_ppm: float = 400.0,
+        co2_conc_ppm: float = 400.0,
+        temp_c: float = 25.0,
+        o2_rate: float = 14.2,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Photosynthesis (Light & Dark reactions)."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#22c55e")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"SINH HỌC TẾ BÀO: QUANG HỢP (PHOTOSYNTHESIS) – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0, vw, vh = x0 + 16.0, y0 + 38.0, 300.0, 195.0
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        # Thylakoid granum stacks
+        t1 = QGraphicsRectItem(vx0 + 30.0, vy0 + 60.0, 80.0, 50.0)
+        t1.setBrush(QBrush(QColor("#15803d")))
+        t1.setPen(QPen(QColor("#4ade80"), 1.2))
+        items.append(t1)
+
+        t2 = QGraphicsRectItem(vx0 + 40.0, vy0 + 115.0, 60.0, 40.0)
+        t2.setBrush(QBrush(QColor("#166534")))
+        t2.setPen(QPen(QColor("#22c55e"), 1.2))
+        items.append(t2)
+
+        # Calvin cycle circle
+        calvin_circle = QGraphicsEllipseItem(vx0 + 170.0, vy0 + 55.0, 90.0, 90.0)
+        calvin_circle.setBrush(QBrush(QColor(245, 158, 11, 40)))
+        calvin_circle.setPen(QPen(QColor("#f59e0b"), 1.8, Qt.PenStyle.DashLine))
+        items.append(calvin_circle)
+
+        # Light beam arrow
+        light_ray = QGraphicsLineItem(vx0 + 10.0, vy0 + 20.0, vx0 + 60.0, vy0 + 60.0)
+        light_ray.setPen(QPen(QColor("#facc15"), 2.5))
+        items.append(light_ray)
+
+        # Right box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"HÓA SINH QUANG HỢP (PHOTOSYNTHESIS):\n"
+            f"• Pha sáng (Thylakoid): H₂O + AS ➔ O₂ + ATP\n"
+            f"• Pha tối (Calvin): CO₂ + ATP ➔ C₆H₁₂O₆\n"
+            f"• Cường độ sáng: {light_intensity:.1f}%\n"
+            f"• Nồng độ CO₂: {co2_ppm:.0f} ppm\n"
+            f"• Tốc độ tạo O₂: {o2_rate:.1f} µmol/m²s\n"
+            f"• Nhiệt độ: {temp_c:.1f}°C"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        for name, pt in [("Ánh sáng", (vx0 + 12.0, vy0 + 18.0)),
+                         ("Pha sáng", (vx0 + 35.0, vy0 + 72.0)),
+                         ("Calvin", (vx0 + 190.0, vy0 + 90.0))]:
+            t = QGraphicsTextItem(name)
+            t.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#f8fafc"))
+            t.setPos(*pt)
+            items.append(t)
+
+        return items
+
+    @staticmethod
+    def create_protein_folding_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "ALPHA_HELIX_KERATIN_MYOGLOBIN",
+        phi_deg: float = -57.0,
+        psi_deg: float = -47.0,
+        temp_c: float = 37.0,
+        ph: float = 7.4,
+        fraction_folded: float = 0.95,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Secondary Protein Structure and Ramachandran plot."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#ec4899")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"CẤU TRÚC BẬC HAI PROTEIN & GIẢN ĐỒ RAMACHANDRAN – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0, vw, vh = x0 + 16.0, y0 + 38.0, 300.0, 195.0
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        # Alpha-helix coil ribbon
+        coil = QPainterPath()
+        ccx, ccy = vx0 + 60.0, vy0 + 30.0
+        for i in range(5):
+            coil.addEllipse(ccx + i * 28.0, ccy + (i % 2) * 20.0, 24.0, 50.0)
+        coil_item = QGraphicsPathItem(coil)
+        coil_item.setPen(QPen(QColor("#f472b6"), 2.0))
+        items.append(coil_item)
+
+        # 4 Hydrogen bonds (hydro)
+        for i in range(4):
+            hx = ccx + 12.0 + i * 28.0
+            h_line = QGraphicsLineItem(hx, ccy + 10.0, hx + 15.0, ccy + 35.0)
+            h_line.setPen(QPen(QColor("#38bdf8"), 1.2, Qt.PenStyle.DashLine))
+            items.append(h_line)
+
+        # Ramachandran box
+        rx_box = QGraphicsRectItem(vx0 + 185.0, vy0 + 35.0, 95.0, 95.0)
+        rx_box.setBrush(QBrush(QColor("#0f172a")))
+        rx_box.setPen(QPen(QColor("#475569"), 1.0))
+        items.append(rx_box)
+
+        # Conformation dot (phi, psi)
+        dot = QGraphicsEllipseItem(vx0 + 215.0, vy0 + 80.0, 6.0, 6.0)
+        dot.setBrush(QBrush(QColor("#facc15")))
+        dot.setPen(Qt.PenStyle.NoPen)
+        items.append(dot)
+
+        # Right box
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"Thông số CẤU TRÚC BẬC HAI PROTEIN (Pauling):\n"
+            f"• Giản đồ RAMACHANDRAN: φ = {phi_deg:.1f}°, ψ = {psi_deg:.1f}°\n"
+            f"• Liên kết hydro C=O...H-N bền vững\n"
+            f"• Tỷ lệ cấu trúc nguyên vẹn: {fraction_folded * 100.0:.1f}%\n"
+            f"• Nhiệt độ T: {temp_c:.1f}°C, pH: {ph:.1f}"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        for name, pt in [("α-Helix", (vx0 + 20.0, vy0 + 15.0)),
+                         ("Ramachandran", (vx0 + 188.0, vy0 + 18.0)),
+                         ("N-term", (vx0 + 10.0, vy0 + 155.0)),
+                         ("C-term", (vx0 + 150.0, vy0 + 155.0))]:
+            t = QGraphicsTextItem(name)
+            t.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#cbd5e1"))
+            t.setPos(*pt)
+            items.append(t)
+
+        return items
+
+    @staticmethod
+    def create_trophic_pyramid(
+        center: tuple[float, float] = (400.0, 300.0),
+        base_width: float = 380.0,
+        total_height: float = 260.0,
+        efficiency: float = 0.10,
+        producer_energy: float = 10000.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector Trophic Pyramid with 4 energy tiers and Lindeman 10% rule."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        n_tiers = 4
+        tier_h = total_height / n_tiers
+        y_bottom = cy + total_height / 2.0
+
+        colors = [QColor("#15803d"), QColor("#0284c7"), QColor("#d97706"), QColor("#dc2626")]
+        tier_names = [
+            "Sinh vật sản xuất (10,000 kcal)",
+            "Tiêu thụ bậc 1 (1,000 kcal)",
+            "Tiêu thụ bậc 2 (100 kcal)",
+            "Tiêu thụ bậc 3 (10 kcal)",
+        ]
+
+        for i in range(n_tiers):
+            w_bot = base_width * (1.0 - i * 0.22)
+            w_top = base_width * (1.0 - (i + 1) * 0.22)
+            yb = y_bottom - i * tier_h
+            yt = yb - tier_h
+
+            p = QPolygonF([
+                QPointF(cx - w_bot / 2.0, yb),
+                QPointF(cx + w_bot / 2.0, yb),
+                QPointF(cx + w_top / 2.0, yt),
+                QPointF(cx - w_top / 2.0, yt),
+            ])
+            poly_item = QGraphicsPolygonItem(p)
+            poly_item.setBrush(QBrush(colors[i]))
+            poly_item.setPen(QPen(QColor("#0f172a"), 1.5))
+            poly_item.setZValue(10.0 + i)
+            items.append(poly_item)
+
+            t = QGraphicsTextItem(tier_names[i])
+            t.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#ffffff"))
+            t.setPos(cx - 85.0, yt + tier_h * 0.3)
+            t.setZValue(12.0 + i)
+            items.append(t)
+
+        return items
+
+
 class InformaticsTools:
     """Algorithm flowcharts, decision diamonds, and code block components."""
 
@@ -7542,6 +11788,314 @@ class InformaticsTools:
         code_item.setPos(x + 14, y + 38)
         code_item.setZValue(12.0)
         items.append(code_item)
+
+        return items
+
+    @staticmethod
+    def create_binary_tree_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "BST_BALANCED_SEARCH",
+        traversal_mode: str = "IN_ORDER",
+        pen_color: Optional[QColor] = None,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Binary Search Tree / AVL Tree structure."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color if pen_color is not None else QColor("#6366f1")
+
+        # 1. Main Container background
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        # 2. Header banner text
+        hdr = QGraphicsTextItem(f"CẤU TRÚC DỮ LIỆU: CÂY NHỊ PHÂN TÌM KIẾM (BST) – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        # 3. Tree visualization box (Rect 2)
+        vx0 = x0 + 16.0
+        vy0 = y0 + 38.0
+        vw = 300.0
+        vh = 195.0
+        tree_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        tree_box.setBrush(QBrush(QColor("#020617")))
+        tree_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        tree_box.setZValue(10.2)
+        items.append(tree_box)
+
+        # 4. Right analytics box (Rect 3)
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        # Representative BST Nodes and Edges
+        root_x, root_y = vx0 + vw / 2.0, vy0 + 32.0
+        l_x, l_y = root_x - 65.0, root_y + 48.0
+        r_x, r_y = root_x + 65.0, root_y + 48.0
+        ll_x, ll_y = l_x - 35.0, l_y + 48.0
+        lr_x, lr_y = l_x + 35.0, l_y + 48.0
+
+        edges = [(root_x, root_y, l_x, l_y), (root_x, root_y, r_x, r_y),
+                 (l_x, l_y, ll_x, ll_y), (l_x, l_y, lr_x, lr_y)]
+        edge_pen = QPen(QColor("#475569"), 1.8)
+        for ex1, ey1, ex2, ey2 in edges:
+            edge_line = QGraphicsLineItem(ex1, ey1, ex2, ey2)
+            edge_line.setPen(edge_pen)
+            edge_line.setZValue(10.3)
+            items.append(edge_line)
+
+        nodes = [(root_x, root_y, "50"), (l_x, l_y, "30"), (r_x, r_y, "70"),
+                 (ll_x, ll_y, "20"), (lr_x, lr_y, "40")]
+        for nx, ny, val in nodes:
+            dot = QGraphicsEllipseItem(nx - 14.0, ny - 14.0, 28.0, 28.0)
+            dot.setBrush(QBrush(QColor("#1e293b")))
+            dot.setPen(QPen(col, 1.8))
+            dot.setZValue(10.5)
+            items.append(dot)
+
+            t_val = QGraphicsTextItem(val)
+            t_val.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            t_val.setDefaultTextColor(QColor("#f8fafc"))
+            t_val.setPos(nx - 9.0, ny - 11.0)
+            t_val.setZValue(10.6)
+            items.append(t_val)
+
+        info = QGraphicsTextItem(
+            f"PHÂN TÍCH ĐỘ PHỨC TẠP CÂY NHỊ PHÂN:\n"
+            f"• Cấu hình mẫu: {preset_code}\n"
+            f"• Thứ tự duyệt: {traversal_mode}\n"
+            f"• Số nút: 7 nút (Cân bằng hoàn hảo)\n"
+            f"• Chiều cao cây h: 3 tầng\n"
+            f"• Độ phức tạp tìm kiếm: O(log N)\n"
+            f"• Hệ số cân bằng AVL Balance: 0 (Cân bằng)\n"
+            f"• Dãy duyệt In-Order: 20 -> 30 -> 40 -> 50 -> 60 -> 70 -> 80"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        return items
+
+    @staticmethod
+    def create_automata_diagram(
+        center: tuple[float, float],
+        width: float = 540.0,
+        height: float = 320.0,
+        preset: str = "EVEN_ZEROS_DFA",
+        input_string: str = "00100",
+        pen_color: Optional[QColor] = None,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Finite State Automata (DFA/NFA)."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color if pen_color is not None else QColor("#ec4899")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"LÝ THUYẾT NGÔN NGỮ HỌC & AUTOMATA HỮU HẠN – {preset}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0 = x0 + 16.0
+        vy0 = y0 + 38.0
+        vw = 260.0
+        vh = 180.0
+
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        q0_x, q0_y = vx0 + 60.0, vy0 + vh / 2.0
+        q1_x, q1_y = vx0 + vw - 60.0, vy0 + vh / 2.0
+
+        q0_out = QGraphicsEllipseItem(q0_x - 22.0, q0_y - 22.0, 44.0, 44.0)
+        q0_out.setPen(QPen(col, 1.8))
+        q0_out.setBrush(QBrush(QColor("#1e293b")))
+        q0_out.setZValue(10.4)
+        items.append(q0_out)
+
+        q0_in = QGraphicsEllipseItem(q0_x - 17.0, q0_y - 17.0, 34.0, 34.0)
+        q0_in.setPen(QPen(col, 1.2))
+        q0_in.setBrush(Qt.BrushStyle.NoBrush)
+        q0_in.setZValue(10.5)
+        items.append(q0_in)
+
+        lbl_q0 = QGraphicsTextItem("q0")
+        lbl_q0.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        lbl_q0.setDefaultTextColor(QColor("#ffffff"))
+        lbl_q0.setPos(q0_x - 9.0, q0_y - 11.0)
+        lbl_q0.setZValue(10.6)
+        items.append(lbl_q0)
+
+        q1_dot = QGraphicsEllipseItem(q1_x - 20.0, q1_y - 20.0, 40.0, 40.0)
+        q1_dot.setPen(QPen(QColor("#94a3b8"), 1.8))
+        q1_dot.setBrush(QBrush(QColor("#1e293b")))
+        q1_dot.setZValue(10.4)
+        items.append(q1_dot)
+
+        lbl_q1 = QGraphicsTextItem("q1")
+        lbl_q1.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        lbl_q1.setDefaultTextColor(QColor("#ffffff"))
+        lbl_q1.setPos(q1_x - 9.0, q1_y - 11.0)
+        lbl_q1.setZValue(10.6)
+        items.append(lbl_q1)
+
+        trans = QGraphicsLineItem(q0_x + 22.0, q0_y, q1_x - 20.0, q1_y)
+        trans.setPen(QPen(QColor("#64748b"), 1.8))
+        trans.setZValue(10.3)
+        items.append(trans)
+
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"BẢNG CHUYỂN TRẠNG THÁI AUTOMATON (DFA):\n"
+            f"• Cấu hình mẫu: {preset}\n"
+            f"• Bảng chữ cái Σ: {{0, 1}}\n"
+            f"• Chuỗi đầu vào: '{input_string}'\n"
+            f"• Trạng thái khởi đầu: q0\n"
+            f"• Trạng thái chấp nhận F: {{q0}}\n"
+            f"• Phân loại: Ngôn ngữ chính quy (Regular Language)"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        return items
+
+    @staticmethod
+    def create_mst_diagram(
+        center: tuple[float, float],
+        preset_key: str = "STANDARD_NETWORK",
+        preset_name: str = "Mạng Chuẩn Sách Giáo Khoa (7 Đỉnh, 11 Cạnh)",
+        description: str = "Cây khung nhỏ nhất không chứa chu trình",
+        algorithm: str = "KRUSKAL",
+        mst_weight: int = 37,
+        num_nodes: int = 7,
+        num_edges: int = 11,
+        accepted_edges: Optional[list] = None,
+        rejected_edges: Optional[list] = None,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Minimum Spanning Tree (MST - Kruskal & Prim)."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color if pen_color is not None else QColor("#10b981")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"LÝ THUYẾT ĐỒ THỊ & THUẬT TOÁN: CÂY KHUNG NHỎ NHẤT (MST) – {algorithm}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0 = x0 + 16.0
+        vy0 = y0 + 38.0
+        vw = 300.0
+        vh = 195.0
+
+        v_box = QGraphicsRectItem(vx0, vy0, vw, vh)
+        v_box.setBrush(QBrush(QColor("#020617")))
+        v_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        v_box.setZValue(10.2)
+        items.append(v_box)
+
+        node_coords = []
+        for i in range(num_nodes):
+            ang = 2.0 * math.pi * i / float(num_nodes)
+            nx = vx0 + vw / 2.0 + 80.0 * math.cos(ang)
+            ny = vy0 + vh / 2.0 + 70.0 * math.sin(ang)
+            node_coords.append((nx, ny))
+
+            dot = QGraphicsEllipseItem(nx - 12.0, ny - 12.0, 24.0, 24.0)
+            dot.setBrush(QBrush(QColor("#1e293b")))
+            dot.setPen(QPen(QColor("#10b981"), 1.5))
+            dot.setZValue(10.5)
+            items.append(dot)
+
+            t_lbl = QGraphicsTextItem(chr(65 + i))
+            t_lbl.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            t_lbl.setDefaultTextColor(QColor("#ffffff"))
+            t_lbl.setPos(nx - 5.0, ny - 9.0)
+            t_lbl.setZValue(10.6)
+            items.append(t_lbl)
+
+        for i in range(min(num_nodes - 1, len(node_coords) - 1)):
+            n1 = node_coords[i]
+            n2 = node_coords[i + 1]
+            e_line = QGraphicsLineItem(n1[0], n1[1], n2[0], n2[1])
+            e_line.setPen(QPen(QColor("#10b981"), 2.2))
+            e_line.setZValue(10.3)
+            items.append(e_line)
+
+        rx0 = vx0 + vw + 14.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, vh)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"KẾT QUẢ THUẬT TOÁN CÂY KHUNG NHỎ NHẤT:\n"
+            f"• Thuật toán thực thi: {algorithm}\n"
+            f"• Bộ dữ liệu: {preset_name}\n"
+            f"• Số đỉnh |V|: {num_nodes}\n"
+            f"• Số cạnh ban đầu |E|: {num_edges}\n"
+            f"• Số cạnh trong MST: {num_nodes - 1}\n"
+            f"• Tổng trọng số tối ưu W_MST: {mst_weight}\n"
+            f"• Cấu trúc dữ liệu: Disjoint Set Union (DSU) / Priority Cut\n"
+            f"• Đảm bảo: Không tồn tại chu trình, liên thông toàn bộ mạng"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
 
         return items
 
@@ -8282,6 +12836,970 @@ class InformaticsTools:
 
 # ─── STEM Subject Dialog for Interactive Tool Parameter Entry ─────────────────
 
+
+    @staticmethod
+    def create_logic_gate(
+        gate_type: str = "AND",
+        center: tuple[float, float] = (400.0, 300.0),
+        width: float = 120.0,
+        height: float = 70.0,
+        input_labels: tuple[str, ...] = ("In1", "In2"),
+        output_label: str = "Out",
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates authentic vector logic gate symbol (AND, OR, NOT, NAND, NOR, XOR)."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        gt = gate_type.upper().strip()
+        col = pen_color or QColor("#38bdf8")
+
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        w, h = width, height
+
+        # Body path
+        body_path = QPainterPath()
+        bx0 = x0 + 25.0
+        bw = w - 50.0
+
+        if gt in ("AND", "NAND"):
+            body_path.moveTo(bx0, y0)
+            body_path.lineTo(bx0 + bw * 0.5, y0)
+            body_path.arcTo(bx0 + bw * 0.1, y0, bw * 0.9, h, 90.0, -180.0)
+            body_path.lineTo(bx0, y0 + h)
+            body_path.closeSubpath()
+        elif gt in ("OR", "NOR"):
+            body_path.moveTo(bx0, y0)
+            body_path.quadTo(bx0 + bw * 0.6, y0, bx0 + bw, cy)
+            body_path.quadTo(bx0 + bw * 0.6, y0 + h, bx0, y0 + h)
+            body_path.quadTo(bx0 + bw * 0.25, cy, bx0, y0)
+            body_path.closeSubpath()
+        elif gt == "XOR":
+            body_path.moveTo(bx0 + 6.0, y0)
+            body_path.quadTo(bx0 + bw * 0.6, y0, bx0 + bw, cy)
+            body_path.quadTo(bx0 + bw * 0.6, y0 + h, bx0 + 6.0, y0 + h)
+            body_path.quadTo(bx0 + bw * 0.3, cy, bx0 + 6.0, y0)
+            body_path.closeSubpath()
+            # Extra back arc
+            back_arc = QPainterPath()
+            back_arc.moveTo(bx0 - 2.0, y0)
+            back_arc.quadTo(bx0 + bw * 0.22, cy, bx0 - 2.0, y0 + h)
+            barc_item = QGraphicsPathItem(back_arc)
+            barc_item.setPen(QPen(col, 2.0))
+            items.append(barc_item)
+        elif gt == "NOT":
+            body_path.moveTo(bx0, y0 + 10.0)
+            body_path.lineTo(bx0 + bw - 10.0, cy)
+            body_path.lineTo(bx0, y0 + h - 10.0)
+            body_path.closeSubpath()
+        else:
+            body_path.addRect(bx0, y0 + 5.0, bw, h - 10.0)
+
+        body_item = QGraphicsPathItem(body_path)
+        body_item.setBrush(QBrush(QColor("#0f172a")))
+        body_item.setPen(QPen(col, 2.0))
+        body_item.setZValue(10.2)
+        items.append(body_item)
+
+        # Bubble for inverting gates (NOT, NAND, NOR)
+        out_start_x = bx0 + bw
+        if gt in ("NOT", "NAND", "NOR"):
+            bubble = QGraphicsEllipseItem(out_start_x, cy - 4.0, 8.0, 8.0)
+            bubble.setBrush(QBrush(QColor("#0f172a")))
+            bubble.setPen(QPen(col, 1.8))
+            bubble.setZValue(10.4)
+            items.append(bubble)
+            out_start_x += 8.0
+
+        # Output pin wire
+        out_line = QGraphicsLineItem(out_start_x, cy, x0 + w, cy)
+        out_line.setPen(QPen(col, 2.0))
+        out_line.setZValue(10.1)
+        items.append(out_line)
+
+        # Output label
+        out_lbl = QGraphicsTextItem(output_label)
+        out_lbl.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+        out_lbl.setDefaultTextColor(QColor("#38bdf8"))
+        out_lbl.setPos(x0 + w - 16.0, cy - 18.0)
+        out_lbl.setZValue(10.5)
+        items.append(out_lbl)
+
+        # Input pins wires & labels
+        if gt == "NOT":
+            in_line = QGraphicsLineItem(x0, cy, bx0, cy)
+            in_line.setPen(QPen(col, 2.0))
+            in_line.setZValue(10.1)
+            items.append(in_line)
+
+            lbl = QGraphicsTextItem(input_labels[0] if input_labels else "A")
+            lbl.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            lbl.setDefaultTextColor(QColor("#f8fafc"))
+            lbl.setPos(x0 + 2.0, cy - 18.0)
+            lbl.setZValue(10.5)
+            items.append(lbl)
+        else:
+            in_y1 = y0 + h * 0.28
+            in_y2 = y0 + h * 0.72
+
+            in_line1 = QGraphicsLineItem(x0, in_y1, bx0 + (4.0 if gt in ("OR", "NOR", "XOR") else 0.0), in_y1)
+            in_line1.setPen(QPen(col, 2.0))
+            items.append(in_line1)
+
+            in_line2 = QGraphicsLineItem(x0, in_y2, bx0 + (4.0 if gt in ("OR", "NOR", "XOR") else 0.0), in_y2)
+            in_line2.setPen(QPen(col, 2.0))
+            items.append(in_line2)
+
+            lbl1 = QGraphicsTextItem(input_labels[0] if len(input_labels) > 0 else "In1")
+            lbl1.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            lbl1.setDefaultTextColor(QColor("#f8fafc"))
+            lbl1.setPos(x0 + 2.0, in_y1 - 18.0)
+            items.append(lbl1)
+
+            lbl2 = QGraphicsTextItem(input_labels[1] if len(input_labels) > 1 else "In2")
+            lbl2.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            lbl2.setDefaultTextColor(QColor("#f8fafc"))
+            lbl2.setPos(x0 + 2.0, in_y2 - 18.0)
+            items.append(lbl2)
+
+        return items
+
+    @staticmethod
+    def create_flow_arrow(
+        start: tuple[float, float] = (100.0, 100.0),
+        end: tuple[float, float] = (300.0, 100.0),
+        arrow_type: str = "straight",
+        label: str = "Đúng",
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled flowchart connector arrow (straight or orthogonal elbow) with arrowhead and condition text."""
+        items: list[QGraphicsItem] = []
+        x1, y1 = start
+        x2, y2 = end
+        col = pen_color or QColor("#10b981")
+
+        path = QPainterPath()
+        path.moveTo(x1, y1)
+
+        if arrow_type.lower() == "elbow":
+            mid_x = (x1 + x2) / 2.0
+            path.lineTo(mid_x, y1)
+            path.lineTo(mid_x, y2)
+            path.lineTo(x2, y2)
+            arrow_dir = (1.0 if x2 >= mid_x else -1.0, 0.0) if abs(x2 - mid_x) > 1e-3 else (0.0, 1.0 if y2 >= y1 else -1.0)
+            label_x = mid_x + 6.0
+            label_y = (y1 + y2) / 2.0 - 10.0
+        else:
+            path.lineTo(x2, y2)
+            dx, dy = x2 - x1, y2 - y1
+            L = math.hypot(dx, dy)
+            arrow_dir = (dx / L, dy / L) if L > 1e-3 else (1.0, 0.0)
+            label_x = (x1 + x2) / 2.0 - 10.0
+            label_y = (y1 + y2) / 2.0 - 20.0
+
+        pitem = QGraphicsPathItem(path)
+        pitem.setPen(QPen(col, 2.0))
+        pitem.setZValue(11.0)
+        items.append(pitem)
+
+        # Arrowhead polygon
+        ux, uy = arrow_dir
+        nx, ny = -uy, ux
+        ah_len = 10.0
+        ah_w = 6.0
+        p_tip = QPointF(x2, y2)
+        p_base1 = QPointF(x2 - ux * ah_len + nx * ah_w, y2 - uy * ah_len + ny * ah_w)
+        p_base2 = QPointF(x2 - ux * ah_len - nx * ah_w, y2 - uy * ah_len - ny * ah_w)
+        poly = QPolygonF([p_tip, p_base1, p_base2])
+        poly_item = QGraphicsPolygonItem(poly)
+        poly_item.setBrush(QBrush(col))
+        poly_item.setPen(Qt.PenStyle.NoPen)
+        poly_item.setZValue(11.5)
+        items.append(poly_item)
+
+        # Label
+        lbl_item = QGraphicsTextItem(label)
+        lbl_item.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        lbl_item.setDefaultTextColor(col)
+        lbl_item.setPos(label_x, label_y)
+        lbl_item.setZValue(12.0)
+        items.append(lbl_item)
+
+        return items
+
+    @staticmethod
+    def create_interactive_logic_gate(
+        gate_type: str = "AND",
+        center: tuple[float, float] = (960.0, 540.0),
+        width: float = 130.0,
+        height: float = 75.0,
+        input_labels: tuple[str, ...] = ("A", "B"),
+        output_label: str = "Y",
+        **kwargs,
+    ):
+        """Creates interactive logic gate item with air tap controls and boolean simulation."""
+        from src.ui.interactive_logic_gate import InteractiveLogicGateItem
+        return InteractiveLogicGateItem(gate_type, center=center, width=width, height=height)
+
+    @staticmethod
+    def get_flowchart_pins(
+        center: tuple[float, float],
+        width: float,
+        height: float,
+    ) -> dict[str, tuple[float, float]]:
+        """Returns cardinal connector pins (top, bottom, left, right) for a flowchart block."""
+        cx, cy = center
+        return {
+            "top": (cx, cy - height / 2.0),
+            "bottom": (cx, cy + height / 2.0),
+            "left": (cx - width / 2.0, cy),
+            "right": (cx + width / 2.0, cy),
+        }
+
+    @staticmethod
+    def snap_to_nearest_pin(
+        pos: tuple[float, float],
+        pins: dict[str, tuple[float, float]],
+        tolerance: float = 25.0,
+    ) -> Optional[tuple[str, tuple[float, float]]]:
+        """Snaps query coordinate to the nearest cardinal pin if within tolerance radius."""
+        px, py = pos
+        best_name, best_pt, best_dist = None, None, float("inf")
+        for name, pt in pins.items():
+            d = math.hypot(px - pt[0], py - pt[1])
+            if d < best_dist:
+                best_dist = d
+                best_name, best_pt = name, pt
+        if best_dist <= tolerance:
+            return best_name, best_pt
+        return None
+
+    @staticmethod
+    def create_manhattan_wire(
+        start: tuple[float, float] = (100.0, 100.0),
+        end: tuple[float, float] = (300.0, 250.0),
+        color: Optional[QColor] = None,
+        has_junction_dot: bool = True,
+    ) -> list[QGraphicsItem]:
+        """Creates orthogonal Manhattan wire and connection junction dot."""
+        items: list[QGraphicsItem] = []
+        x1, y1 = start
+        x2, y2 = end
+        col = color or QColor("#10b981")
+
+        mid_x = (x1 + x2) / 2.0
+        path = QPainterPath()
+        path.moveTo(x1, y1)
+        path.lineTo(mid_x, y1)
+        path.lineTo(mid_x, y2)
+        path.lineTo(x2, y2)
+
+        wire_item = QGraphicsPathItem(path)
+        wire_item.setPen(QPen(col, 2.0))
+        wire_item.setZValue(11.0)
+        items.append(wire_item)
+
+        if has_junction_dot:
+            dot = QGraphicsEllipseItem(x2 - 3.5, y2 - 3.5, 7.0, 7.0)
+            dot.setBrush(QBrush(col))
+            dot.setPen(Qt.PenStyle.NoPen)
+            dot.setZValue(11.5)
+            items.append(dot)
+
+        return items
+
+    @staticmethod
+    def create_cnn_diagram(
+        center: tuple[float, float],
+        kernel_name: str = "Sobel-X",
+        activation: str = "RELU",
+        pooling: str = "MAX_POOLING",
+        window_r: int = 2,
+        window_c: int = 2,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Convolutional Neural Network (CNN) Feature Extraction."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#6366f1")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem("MẠNG NƠ-RON CNN & TÍCH CHẬP 2D TRUYỀN THẲNG (FEATURE MAPS)")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # Input feature map
+        in_map = QGraphicsRectItem(vx0 + 10.0, vy0 + 30.0, 70.0, 70.0)
+        in_map.setBrush(QBrush(QColor("#1e1b4b")))
+        in_map.setPen(QPen(QColor("#818cf8"), 1.2))
+        items.append(in_map)
+
+        # Kernel box
+        k_box = QGraphicsRectItem(vx0 + 105.0, vy0 + 45.0, 40.0, 40.0)
+        k_box.setBrush(QBrush(QColor("#431407")))
+        k_box.setPen(QPen(QColor("#f97316"), 1.5))
+        items.append(k_box)
+
+        # Output feature map
+        out_map = QGraphicsRectItem(vx0 + 175.0, vy0 + 35.0, 60.0, 60.0)
+        out_map.setBrush(QBrush(QColor("#064e3b")))
+        out_map.setPen(QPen(QColor("#10b981"), 1.2))
+        items.append(out_map)
+
+        # Pooling map
+        pool_map = QGraphicsRectItem(vx0 + 260.0, vy0 + 45.0, 40.0, 40.0)
+        pool_map.setBrush(QBrush(QColor("#14532d")))
+        pool_map.setPen(QPen(QColor("#22c55e"), 1.2))
+        items.append(pool_map)
+
+        # Projection lines
+        l1 = QGraphicsLineItem(vx0 + 80.0, vy0 + 65.0, vx0 + 105.0, vy0 + 65.0)
+        l1.setPen(QPen(QColor("#f8fafc"), 1.2))
+        items.append(l1)
+
+        l2 = QGraphicsLineItem(vx0 + 145.0, vy0 + 65.0, vx0 + 175.0, vy0 + 65.0)
+        l2.setPen(QPen(QColor("#f8fafc"), 1.2))
+        items.append(l2)
+
+        l3 = QGraphicsLineItem(vx0 + 235.0, vy0 + 65.0, vx0 + 260.0, vy0 + 65.0)
+        l3.setPen(QPen(QColor("#f8fafc"), 1.2))
+        items.append(l3)
+
+        # Right box
+        rx0 = vx0 + 315.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, 195.0)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"MẠNG NƠ-RON CNN & TÍCH CHẬP 2D:\n"
+            f"• Toán tử nhân chập: {kernel_name}\n"
+            f"• Hàm kích hoạt phi tuyến: {activation}\n"
+            f"• Lớp gom nhóm: {pooling}\n"
+            f"• Cửa sổ trượt pooling: {window_r}×{window_c}\n"
+            f"• Bất biến tịnh tiến không gian"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        for name, pt in [("Input", (vx0 + 25.0, vy0 + 105.0)),
+                         (kernel_name, (vx0 + 105.0, vy0 + 90.0)),
+                         ("Conv2D", (vx0 + 185.0, vy0 + 100.0)),
+                         (pooling, (vx0 + 255.0, vy0 + 90.0))]:
+            t = QGraphicsTextItem(name)
+            t.setFont(QFont("Segoe UI", 6, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#94a3b8"))
+            t.setPos(*pt)
+            items.append(t)
+
+        return items
+
+    @staticmethod
+    def create_dynamic_programming_diagram(
+        center: tuple[float, float],
+        preset_code: str = "KNAPSACK_01_STANDARD",
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Dynamic Programming (DP Table & Recurrence)."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#ec4899")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"QUY HOẠCH ĐỘNG (DP) & CẤU TRÚC CON TỐI ƯU – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # DP Table grid cells
+        cell_w, cell_h = 42.0, 32.0
+        for r in range(4):
+            for c in range(6):
+                bx = vx0 + 15.0 + c * cell_w
+                by = vy0 + 25.0 + r * cell_h
+                cell = QGraphicsRectItem(bx, by, cell_w, cell_h)
+                is_opt = (r == 3 and c == 5)
+                cell.setBrush(QBrush(QColor("#831843") if is_opt else QColor("#0f172a")))
+                cell.setPen(QPen(QColor("#f43f5e") if is_opt else QColor("#334155"), 1.2 if is_opt else 0.8))
+                items.append(cell)
+
+        # Recurrence arrow
+        arrow = QGraphicsLineItem(vx0 + 15.0 + 3 * cell_w, vy0 + 25.0 + 2 * cell_h, vx0 + 15.0 + 5 * cell_w, vy0 + 25.0 + 3 * cell_h)
+        arrow.setPen(QPen(QColor("#fbbf24"), 2.0))
+        items.append(arrow)
+
+        # Right box
+        rx0 = vx0 + 295.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, 195.0)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"QUY HOẠCH ĐỘNG (DP) – KNAPSACK / LCS:\n"
+            f"• CÔNG THỨC TRUY HỒI: DP[i][w] = max(...)\n"
+            f"• Bảng nhớ ghi nhận Memoization\n"
+            f"• Cấu trúc con tối ưu (Optimal Substructure)\n"
+            f"• Các bài toán con gối nhau (Overlapping Subproblems)\n"
+            f"• Độ phức tạp thời gian: O(N·W) giả đa thức"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        return items
+
+    @staticmethod
+    def create_graph_diagram(
+        nodes: Optional[dict[str, tuple[float, float]]] = None,
+        edges: Optional[list[tuple[str, str, float]]] = None,
+        shortest_path: Optional[list[str]] = None,
+        is_directed: bool = False,
+        center: Optional[tuple[float, float]] = None,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector Graph Theory & Shortest Path diagram."""
+        items: list[QGraphicsItem] = []
+
+        if nodes is not None:
+            # Absolute scene graph stamping from InteractiveGraphPathfindingItem
+            # Edges
+            col_edge = pen_color or QColor("#475569")
+            col_sp = QColor("#10b981")
+            sp_set = set(zip(shortest_path[:-1], shortest_path[1:])) if shortest_path else set()
+
+            for edge in (edges or []):
+                u, v = edge[0], edge[1]
+                w = edge[2] if len(edge) > 2 else 1.0
+                if u in nodes and v in nodes:
+                    p1 = nodes[u]
+                    p2 = nodes[v]
+                    is_in_sp = (u, v) in sp_set or (v, u) in sp_set
+                    line = QGraphicsLineItem(p1[0], p1[1], p2[0], p2[1])
+                    line.setPen(QPen(col_sp if is_in_sp else col_edge, 3.5 if is_in_sp else 1.8))
+                    line.setZValue(10.1 if not is_in_sp else 10.3)
+                    items.append(line)
+
+                    # Weight badge
+                    mx = (p1[0] + p2[0]) / 2.0
+                    my = (p1[1] + p2[1]) / 2.0
+                    w_txt = QGraphicsTextItem(f"{w:.0f}")
+                    w_txt.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+                    w_txt.setDefaultTextColor(QColor("#fbbf24"))
+                    w_txt.setPos(mx - 6.0, my - 8.0)
+                    w_txt.setZValue(10.4)
+                    items.append(w_txt)
+
+            # Nodes
+            for nid, (nx, ny) in nodes.items():
+                is_sp_node = shortest_path and (nid in shortest_path)
+                circle = QGraphicsEllipseItem(nx - 14.0, ny - 14.0, 28.0, 28.0)
+                circle.setBrush(QBrush(QColor("#047857") if is_sp_node else QColor("#1e293b")))
+                circle.setPen(QPen(QColor("#34d399") if is_sp_node else QColor("#64748b"), 2.0))
+                circle.setZValue(10.5)
+                items.append(circle)
+
+                lbl = QGraphicsTextItem(nid)
+                lbl.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+                lbl.setDefaultTextColor(QColor("#ffffff"))
+                lbl.setPos(nx - 6.0, ny - 11.0)
+                lbl.setZValue(10.6)
+                items.append(lbl)
+
+            return items
+
+        # Fallback boxed diagram
+        cx, cy = center or (400.0, 300.0)
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(pen_color or QColor("#38bdf8"), 1.8))
+        items.append(bg)
+
+        hdr = QGraphicsTextItem("LÝ THUYẾT ĐỒ THỊ: BIỂU DIỄN ĐỈNH VÀ CẠNH")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        items.append(hdr)
+
+        for i, pt in enumerate([(x0 + 80.0, y0 + 100.0), (x0 + 160.0, y0 + 60.0), (x0 + 240.0, y0 + 100.0), (x0 + 200.0, y0 + 180.0), (x0 + 100.0, y0 + 180.0)]):
+            c = QGraphicsEllipseItem(pt[0] - 12.0, pt[1] - 12.0, 24.0, 24.0)
+            c.setBrush(QBrush(QColor("#1e293b")))
+            c.setPen(QPen(QColor("#38bdf8"), 1.5))
+            items.append(c)
+            t = QGraphicsTextItem(chr(65 + i))
+            t.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#ffffff"))
+            t.setPos(pt[0] - 5.0, pt[1] - 9.0)
+            items.append(t)
+
+        return items
+
+    @staticmethod
+    def create_max_flow_diagram(
+        center: tuple[float, float],
+        preset_code: str = "CLASSIC_EDMONDS_KARP",
+        total_flow: float = 23.0,
+        is_optimal: bool = True,
+        min_cut_cap: float = 23.0,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Maximum Flow & Minimum Cut (Edmonds-Karp)."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#0ea5e9")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"MẠNG LUỒNG CỰC ĐẠI (MAX-FLOW / MIN-CUT) – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # 6 nodes (s, u, v, w, x, t)
+        node_coords = [
+            ("s", (vx0 + 30.0, vy0 + 95.0)),
+            ("u", (vx0 + 100.0, vy0 + 45.0)),
+            ("v", (vx0 + 100.0, vy0 + 145.0)),
+            ("w", (vx0 + 190.0, vy0 + 45.0)),
+            ("x", (vx0 + 190.0, vy0 + 145.0)),
+            ("t", (vx0 + 260.0, vy0 + 95.0)),
+        ]
+        # Edges
+        edge_pairs = [
+            (0, 1), (0, 2), (1, 3), (1, 4), (2, 4), (3, 5), (4, 5)
+        ]
+        for idx1, idx2 in edge_pairs:
+            p1 = node_coords[idx1][1]
+            p2 = node_coords[idx2][1]
+            edge_line = QGraphicsLineItem(p1[0], p1[1], p2[0], p2[1])
+            edge_line.setPen(QPen(QColor("#38bdf8"), 2.0))
+            items.append(edge_line)
+
+        for name, pt in node_coords:
+            c = QGraphicsEllipseItem(pt[0] - 14.0, pt[1] - 14.0, 28.0, 28.0)
+            c.setBrush(QBrush(QColor("#0284c7") if name in ("s", "t") else QColor("#0f172a")))
+            c.setPen(QPen(QColor("#38bdf8"), 1.8))
+            items.append(c)
+
+            t = QGraphicsTextItem(name)
+            t.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#ffffff"))
+            t.setPos(pt[0] - 5.0, pt[1] - 11.0)
+            items.append(t)
+
+        # Right box
+        rx0 = vx0 + 295.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, 195.0)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"MAX-FLOW & LUỒNG CỰC ĐẠI TRÊN MẠNG:\n"
+            f"• Thuật toán: Edmonds-Karp (BFS)\n"
+            f"• Giá trị luồng cực đại (Max-Flow): {total_flow:.0f}\n"
+            f"• Dung lượng lát cắt hẹp nhất (MIN-CUT): {min_cut_cap:.0f}\n"
+            f"• Định lý Ford-Fulkerson: Max-Flow = Min-Cut\n"
+            f"• Trạng thái tối ưu: Đã hội tụ"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        return items
+
+    @staticmethod
+    def create_mlp_backprop_diagram(
+        center: tuple[float, float],
+        preset_code: str = "XOR_PROBLEM",
+        epoch: int = 50,
+        loss: float = 0.082,
+        accuracy: float = 1.0,
+        activation: str = "Tanh",
+        lr: float = 0.25,
+        width: float = 640.0,
+        height: float = 340.0,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Multi-Layer Perceptron (MLP) & Backpropagation Gradient Descent."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#8b5cf6")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"MẠNG NƠ-RON MLP & LAN TRUYỀN NGƯỢC (BACKPROPAGATION) – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # 3 layers: In(2), Hidden(3), Out(1)
+        in_nodes = [(vx0 + 40.0, vy0 + 65.0), (vx0 + 40.0, vy0 + 125.0)]
+        hid_nodes = [(vx0 + 140.0, vy0 + 45.0), (vx0 + 140.0, vy0 + 95.0), (vx0 + 140.0, vy0 + 145.0)]
+        out_nodes = [(vx0 + 240.0, vy0 + 95.0)]
+
+        # Synapses
+        for p1 in in_nodes:
+            for p2 in hid_nodes:
+                syn = QGraphicsLineItem(p1[0], p1[1], p2[0], p2[1])
+                syn.setPen(QPen(QColor("#475569"), 1.2))
+                items.append(syn)
+        for p1 in hid_nodes:
+            for p2 in out_nodes:
+                syn = QGraphicsLineItem(p1[0], p1[1], p2[0], p2[1])
+                syn.setPen(QPen(QColor("#8b5cf6"), 1.5))
+                items.append(syn)
+
+        # Node circles
+        for name, nodes in [("In", in_nodes), ("Hid", hid_nodes), ("Out", out_nodes)]:
+            for nx, ny in nodes:
+                dot = QGraphicsEllipseItem(nx - 10.0, ny - 10.0, 20.0, 20.0)
+                dot.setBrush(QBrush(QColor("#1e1b4b")))
+                dot.setPen(QPen(QColor("#a78bfa"), 1.5))
+                items.append(dot)
+
+        # Right box
+        rx0 = vx0 + 295.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, 195.0)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"MẠNG NƠ-RON MLP & BACKPROPAGATION:\n"
+            f"• Bài toán mô phỏng: {preset_code}\n"
+            f"• Chu kỳ huấn luyện (Epoch): {epoch}\n"
+            f"• Hàm mất mát (Loss): {loss:.4f}\n"
+            f"• Độ chính xác (Accuracy): {accuracy * 100:.1f}%\n"
+            f"• Hàm kích hoạt: {activation}\n"
+            f"• Tốc độ học (Learning Rate): {lr}\n"
+            f"• Gradient descent: w = w - lr * dL/dw"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        return items
+
+    @staticmethod
+    def create_red_black_tree_diagram(
+        center: tuple[float, float],
+        width: float = 640.0,
+        height: float = 340.0,
+        preset_code: str = "CLASSIC_CONSTRUCTION",
+        node_count: int = 7,
+        black_height: int = 2,
+        tree_height: int = 4,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Self-Balancing Red-Black Tree."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#ef4444")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"CẤU TRÚC DỮ LIỆU CÂY ĐỎ ĐEN (RED-BLACK TREE) – {preset_code}")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        vx0, vy0 = x0 + 16.0, y0 + 38.0
+
+        # 5 Nodes layout
+        root = (vx0 + 140.0, vy0 + 35.0)
+        l1 = (vx0 + 80.0, vy0 + 85.0)
+        r1 = (vx0 + 200.0, vy0 + 85.0)
+        l2 = (vx0 + 50.0, vy0 + 135.0)
+        r2 = (vx0 + 110.0, vy0 + 135.0)
+
+        edges = [(root, l1), (root, r1), (l1, l2), (l1, r2)]
+        for p1, p2 in edges:
+            e = QGraphicsLineItem(p1[0], p1[1], p2[0], p2[1])
+            e.setPen(QPen(QColor("#64748b"), 1.8))
+            items.append(e)
+
+        rb_nodes = [
+            (root, False, "20"),
+            (l1, True, "10"),
+            (r1, False, "30"),
+            (l2, False, "5"),
+            (r2, False, "15"),
+        ]
+        for pt, is_red, val in rb_nodes:
+            c = QGraphicsEllipseItem(pt[0] - 13.0, pt[1] - 13.0, 26.0, 26.0)
+            c.setBrush(QBrush(QColor("#dc2626") if is_red else QColor("#0f172a")))
+            c.setPen(QPen(QColor("#f87171") if is_red else QColor("#94a3b8"), 1.8))
+            items.append(c)
+
+            t = QGraphicsTextItem(val)
+            t.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            t.setDefaultTextColor(QColor("#ffffff"))
+            t.setPos(pt[0] - 6.0, pt[1] - 10.0)
+            items.append(t)
+
+        # Right box
+        rx0 = vx0 + 285.0
+        rw_box = width - (rx0 - x0) - 16.0
+        r_box = QGraphicsRectItem(rx0, vy0, rw_box, 195.0)
+        r_box.setBrush(QBrush(QColor("#020617")))
+        r_box.setPen(QPen(QColor("#1e293b"), 1.0))
+        r_box.setZValue(10.2)
+        items.append(r_box)
+
+        info = QGraphicsTextItem(
+            f"TÍNH CHẤT CÂY ĐỎ ĐEN (RED-BLACK TREE):\n"
+            f"• Chiều cao đen (Black-height): {black_height}\n"
+            f"• Chiều cao cây (Tree-height): {tree_height}\n"
+            f"• Số lượng node: {node_count}\n"
+            f"• Đảm bảo cân bằng: Đường đi dài nhất ≤ 2× đường ngắn nhất\n"
+            f"• Thời gian tìm kiếm: O(log N)"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(rx0 + 10.0, vy0 + 8.0)
+        info.setZValue(10.4)
+        items.append(info)
+
+        return items
+
+    @staticmethod
+    def create_rsa_crypto_diagram(
+        center: tuple[float, float],
+        width: float = 440.0,
+        height: float = 260.0,
+        prime_p: int = 61,
+        prime_q: int = 53,
+        public_e: int = 17,
+        private_d: int = 2753,
+        plaintext_m: int = 42,
+        ciphertext_c: int = 255,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of RSA Asymmetric Cryptography and Modular Arithmetic."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#10b981")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem("MÃ HOÁ KHOÁ BẤT ĐỐI XỨNG RSA (ASYMMETRIC CIPHER)")
+        hdr.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 10.0, y0 + 8.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        # Plaintext box
+        b_m = QGraphicsRectItem(x0 + 15.0, y0 + 40.0, 75.0, 45.0)
+        b_m.setBrush(QBrush(QColor("#1e293b")))
+        b_m.setPen(QPen(QColor("#38bdf8"), 1.2))
+        items.append(b_m)
+
+        # Encrypt box
+        b_enc = QGraphicsRectItem(x0 + 115.0, y0 + 40.0, 75.0, 45.0)
+        b_enc.setBrush(QBrush(QColor("#065f46")))
+        b_enc.setPen(QPen(QColor("#10b981"), 1.2))
+        items.append(b_enc)
+
+        # Ciphertext box
+        b_c = QGraphicsRectItem(x0 + 215.0, y0 + 40.0, 75.0, 45.0)
+        b_c.setBrush(QBrush(QColor("#831843")))
+        b_c.setPen(QPen(QColor("#f43f5e"), 1.2))
+        items.append(b_c)
+
+        # Decrypt box
+        b_dec = QGraphicsRectItem(x0 + 315.0, y0 + 40.0, 75.0, 45.0)
+        b_dec.setBrush(QBrush(QColor("#065f46")))
+        b_dec.setPen(QPen(QColor("#10b981"), 1.2))
+        items.append(b_dec)
+
+        # Arrows
+        for ax in [x0 + 90.0, x0 + 190.0, x0 + 290.0]:
+            arr = QGraphicsLineItem(ax, y0 + 62.0, ax + 25.0, y0 + 62.0)
+            arr.setPen(QPen(QColor("#f8fafc"), 1.5))
+            items.append(arr)
+
+        # Info card
+        n_val = prime_p * prime_q
+        info = QGraphicsTextItem(
+            f"THÔNG SỐ MÃ HOÁ RSA:\n"
+            f"• Số nguyên tố: p = {prime_p}, q = {prime_q}\n"
+            f"• Modulus n = p·q = {n_val}\n"
+            f"• Khóa công khai e = {public_e}\n"
+            f"• Khóa bí mật d = {private_d}\n"
+            f"• Mã hóa: c = m^e mod n = {ciphertext_c}\n"
+            f"• Giải mã: m = c^d mod n = {plaintext_m}"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 15.0, y0 + 100.0)
+        items.append(info)
+
+        return items
+
+    @staticmethod
+    def create_sorting_diagram(
+        center: tuple[float, float],
+        width: float = 540.0,
+        height: float = 320.0,
+        algorithm: str = "QuickSort",
+        array: Optional[list] = None,
+        comparisons: int = 14,
+        swaps: int = 6,
+        pen_color: Optional[QColor] = None,
+        **kwargs,
+    ) -> list[QGraphicsItem]:
+        """Creates styled vector diagram of Sorting Algorithms & Array State."""
+        items: list[QGraphicsItem] = []
+        cx, cy = center
+        x0 = cx - width / 2.0
+        y0 = cy - height / 2.0
+        col = pen_color or QColor("#f59e0b")
+
+        bg = QGraphicsRectItem(x0, y0, width, height)
+        bg.setBrush(QBrush(QColor("#080c14")))
+        bg.setPen(QPen(col, 1.8))
+        bg.setZValue(10.0)
+        items.append(bg)
+
+        hdr = QGraphicsTextItem(f"THUẬT TOÁN SẮP XẾP: {algorithm.upper()} (SORTING)")
+        hdr.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        hdr.setDefaultTextColor(QColor("#f8fafc"))
+        hdr.setPos(x0 + 14.0, y0 + 10.0)
+        hdr.setZValue(10.5)
+        items.append(hdr)
+
+        arr = array or [4, 2, 7, 1, 9, 3, 6, 5]
+        bar_w = 32.0
+        max_val = max(arr) if arr else 10
+        base_y = y0 + 180.0
+
+        for i, val in enumerate(arr[:10]):
+            bh = (val / max_val) * 110.0
+            bx = x0 + 30.0 + i * (bar_w + 10.0)
+            by = base_y - bh
+
+            bar = QGraphicsRectItem(bx, by, bar_w, bh)
+            bar.setBrush(QBrush(QColor("#0284c7") if i % 2 == 0 else QColor("#0369a1")))
+            bar.setPen(QPen(QColor("#38bdf8"), 1.0))
+            items.append(bar)
+
+            vt = QGraphicsTextItem(str(val))
+            vt.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+            vt.setDefaultTextColor(QColor("#ffffff"))
+            vt.setPos(bx + 8.0, base_y + 4.0)
+            items.append(vt)
+
+        info = QGraphicsTextItem(
+            f"PHÂN TÍCH THUẬT TOÁN {algorithm.upper()}:\n"
+            f"• Số phép so sánh: {comparisons}\n"
+            f"• Số phép hoán vị (swaps): {swaps}\n"
+            f"• Độ phức tạp trung bình: O(N log N)\n"
+            f"• Độ phức tạp không gian: O(log N)"
+        )
+        info.setFont(QFont("Segoe UI", 7))
+        info.setDefaultTextColor(QColor("#e2e8f0"))
+        info.setPos(x0 + 30.0, y0 + 215.0)
+        items.append(info)
+
+        return items
+
+
 class StemToolDialog(QDialog):
     """
     Modal configuration dialog allowing teachers to enter parameters for
@@ -8328,6 +13846,143 @@ class StemToolDialog(QDialog):
             self.inp_text = QLineEdit("i = i + 1")
             self.form.addRow("Loại khối thuật toán:", self.combo_type)
             self.form.addRow("Nội dung khối:", self.inp_text)
+        elif tool_type == "math_triangle":
+            self.combo_tri_type = QComboBox()
+            self.combo_tri_type.addItems([
+                "Tam giác vuông (Right)",
+                "Tam giác cân (Isosceles)",
+                "Tam giác đều (Equilateral)",
+                "Tam giác thường (Scalene)",
+            ])
+            self.inp_base = QLineEdit("240")
+            self.inp_height = QLineEdit("160")
+            self.inp_labels = QLineEdit("A, B, C")
+            self.form.addRow("Loại tam giác:", self.combo_tri_type)
+            self.form.addRow("Độ dài cạnh đáy (px):", self.inp_base)
+            self.form.addRow("Chiều cao (px):", self.inp_height)
+            self.form.addRow("Tên các đỉnh (phân cách bằng dấu phẩy):", self.inp_labels)
+        elif tool_type == "math_circle_radius":
+            self.inp_radius = QLineEdit("120")
+            self.inp_center_lbl = QLineEdit("O")
+            self.inp_rad_lbl = QLineEdit("R")
+            self.form.addRow("Bán kính R (px):", self.inp_radius)
+            self.form.addRow("Tên tâm:", self.inp_center_lbl)
+            self.form.addRow("Nhãn bán kính:", self.inp_rad_lbl)
+        elif tool_type == "math_angle":
+            self.inp_angle_deg = QLineEdit("60")
+            self.inp_ray_len = QLineEdit("150")
+            self.inp_arc_radius = QLineEdit("45")
+            self.inp_angle_label = QLineEdit("α = 60°")
+            self.form.addRow("Góc (độ):", self.inp_angle_deg)
+            self.form.addRow("Độ dài tia (px):", self.inp_ray_len)
+            self.form.addRow("Bán kính cung đo (px):", self.inp_arc_radius)
+            self.form.addRow("Nhãn hiển thị:", self.inp_angle_label)
+        elif tool_type == "physics_circuit":
+            self.combo_component = QComboBox()
+            self.combo_component.addItems([
+                "Điện trở (Resistor)",
+                "Tụ điện (Capacitor)",
+                "Nguồn điện (Battery)",
+                "Cuộn cảm (Inductor)",
+                "Nối đất (Ground)",
+                "Khóa K (Switch)",
+            ])
+            self.inp_label = QLineEdit("R1")
+            self.form.addRow("Linh kiện:", self.combo_component)
+            self.form.addRow("Nhãn linh kiện:", self.inp_label)
+
+            def _on_circuit_comp_changed(idx: int) -> None:
+                defaults = ["R1", "C1", "E = 12V", "L = 10mH", "GND", "K"]
+                if 0 <= idx < len(defaults):
+                    self.inp_label.setText(defaults[idx])
+
+            self.combo_component.currentIndexChanged.connect(_on_circuit_comp_changed)
+        elif tool_type == "chem_bond":
+            self.combo_bond_type = QComboBox()
+            self.combo_bond_type.addItems([
+                "Liên kết đơn (Single Bond -)",
+                "Liên kết đôi (Double Bond =)",
+                "Liên kết ba (Triple Bond ≡)",
+            ])
+            self.inp_bond_len = QLineEdit("80")
+            self.combo_bond_angle = QComboBox()
+            self.combo_bond_angle.addItems(["0° (Ngang)", "60° (Chéo lên phải)", "-60° (Chéo xuống phải)", "90° (Thẳng đứng)", "30° (Chéo nhẹ)"])
+            self.form.addRow("Loại liên kết:", self.combo_bond_type)
+            self.form.addRow("Độ dài liên kết (px):", self.inp_bond_len)
+            self.form.addRow("Góc nghiêng:", self.combo_bond_angle)
+        elif tool_type == "chem_molecule":
+            self.combo_mol_type = QComboBox()
+            self.combo_mol_type.addItems([
+                "Tứ diện (CH4 / Tetrahedral)",
+                "Gấp khúc (H2O / Bent)",
+                "Đường thẳng (CO2 / Linear)",
+                "Tam giác phẳng (BF3 / Trigonal Planar)",
+                "Chóp tam giác (NH3 / Trigonal Pyramidal)",
+                "Bát diện (SF6 / Octahedral)",
+            ])
+            self.inp_scale = QLineEdit("80")
+            self.inp_title = QLineEdit("Mô hình Phân tử: Metan (CH₄)")
+            self.form.addRow("Cấu trúc hình học:", self.combo_mol_type)
+            self.form.addRow("Tỉ lệ thu phóng (scale):", self.inp_scale)
+            self.form.addRow("Tiêu đề / Chú thích:", self.inp_title)
+
+            def _on_mol_type_changed(idx: int):
+                titles = [
+                    "Mô hình Phân tử: Metan (CH₄)",
+                    "Mô hình Phân tử: Nước (H₂O)",
+                    "Mô hình Phân tử: Cacbon đioxit (CO₂)",
+                    "Mô hình Phân tử: Bo triflorua (BF₃)",
+                    "Mô hình Phân tử: Amoniac (NH₃)",
+                    "Mô hình Phân tử: Lưu huỳnh hexaflorua (SF₆)",
+                ]
+                if 0 <= idx < len(titles):
+                    self.inp_title.setText(titles[idx])
+
+            self.combo_mol_type.currentIndexChanged.connect(_on_mol_type_changed)
+
+        elif tool_type == "physics_optics":
+            self.combo_lens_type = QComboBox()
+            self.combo_lens_type.addItems(["Hội tụ (Converging)", "Phân kỳ (Diverging)"])
+            self.inp_focal = QLineEdit("120")
+            self.inp_obj_dist = QLineEdit("200")
+            self.inp_obj_height = QLineEdit("60")
+            self.form.addRow("Loại thấu kính:", self.combo_lens_type)
+            self.form.addRow("Tiêu cự f (px):", self.inp_focal)
+            self.form.addRow("Khoảng cách vật d (px):", self.inp_obj_dist)
+            self.form.addRow("Chiều cao vật h (px):", self.inp_obj_height)
+
+        elif tool_type == "bio_dna":
+            self.inp_dna_len = QLineEdit("300")
+            self.inp_turns = QLineEdit("3")
+            self.inp_amp = QLineEdit("45")
+            self.form.addRow("Chiều dài chuỗi ADN (px):", self.inp_dna_len)
+            self.form.addRow("Số chu kỳ xoắn:", self.inp_turns)
+            self.form.addRow("Biên độ xoắn (px):", self.inp_amp)
+
+        elif tool_type == "bio_punnett":
+            self.inp_male = QLineEdit("Aa")
+            self.inp_female = QLineEdit("Aa")
+            self.inp_cross_title = QLineEdit("Lai một cặp tính trạng (Aa × Aa)")
+            self.form.addRow("Kiểu gen bố (♂):", self.inp_male)
+            self.form.addRow("Kiểu gen mẹ (♀):", self.inp_female)
+            self.form.addRow("Tiêu đề phép lai:", self.inp_cross_title)
+
+        elif tool_type == "info_logic_gate":
+            self.combo_gate_type = QComboBox()
+            self.combo_gate_type.addItems(["AND", "OR", "NOT", "NAND", "NOR", "XOR", "XNOR"])
+            self.inp_inputs = QLineEdit("A, B")
+            self.inp_output = QLineEdit("Y")
+            self.form.addRow("Loại cổng logic:", self.combo_gate_type)
+            self.form.addRow("Tín hiệu ngõ vào:", self.inp_inputs)
+            self.form.addRow("Tín hiệu ngõ ra:", self.inp_output)
+
+        elif tool_type == "info_flow_arrow":
+            self.combo_arrow_type = QComboBox()
+            self.combo_arrow_type.addItems(["Thẳng (Straight)", "Uốn góc (Orthogonal)", "Phản hồi (Loopback)"])
+            self.combo_condition = QComboBox()
+            self.combo_condition.addItems(["None", "True (Yes)", "False (No)"])
+            self.form.addRow("Kiểu luồng mũi tên:", self.combo_arrow_type)
+            self.form.addRow("Điều kiện nhánh:", self.combo_condition)
 
         layout.addLayout(self.form)
 

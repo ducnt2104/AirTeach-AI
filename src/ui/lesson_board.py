@@ -365,6 +365,12 @@ class LessonBoard(QGraphicsScene):
         self._mass_spectrometer_item: Optional[QGraphicsItem] = None
         self._spectrophotometry_item: Optional[QGraphicsItem] = None
         self._hall_effect_item: Optional[QGraphicsItem] = None
+        self._compton_scattering_item: Optional[QGraphicsItem] = None
+        self._nuclear_binding_energy_item: Optional[QGraphicsItem] = None
+        self._gravitational_lensing_item: Optional[QGraphicsItem] = None
+        self._chemical_equilibrium_item: Optional[QGraphicsItem] = None
+        self._hodgkin_huxley_item: Optional[QGraphicsItem] = None
+        self._mst_visualizer_item: Optional[QGraphicsItem] = None
         self._radiation_shielding_item: Optional[QGraphicsItem] = None
         self._maxwell_boltzmann_item: Optional[QGraphicsItem] = None
         self._molecular_orbital_item: Optional[QGraphicsItem] = None
@@ -4522,6 +4528,274 @@ class LessonBoard(QGraphicsScene):
         for itm in items:
             self.addItem(itm)
         self.update()
+
+    def show_nuclear_binding_energy(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Shows, creates or hides the Interactive Nuclear Binding Energy & SEMF simulator."""
+        if self._nuclear_binding_energy_item is None:
+            from src.ui.interactive_nuclear_binding_energy import InteractiveNuclearBindingEnergyItem
+            spawn_pos = pos if pos is not None else (130.0, 45.0)
+            self._nuclear_binding_energy_item = InteractiveNuclearBindingEnergyItem(pos=spawn_pos)
+            self._nuclear_binding_energy_item.stamp_requested.connect(self._on_stamp_nuclear_binding_energy)
+            self.addItem(self._nuclear_binding_energy_item)
+        self._nuclear_binding_energy_item.setVisible(visible)
+        if visible and pos is not None:
+            self._nuclear_binding_energy_item.setPos(pos[0], pos[1])
+        return self._nuclear_binding_energy_item if visible else None
+
+    def toggle_nuclear_binding_energy(self) -> bool:
+        """Toggles the visibility of the Interactive Nuclear Binding Energy simulator."""
+        is_vis = self._nuclear_binding_energy_item is not None and self._nuclear_binding_energy_item.isVisible()
+        self.show_nuclear_binding_energy(not is_vis)
+        return not is_vis
+
+    def _on_stamp_nuclear_binding_energy(self, data: dict) -> None:
+        """Stamp the Nuclear Binding Energy permanent vector diagram on the board."""
+        from src.ui.stem_tools import PhysicsTools
+        items = PhysicsTools.create_nuclear_binding_energy_diagram(
+            center=data.get("center", (430.0, 310.0)),
+            A=data.get("A", 56),
+            Z=data.get("Z", 26),
+            preset_name=data.get("preset_name", "Sắt-56 (Peak Stability)"),
+            symbol=data.get("symbol", "⁵⁶₂₆Fe"),
+            description=data.get("description", "Đỉnh bền vững hạt nhân cao nhất vũ trụ"),
+            total_be_mev=data.get("total_be_mev", 492.2),
+            be_per_nucleon_mev=data.get("be_per_nucleon_mev", 8.79),
+            mass_defect_u=data.get("mass_defect_u", 0.5284),
+            e_vol=data.get("e_vol", 884.8),
+            e_surf=data.get("e_surf", -268.0),
+            e_coul=data.get("e_coul", -121.3),
+            e_asym=data.get("e_asym", -4.1),
+            e_pair=data.get("e_pair", 1.6),
+        )
+        for itm in items:
+            self.addItem(itm)
+        if self._nuclear_binding_energy_item is not None:
+            self._nuclear_binding_energy_item.setVisible(False)
+
+    def show_compton_scattering(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Shows, creates or hides the Interactive Compton Scattering & Relativistic Collision simulator."""
+        if self._compton_scattering_item is None:
+            from src.ui.interactive_compton_scattering import InteractiveComptonScatteringItem
+            spawn_pos = pos if pos is not None else (140.0, 50.0)
+            self._compton_scattering_item = InteractiveComptonScatteringItem(pos=spawn_pos)
+            self._compton_scattering_item.stamp_requested.connect(self._on_stamp_compton_scattering)
+            self.addItem(self._compton_scattering_item)
+        self._compton_scattering_item.setVisible(visible)
+        if visible and pos is not None:
+            self._compton_scattering_item.setPos(pos[0], pos[1])
+        return self._compton_scattering_item if visible else None
+
+    def toggle_compton_scattering(self) -> bool:
+        """Toggles the visibility of the Interactive Compton Scattering simulator."""
+        is_vis = self._compton_scattering_item is not None and self._compton_scattering_item.isVisible()
+        self.show_compton_scattering(not is_vis)
+        return not is_vis
+
+    def _on_stamp_compton_scattering(self, data: dict) -> None:
+        """Stamp the Compton Scattering permanent vector diagram on the board."""
+        from src.ui.stem_tools import PhysicsTools
+        items = PhysicsTools.create_compton_scattering_diagram(
+            center=data.get("center", (420.0, 320.0)),
+            incident_energy_kev=data.get("incident_energy_kev", 511.0),
+            scattering_angle_deg=data.get("scattering_angle_deg", 60.0),
+            preset_name=data.get("preset_name", "Tán xạ Compton (Cobalt-60 / 511 keV)"),
+            target_material=data.get("target_material", "Carbon Graphite (e⁻ tự do)"),
+            delta_lambda_pm=data.get("delta_lambda_pm", 1.213),
+            lambda_scatter_pm=data.get("lambda_scatter_pm", 3.640),
+            energy_scatter_kev=data.get("energy_scatter_kev", 340.7),
+            electron_kinetic_kev=data.get("electron_kinetic_kev", 170.3),
+            phi_deg=data.get("phi_deg", 40.9),
+        )
+        for itm in items:
+            self.addItem(itm)
+        if self._compton_scattering_item is not None:
+            self._compton_scattering_item.setVisible(False)
+
+    def show_gravitational_lensing(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Shows, creates or hides the Interactive Gravitational Lensing & General Relativity simulator."""
+        if self._gravitational_lensing_item is None:
+            from src.ui.interactive_gravitational_lensing import InteractiveGravitationalLensingItem
+            spawn_pos = pos if pos is not None else (140.0, 50.0)
+            self._gravitational_lensing_item = InteractiveGravitationalLensingItem(pos=spawn_pos)
+            self._gravitational_lensing_item.stamp_requested.connect(self._on_stamp_gravitational_lensing)
+            self.addItem(self._gravitational_lensing_item)
+        self._gravitational_lensing_item.setVisible(visible)
+        if visible and pos is not None:
+            self._gravitational_lensing_item.setPos(pos[0], pos[1])
+        return self._gravitational_lensing_item if visible else None
+
+    def toggle_gravitational_lensing(self) -> bool:
+        """Toggles the visibility of the Interactive Gravitational Lensing simulator."""
+        is_vis = self._gravitational_lensing_item is not None and self._gravitational_lensing_item.isVisible()
+        self.show_gravitational_lensing(not is_vis)
+        return not is_vis
+
+    def _on_stamp_gravitational_lensing(self, data: dict) -> None:
+        """Stamp the Gravitational Lensing permanent vector diagram on the board."""
+        from src.ui.stem_tools import PhysicsTools
+        items = PhysicsTools.create_gravitational_lensing_diagram(
+            center=data.get("center", (440.0, 310.0)),
+            preset_name=data.get("preset_name", "Chiếc Nhẫn Einstein Hoàn Mỹ"),
+            description=data.get("description", "Nguồn sáng thẳng hàng tuyệt đối với thấu kính hấp dẫn"),
+            lens_mass_solar=data.get("lens_mass_solar", 1.0e12),
+            source_offset_arcsec=data.get("source_offset_arcsec", 0.5),
+            theta_e_arcsec=data.get("theta_e_arcsec", 1.60),
+            theta_plus_arcsec=data.get("theta_plus_arcsec", 1.869),
+            theta_minus_arcsec=data.get("theta_minus_arcsec", 1.369),
+            mu_tot=data.get("mu_tot", 5.20),
+            is_quadrupole=data.get("is_quadrupole", False),
+        )
+        for itm in items:
+            self.addItem(itm)
+        if self._gravitational_lensing_item is not None:
+            self._gravitational_lensing_item.setVisible(False)
+
+    def show_chemical_equilibrium(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Shows, creates or hides the Interactive Chemical Equilibrium & Le Chatelier simulator."""
+        if self._chemical_equilibrium_item is None:
+            from src.ui.interactive_chemical_equilibrium import InteractiveChemicalEquilibriumItem
+            spawn_pos = pos if pos is not None else (135.0, 48.0)
+            self._chemical_equilibrium_item = InteractiveChemicalEquilibriumItem(pos=spawn_pos)
+            self._chemical_equilibrium_item.stamp_requested.connect(self._on_stamp_chemical_equilibrium)
+            self.addItem(self._chemical_equilibrium_item)
+        self._chemical_equilibrium_item.setVisible(visible)
+        if visible and pos is not None:
+            self._chemical_equilibrium_item.setPos(pos[0], pos[1])
+        return self._chemical_equilibrium_item if visible else None
+
+    def toggle_chemical_equilibrium(self) -> bool:
+        """Toggles the visibility of the Interactive Chemical Equilibrium simulator."""
+        is_vis = self._chemical_equilibrium_item is not None and self._chemical_equilibrium_item.isVisible()
+        self.show_chemical_equilibrium(not is_vis)
+        return not is_vis
+
+    def _on_stamp_chemical_equilibrium(self, data: dict) -> None:
+        """Stamp the Chemical Equilibrium permanent vector diagram on the board."""
+        from src.ui.stem_tools import ChemistryTools
+        items = ChemistryTools.create_chemical_equilibrium_diagram(
+            center=data.get("center", (440.0, 310.0)),
+            preset_key=data.get("preset_key", "HABER_BOSCH"),
+            preset_name=data.get("preset_name", "Tổng Hợp Amoniac (Haber-Bosch)"),
+            equation_display=data.get("equation_display", "N₂(k) + 3H₂(k) ⇌ 2NH₃(k)"),
+            description=data.get("description", "Phản ứng tỏa nhiệt, giảm số mol khí"),
+            temp_k=data.get("temp_k", 673.15),
+            temp_c=data.get("temp_c", 400.0),
+            pressure_atm=data.get("pressure_atm", 200.0),
+            delta_g_kj=data.get("delta_g_kj", 41.5),
+            kp=data.get("kp", 6.0e-4),
+            kx=data.get("kx", 24.0),
+            xi=data.get("xi", 0.52),
+            yield_pct=data.get("yield_pct", 52.0),
+            mole_fractions=data.get("mole_fractions"),
+            catalyst_enabled=data.get("catalyst_enabled", True),
+        )
+        for itm in items:
+            self.addItem(itm)
+        if self._chemical_equilibrium_item is not None:
+            self._chemical_equilibrium_item.setVisible(False)
+
+    def show_hodgkin_huxley(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Shows, creates or hides the Interactive Hodgkin-Huxley Neuron ODE simulator."""
+        if self._hodgkin_huxley_item is None:
+            from src.ui.interactive_hodgkin_huxley import InteractiveHodgkinHuxleyItem
+            spawn_pos = pos if pos is not None else (140.0, 52.0)
+            self._hodgkin_huxley_item = InteractiveHodgkinHuxleyItem(pos=spawn_pos)
+            self._hodgkin_huxley_item.stamp_requested.connect(self._on_stamp_hodgkin_huxley)
+            self.addItem(self._hodgkin_huxley_item)
+        self._hodgkin_huxley_item.setVisible(visible)
+        if visible and pos is not None:
+            self._hodgkin_huxley_item.setPos(pos[0], pos[1])
+        return self._hodgkin_huxley_item if visible else None
+
+    def toggle_hodgkin_huxley(self) -> bool:
+        """Toggles the visibility of the Interactive Hodgkin-Huxley simulator."""
+        is_vis = self._hodgkin_huxley_item is not None and self._hodgkin_huxley_item.isVisible()
+        self.show_hodgkin_huxley(not is_vis)
+        return not is_vis
+
+    def _on_stamp_hodgkin_huxley(self, data: dict) -> None:
+        """Stamp the Hodgkin-Huxley permanent vector diagram on the board."""
+        from src.ui.stem_tools import BiologyTools
+        items = BiologyTools.create_hodgkin_huxley_diagram(
+            center=data.get("center", (440.0, 310.0)),
+            preset_key=data.get("preset_key", "SINGLE_ACTION_POTENTIAL"),
+            preset_name=data.get("preset_name", "Điện Thế Hoạt Động Đơn Cực (Action Potential)"),
+            description=data.get("description", "Khử cực màng vượt ngưỡng bùng phát đỉnh spike"),
+            stim_amp=data.get("stim_amp", 10.0),
+            stim_duration_ms=data.get("stim_duration_ms", 2.0),
+            v_max=data.get("v_max", 35.0),
+            v_min=data.get("v_min", -75.0),
+            has_spike=data.get("has_spike", True),
+            ttx_blocked=data.get("ttx_blocked", False),
+            tea_blocked=data.get("tea_blocked", False),
+        )
+        for itm in items:
+            self.addItem(itm)
+        if self._hodgkin_huxley_item is not None:
+            self._hodgkin_huxley_item.setVisible(False)
+
+    def show_mst_visualizer(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Shows, creates or hides the Interactive Minimum Spanning Tree (MST) simulator."""
+        if self._mst_visualizer_item is None:
+            from src.ui.interactive_mst_visualizer import InteractiveMstVisualizerItem
+            spawn_pos = pos if pos is not None else (145.0, 50.0)
+            self._mst_visualizer_item = InteractiveMstVisualizerItem(pos=spawn_pos)
+            self._mst_visualizer_item.stamp_requested.connect(self._on_stamp_mst_visualizer)
+            self.addItem(self._mst_visualizer_item)
+        self._mst_visualizer_item.setVisible(visible)
+        if visible and pos is not None:
+            self._mst_visualizer_item.setPos(pos[0], pos[1])
+        return self._mst_visualizer_item if visible else None
+
+    def toggle_mst_visualizer(self) -> bool:
+        """Toggles the visibility of the Interactive Minimum Spanning Tree simulator."""
+        is_vis = self._mst_visualizer_item is not None and self._mst_visualizer_item.isVisible()
+        self.show_mst_visualizer(not is_vis)
+        return not is_vis
+
+    def _on_stamp_mst_visualizer(self, data: dict) -> None:
+        """Stamp the Minimum Spanning Tree permanent vector diagram on the board."""
+        from src.ui.stem_tools import InformaticsTools
+        items = InformaticsTools.create_mst_diagram(
+            center=data.get("center", (440.0, 310.0)),
+            preset_key=data.get("preset_key", "STANDARD_NETWORK"),
+            preset_name=data.get("preset_name", "Mạng Chuẩn Sách Giáo Khoa (7 Đỉnh, 11 Cạnh)"),
+            description=data.get("description", "Cây khung nhỏ nhất không chứa chu trình"),
+            algorithm=data.get("algorithm", "KRUSKAL"),
+            mst_weight=data.get("mst_weight", 37),
+            num_nodes=data.get("num_nodes", 7),
+            num_edges=data.get("num_edges", 11),
+            accepted_edges=data.get("accepted_edges"),
+            rejected_edges=data.get("rejected_edges"),
+        )
+        for itm in items:
+            self.addItem(itm)
+        if self._mst_visualizer_item is not None:
+            self._mst_visualizer_item.setVisible(False)
 
     def show_hall_effect(
         self,

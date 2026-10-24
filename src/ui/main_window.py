@@ -1365,6 +1365,36 @@ class MainWindow(QMainWindow):
         spectrophotometry_act.triggered.connect(self._on_toggle_spectrophotometry)
         view_menu.addAction(spectrophotometry_act)
 
+        nuclear_binding_act = QAction("⚛ Năng Lượng Liên Kết Hạt Nhân & SEMF (Nuclear Binding Energy)", self)
+        nuclear_binding_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+B"))
+        nuclear_binding_act.triggered.connect(self._on_toggle_nuclear_binding_energy)
+        view_menu.addAction(nuclear_binding_act)
+
+        compton_act = QAction("⚛ Tán Xạ Compton Relativistic (Compton Scattering)", self)
+        compton_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+Q"))
+        compton_act.triggered.connect(self._on_toggle_compton_scattering)
+        view_menu.addAction(compton_act)
+
+        lensing_act = QAction("🌌 Thấu Kính Hấp Dẫn & Nhẫn Einstein (Gravitational Lensing)", self)
+        lensing_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+G"))
+        lensing_act.triggered.connect(self._on_toggle_gravitational_lensing)
+        view_menu.addAction(lensing_act)
+
+        equilibrium_act = QAction("⚗ Cân Bằng Hóa Học & Le Chatelier (Chemical Equilibrium)", self)
+        equilibrium_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+E"))
+        equilibrium_act.triggered.connect(self._on_toggle_chemical_equilibrium)
+        view_menu.addAction(equilibrium_act)
+
+        hodgkin_act = QAction("🧠 Điện Sinh Lý Nơ-ron Hodgkin-Huxley (Action Potential)", self)
+        hodgkin_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+H"))
+        hodgkin_act.triggered.connect(self._on_toggle_hodgkin_huxley)
+        view_menu.addAction(hodgkin_act)
+
+        mst_act = QAction("🌲 Cây Khung Nhỏ Nhất Kruskal & Prim (Minimum Spanning Tree)", self)
+        mst_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+M"))
+        mst_act.triggered.connect(self._on_toggle_mst_visualizer)
+        view_menu.addAction(mst_act)
+
         hall_act = QAction("⚡ Hiệu Ứng Hall & Vật Lý Bán Dẫn (Hall Effect)", self)
         hall_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+F"))
         hall_act.triggered.connect(self._on_toggle_hall_effect)
@@ -2074,6 +2104,42 @@ class MainWindow(QMainWindow):
         spectrophotometry_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+L"))
         spectrophotometry_tb_act.triggered.connect(self._on_toggle_spectrophotometry)
         nav_tb.addAction(spectrophotometry_tb_act)
+
+        nuclear_binding_tb_act = QAction("⚛ Liên Kết Hạt Nhân", self)
+        nuclear_binding_tb_act.setToolTip("Bật/Tắt mô phỏng đường cong năng lượng liên kết hạt nhân & công thức SEMF (Ctrl+Alt+Shift+B)")
+        nuclear_binding_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+B"))
+        nuclear_binding_tb_act.triggered.connect(self._on_toggle_nuclear_binding_energy)
+        nav_tb.addAction(nuclear_binding_tb_act)
+
+        compton_tb_act = QAction("⚛ Tán Xạ Compton", self)
+        compton_tb_act.setToolTip("Bật/Tắt mô phỏng tán xạ Compton & va chạm relativistic photon-electron (Ctrl+Alt+Shift+Q)")
+        compton_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+Q"))
+        compton_tb_act.triggered.connect(self._on_toggle_compton_scattering)
+        nav_tb.addAction(compton_tb_act)
+
+        lensing_tb_act = QAction("🌌 Thấu Kính Hấp Dẫn", self)
+        lensing_tb_act.setToolTip("Bật/Tắt mô phỏng Thấu Kính Hấp Dẫn & Nhẫn Einstein (Ctrl+Alt+Shift+G)")
+        lensing_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+G"))
+        lensing_tb_act.triggered.connect(self._on_toggle_gravitational_lensing)
+        nav_tb.addAction(lensing_tb_act)
+
+        equilibrium_tb_act = QAction("⚗ Cân Bằng Hóa Học", self)
+        equilibrium_tb_act.setToolTip("Bật/Tắt mô phỏng Cân Bằng Hóa Học & Nguyên Lý Le Chatelier (Ctrl+Alt+Shift+E)")
+        equilibrium_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+E"))
+        equilibrium_tb_act.triggered.connect(self._on_toggle_chemical_equilibrium)
+        nav_tb.addAction(equilibrium_tb_act)
+
+        hodgkin_tb_act = QAction("🧠 Nơ-ron Hodgkin-Huxley", self)
+        hodgkin_tb_act.setToolTip("Bật/Tắt mô phỏng Điện Sinh Lý Nơ-ron Hodgkin-Huxley (Ctrl+Alt+Shift+H)")
+        hodgkin_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+H"))
+        hodgkin_tb_act.triggered.connect(self._on_toggle_hodgkin_huxley)
+        nav_tb.addAction(hodgkin_tb_act)
+
+        mst_tb_act = QAction("🌲 Cây Khung MST", self)
+        mst_tb_act.setToolTip("Bật/Tắt mô phỏng Cây Khung Nhỏ Nhất Kruskal & Prim (Ctrl+Alt+Shift+M)")
+        mst_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+M"))
+        mst_tb_act.triggered.connect(self._on_toggle_mst_visualizer)
+        nav_tb.addAction(mst_tb_act)
 
         hall_tb_act = QAction("⚡ Hiệu Ứng Hall", self)
         hall_tb_act.setToolTip("Bật/Tắt mô phỏng Hiệu Ứng Hall & Vật Lý Bán Dẫn (Ctrl+Alt+Shift+F)")
@@ -3773,6 +3839,18 @@ class MainWindow(QMainWindow):
                 self._on_toggle_mass_spectrometer()
             elif val in ("spectrophotometry", "beer_lambert", "absorbance", "quang_pho_hap_thu", "beer", "cuvette", "do_hap_thu"):
                 self._on_toggle_spectrophotometry()
+            elif val in ("lien_ket_hat_nhan", "binding_energy", "semf", "do_hut_khoi", "nuclear_binding"):
+                self._on_toggle_nuclear_binding_energy()
+            elif val in ("compton", "tan_xa_compton", "compton_scattering", "photon_electron"):
+                self._on_toggle_compton_scattering()
+            elif val in ("gravitational_lensing", "thau_kinh_hap_dan", "einstein_ring", "nhan_einstein", "einstein_cross", "tu_ong_quang"):
+                self._on_toggle_gravitational_lensing()
+            elif val in ("chemical_equilibrium", "can_bang_hoa_hoc", "le_chatelier", "haber_bosch", "van_t_hoff", "nhiet_dong_hoa_hoc"):
+                self._on_toggle_chemical_equilibrium()
+            elif val in ("hodgkin_huxley", "hodgkin", "action_potential", "dien_the_hoat_dong", "dien_sinh_ly", "neuron", "axon", "ttx", "tea"):
+                self._on_toggle_hodgkin_huxley()
+            elif val in ("mst", "cay_khung_nho_nhat", "minimum_spanning_tree", "kruskal", "prim", "dsu", "union_find", "graph_algorithm"):
+                self._on_toggle_mst_visualizer()
             elif val in ("hall", "hall_effect", "hieu_ung_hall", "ban_dan", "semiconductor", "lorentz_drift"):
                 self._on_toggle_hall_effect()
             elif val in ("radiation", "phong_xa", "shielding", "hvl", "gamma", "alpha", "beta", "che_chan_phong_xa", "geiger"):
@@ -5683,6 +5761,54 @@ class MainWindow(QMainWindow):
         """Toggle interactive Spectrophotometry & Beer-Lambert Law simulator on LessonBoard."""
         is_visible = self._scene.toggle_spectrophotometry()
         status_msg = "Quang Phổ Hấp Thụ Beer-Lambert: " + ("Hiển thị (Ctrl+Alt+Shift+L)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_nuclear_binding_energy(self) -> bool:
+        """Toggle interactive Nuclear Binding Energy & SEMF simulator on LessonBoard."""
+        is_visible = self._scene.toggle_nuclear_binding_energy()
+        status_msg = "Năng Lượng Liên Kết Hạt Nhân: " + ("Hiển thị (Ctrl+Alt+Shift+B)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_compton_scattering(self) -> bool:
+        """Toggle interactive Compton Scattering & Relativistic Collision simulator on LessonBoard."""
+        is_visible = self._scene.toggle_compton_scattering()
+        status_msg = "Tán Xạ Compton: " + ("Hiển thị (Ctrl+Alt+Shift+Q)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_gravitational_lensing(self) -> bool:
+        """Toggle interactive Gravitational Lensing & General Relativity simulator on LessonBoard."""
+        is_visible = self._scene.toggle_gravitational_lensing()
+        status_msg = "Thấu Kính Hấp Dẫn & Nhẫn Einstein: " + ("Hiển thị (Ctrl+Alt+Shift+G)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_chemical_equilibrium(self) -> bool:
+        """Toggle interactive Chemical Equilibrium & Le Chatelier simulator on LessonBoard."""
+        is_visible = self._scene.toggle_chemical_equilibrium()
+        status_msg = "Cân Bằng Hóa Học & Le Chatelier: " + ("Hiển thị (Ctrl+Alt+Shift+E)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_hodgkin_huxley(self) -> bool:
+        """Toggle interactive Hodgkin-Huxley Neuron ODE simulator on LessonBoard."""
+        is_visible = self._scene.toggle_hodgkin_huxley()
+        status_msg = "Điện Sinh Lý Nơ-ron Hodgkin-Huxley: " + ("Hiển thị (Ctrl+Alt+Shift+H)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_mst_visualizer(self) -> bool:
+        """Toggle interactive Minimum Spanning Tree simulator on LessonBoard."""
+        is_visible = self._scene.toggle_mst_visualizer()
+        status_msg = "Cây Khung Nhỏ Nhất (MST): " + ("Hiển thị (Ctrl+Alt+Shift+M)" if is_visible else "Đã ẩn")
         self._status.showMessage(status_msg, 2000)
         return is_visible
 

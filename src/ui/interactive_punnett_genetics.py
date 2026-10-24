@@ -305,6 +305,21 @@ class InteractivePunnettGeneticsItem(QGraphicsObject):
 
     def stamp_to_board(self) -> None:
         self.stamp_requested.emit()
+        scene = self.scene()
+        if scene:
+            from src.ui.stem_tools import BiologyTools
+            cx = self.x() + self.WIDTH / 2.0
+            cy = self.y() + self.HEIGHT + 40.0
+            cross_str = f"{self.active_preset.parent_male} × {self.active_preset.parent_female}"
+            ratio_str = getattr(self.active_preset, "badge_label", "3:1")
+            items = BiologyTools.create_punnett_genetics_diagram(
+                center=(cx, cy),
+                preset_code=self.active_preset.code,
+                parent_cross=cross_str,
+                phenotype_ratio=ratio_str,
+            )
+            for itm in items:
+                scene.addItem(itm)
 
     def cleanup(self) -> None:
         if self._timer.isActive():
