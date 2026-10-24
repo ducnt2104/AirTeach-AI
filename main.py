@@ -224,6 +224,19 @@ def _make_splash(app: QApplication) -> QSplashScreen:
 def main() -> int:
     _ensure_dirs()
 
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print("""AirTeach AI - Nền tảng giảng dạy tương tác không chạm bằng AI & Cử chỉ tay
+Sử dụng:
+    python main.py [TÙY CHỌN]
+
+Tùy chọn:
+    --help, -h          Hiển thị thông tin trợ giúp dòng lệnh
+    --version           Hiển thị phiên bản ứng dụng hiện tại
+    --check, --dry-run  Kiểm tra tính toàn vẹn của mô hình AI, SQLite và hệ thống
+    --demo              Khởi chạy giao diện chính ở chế độ Trải nghiệm Demo
+""")
+        return 0
+
     if "--version" in sys.argv:
         print("AirTeach AI v2.5.0-Release (Windows Desktop Academic Edition)")
         return 0
@@ -238,6 +251,12 @@ def main() -> int:
         print("[CHECK] SQLite profile store and facial recognition pipeline verified.")
         print("[CHECK] All systems operational. Ready to launch.")
         return 0
+
+    # ── High-DPI Display Scaling Hardening ────────────────────────────────────
+    if hasattr(Qt, "HighDpiScaleFactorRoundingPolicy"):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
 
     app = QApplication(sys.argv)
     app.setApplicationName("AirTeach AI")

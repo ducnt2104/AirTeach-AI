@@ -580,14 +580,12 @@ class FormulaOCR:
             except Exception as exc:
                 logger.debug("Geometric math fallback error: %s", exc)
 
-        # 3. Default fallback if nothing was detected
-        if not latex_str:
-            latex_str = r"x + y = z"
-
+        # 3. Empty result if nothing detected from engine or geometry
+        confidence = 0.88 if (latex_str and latex_str.strip()) else 0.0
         elapsed = (time.perf_counter() - t0) * 1000.0
         return OcrResult(
             latex=latex_str,
-            confidence=0.88 if latex_str else 0.0,
+            confidence=confidence,
             inference_ms=elapsed,
             is_formula=True,
         )

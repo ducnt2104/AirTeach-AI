@@ -989,6 +989,422 @@ class MainWindow(QMainWindow):
         dna_act.triggered.connect(self._on_toggle_dna_replication)
         view_menu.addAction(dna_act)
 
+        kepler_act = QAction("🪐 Quỹ đạo hành tinh & Định luật Kepler (Kepler Planetary Orbits)", self)
+        kepler_act.setShortcut(QKeySequence("Ctrl+Shift+K"))
+        kepler_act.triggered.connect(self._on_toggle_kepler_orbit)
+        view_menu.addAction(kepler_act)
+
+        graph_act = QAction("🕸️ Lý thuyết đồ thị & Dijkstra / A* (Graph Theory & Pathfinding)", self)
+        graph_act.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        graph_act.triggered.connect(self._on_toggle_graph_pathfinding)
+        view_menu.addAction(graph_act)
+
+        electric_field_act = QAction("⚡ Điện trường & Định luật Coulomb (Coulomb Electric Field)", self)
+        electric_field_act.setShortcut(QKeySequence("Ctrl+Shift+E"))
+        electric_field_act.triggered.connect(self._on_toggle_electric_field)
+        view_menu.addAction(electric_field_act)
+
+        lorentz_act = QAction("🧲 Lực Lorentz & Từ trường (Lorentz Magnetic Deflection)", self)
+        lorentz_act.setShortcut(QKeySequence("Ctrl+Shift+B"))
+        lorentz_act.triggered.connect(self._on_toggle_lorentz_force)
+        view_menu.addAction(lorentz_act)
+
+        trophic_act = QAction("🌿 Lưới thức ăn sinh thái (Trophic Web Lotka-Volterra)", self)
+        trophic_act.setShortcut(QKeySequence("Ctrl+Shift+U"))
+        trophic_act.triggered.connect(self._on_toggle_trophic_web)
+        view_menu.addAction(trophic_act)
+
+        gas_laws_act = QAction("🎈 Định luật khí lý tưởng & Động học phân tử (Ideal Gas Laws PV=nRT)", self)
+        gas_laws_act.setShortcut(QKeySequence("Ctrl+Shift+J"))
+        gas_laws_act.triggered.connect(self._on_toggle_gas_laws)
+        view_menu.addAction(gas_laws_act)
+
+        titration_act = QAction("🧪 Chuẩn độ Axit - Bazơ & Đường cong pH (Acid-Base Titration & Buffer pH)", self)
+        titration_act.setShortcut(QKeySequence("Ctrl+Shift+Q"))
+        titration_act.triggered.connect(self._on_toggle_titration)
+        view_menu.addAction(titration_act)
+
+        oscillator_act = QAction("🧲 Dao động điều hòa & Cộng hưởng (Harmonic Oscillator & Resonance)", self)
+        oscillator_act.setShortcut(QKeySequence("Ctrl+Shift+H"))
+        oscillator_act.triggered.connect(self._on_toggle_harmonic_oscillator)
+        view_menu.addAction(oscillator_act)
+
+        decay_act = QAction("☢️ Định luật phóng xạ & Chuỗi phân rã (Radioactive Decay Law)", self)
+        decay_act.setShortcut(QKeySequence("Ctrl+Alt+R"))
+        decay_act.triggered.connect(self._on_toggle_radioactive_decay)
+        view_menu.addAction(decay_act)
+
+        kinetics_act = QAction("🧪 Tốc độ phản ứng & Cân bằng hóa học (Chemical Kinetics & Equilibrium)", self)
+        kinetics_act.setShortcut(QKeySequence("Ctrl+Alt+K"))
+        kinetics_act.triggered.connect(self._on_toggle_chemical_kinetics)
+        view_menu.addAction(kinetics_act)
+
+        crypto_act = QAction("🔐 Mật mã học RSA & Số học đồng dư (RSA Cryptography & Modular Arithmetic)", self)
+        crypto_act.setShortcut(QKeySequence("Ctrl+Alt+C"))
+        crypto_act.triggered.connect(self._on_toggle_cryptography)
+        view_menu.addAction(crypto_act)
+
+        orbits_act = QAction("🌌 Quỹ đạo vạn vật hấp dẫn & Điểm Lagrange (Gravitational Orbits & Lagrange Points)", self)
+        orbits_act.setShortcut(QKeySequence("Ctrl+Alt+G"))
+        orbits_act.triggered.connect(self._on_toggle_gravitational_orbits)
+        view_menu.addAction(orbits_act)
+
+        relativity_act = QAction("⚡ Không-thời gian Minkowski & Biến đổi Lorentz (Minkowski Spacetime & Lorentz Boost)", self)
+        relativity_act.setShortcut(QKeySequence("Ctrl+Alt+M"))
+        relativity_act.triggered.connect(self._on_toggle_spacetime_relativity)
+        view_menu.addAction(relativity_act)
+
+        young_act = QAction("🌈 Giao thoa sóng ánh sáng & Nhiễu xạ (Young's Interference & Grating)", self)
+        young_act.setShortcut(QKeySequence("Ctrl+Alt+Y"))
+        young_act.triggered.connect(self._on_toggle_young_interference)
+        view_menu.addAction(young_act)
+
+        rlc_act = QAction("⚡ Mạch điện xoay chiều RLC & Giản đồ Fresnel (AC Series RLC Circuit & Phasor)", self)
+        rlc_act.setShortcut(QKeySequence("Ctrl+Alt+E"))
+        rlc_act.triggered.connect(self._on_toggle_rlc_circuit)
+        view_menu.addAction(rlc_act)
+
+        thin_lens_act = QAction("🔬 Thấu kính mỏng & Băng quang học (Thin Lens & Optical Bench)", self)
+        thin_lens_act.setShortcut(QKeySequence("Ctrl+Alt+O"))
+        thin_lens_act.triggered.connect(self._on_toggle_thin_lens)
+        view_menu.addAction(thin_lens_act)
+
+        photoelectric_act = QAction("⚡ Hiệu ứng Quang điện & Thuyết Lượng tử (Photoelectric Effect)", self)
+        photoelectric_act.setShortcut(QKeySequence("Ctrl+Alt+P"))
+        photoelectric_act.triggered.connect(self._on_toggle_photoelectric_effect)
+        view_menu.addAction(photoelectric_act)
+
+        carnot_act = QAction("🔥 Động cơ nhiệt Carnot & Chu trình PV - TS (Carnot Heat Engine)", self)
+        carnot_act.setShortcut(QKeySequence("Ctrl+Alt+T"))
+        carnot_act.triggered.connect(self._on_toggle_carnot_engine)
+        view_menu.addAction(carnot_act)
+        bohr_act = QAction("⚛️ Mô hình Nguyên tử Bohr & Quang phổ Hydro (Bohr Atom & Hydrogen Spectrum)", self)
+        bohr_act.setShortcut(QKeySequence("Ctrl+Alt+B"))
+        bohr_act.triggered.connect(self._on_toggle_bohr_atom)
+        view_menu.addAction(bohr_act)
+        automata_act = QAction("🤖 Máy trạng thái hữu hạn & Automata DFA (Finite State Machine)", self)
+        automata_act.setShortcut(QKeySequence("Ctrl+Alt+A"))
+        automata_act.triggered.connect(self._on_toggle_automata)
+        view_menu.addAction(automata_act)
+        sorting_act = QAction("📊 Thuật toán sắp xếp & Độ phức tạp Big-O (Sorting Algorithms)", self)
+        sorting_act.setShortcut(QKeySequence("Ctrl+Alt+S"))
+        sorting_act.triggered.connect(self._on_toggle_sorting)
+        view_menu.addAction(sorting_act)
+        punnett_menu_act = QAction("🧬 Di truyền Mendel & Khung Punnett Square (Mendel Genetics)", self)
+        punnett_menu_act.setShortcut(QKeySequence("Ctrl+Alt+G"))
+        punnett_menu_act.triggered.connect(self._on_toggle_punnett_genetics)
+        view_menu.addAction(punnett_menu_act)
+
+        organic_act = QAction("🧪 Đồng phân Hóa học Hữu cơ & Nhóm chức (Organic Isomerism)", self)
+        organic_act.setShortcut(QKeySequence("Ctrl+Alt+H"))
+        organic_act.triggered.connect(self._on_toggle_organic_chemistry)
+        view_menu.addAction(organic_act)
+
+        fluid_act = QAction("🌊 Cơ học chất lưu & Ống Venturi Bernoulli (Fluid Dynamics)", self)
+        fluid_act.setShortcut(QKeySequence("Ctrl+Alt+F"))
+        fluid_act.triggered.connect(self._on_toggle_fluid_venturi)
+        view_menu.addAction(fluid_act)
+
+        tree_act = QAction("🌳 Cây nhị phân & Mã hóa Huffman (Binary Tree & Huffman)", self)
+        tree_act.setShortcut(QKeySequence("Ctrl+Alt+U"))
+        tree_act.triggered.connect(self._on_toggle_binary_tree)
+        view_menu.addAction(tree_act)
+
+        electro_act = QAction("⚡ Pin điện hóa & Điện phân (Electrochemistry & Electrolysis)", self)
+        electro_act.setShortcut(QKeySequence("Ctrl+Alt+E"))
+        electro_act.triggered.connect(self._on_toggle_electrochemistry)
+        view_menu.addAction(electro_act)
+
+        circ_act = QAction("🔄 Chuyển động tròn đều & Lực hướng tâm (Circular Motion)", self)
+        circ_act.setShortcut(QKeySequence("Ctrl+Alt+C"))
+        circ_act.triggered.connect(self._on_toggle_circular_motion)
+        view_menu.addAction(circ_act)
+
+        titr_act = QAction("🧪 Chuẩn độ Axit - Bazơ & Đường cong pH (pH Titration)", self)
+        titr_act.setShortcut(QKeySequence("Ctrl+Alt+I"))
+        titr_act.triggered.connect(self._on_toggle_ph_titration)
+        view_menu.addAction(titr_act)
+
+        ind_act = QAction("🧲 Cảm ứng điện từ & Định luật Faraday (Electromagnetic Induction)", self)
+        ind_act.setShortcut(QKeySequence("Ctrl+Alt+M"))
+        ind_act.triggered.connect(self._on_toggle_electromagnetic_induction)
+        view_menu.addAction(ind_act)
+
+        osc_act = QAction("🌀 Dao động cơ học: Điều hòa, Tắt dần & Cộng hưởng (Harmonic Oscillator)", self)
+        osc_act.setShortcut(QKeySequence("Ctrl+Alt+W"))
+        osc_act.triggered.connect(self._on_toggle_harmonic_oscillator)
+        view_menu.addAction(osc_act)
+
+        gcms_act = QAction("🧪 Sắc ký khí & Khối phổ (GC-MS 70 eV)", self)
+        gcms_act.setShortcut(QKeySequence("Ctrl+Alt+Y"))
+        gcms_act.triggered.connect(self._on_toggle_gcms)
+        view_menu.addAction(gcms_act)
+
+        photo_act = QAction("🍃 Quang hợp: Pha sáng Thylakoid & Calvin-Benson (Photosynthesis)", self)
+        photo_act.setShortcut(QKeySequence("Ctrl+Alt+Q"))
+        photo_act.triggered.connect(self._on_toggle_photosynthesis)
+        view_menu.addAction(photo_act)
+
+        proj_act = QAction("🚀 Chuyển động ném & Động học 2D (Projectile Motion)", self)
+        proj_act.setShortcut(QKeySequence("Ctrl+Alt+K"))
+        proj_act.triggered.connect(self._on_toggle_projectile_motion)
+        view_menu.addAction(proj_act)
+
+        dp_act = QAction("📐 Quy hoạch động & Bảng trạng thái (Dynamic Programming)", self)
+        dp_act.setShortcut(QKeySequence("Ctrl+Alt+D"))
+        dp_act.triggered.connect(self._on_toggle_dynamic_programming)
+        view_menu.addAction(dp_act)
+
+        cnn_act = QAction("🧠 Mạng nơ-ron CNN & Tích chập 2D (Convolutional Neural Network)", self)
+        cnn_act.setShortcut(QKeySequence("Ctrl+Alt+N"))
+        cnn_act.triggered.connect(self._on_toggle_cnn_visualizer)
+        view_menu.addAction(cnn_act)
+
+        airfoil_act = QAction("✈️ Khí động học cánh máy bay & Lực nâng/cản (Airfoil Aerodynamics)", self)
+        airfoil_act.setShortcut(QKeySequence("Ctrl+Alt+V"))
+        airfoil_act.triggered.connect(self._on_toggle_airfoil_aerodynamics)
+        view_menu.addAction(airfoil_act)
+
+        periodic_act = QAction("⚛️ Bảng tuần hoàn & Cấu hình electron (Periodic Table)", self)
+        periodic_act.setShortcut(QKeySequence("Ctrl+Alt+J"))
+        periodic_act.triggered.connect(self._on_toggle_periodic_table)
+        view_menu.addAction(periodic_act)
+
+        respiration_act = QAction("⚡ Hô hấp tế bào & Chuỗi truyền electron ETC (Cellular Respiration)", self)
+        respiration_act.setShortcut(QKeySequence("Ctrl+Alt+Z"))
+        respiration_act.triggered.connect(self._on_toggle_cellular_respiration)
+        view_menu.addAction(respiration_act)
+
+        protein_act = QAction("🧬 Cấu trúc bậc hai Protein & Đồ thị Ramachandran (Protein Folding)", self)
+        protein_act.setShortcut(QKeySequence("Ctrl+Alt+X"))
+        protein_act.triggered.connect(self._on_toggle_protein_folding)
+        view_menu.addAction(protein_act)
+
+        mlp_act = QAction("🧠 Mạng nơ-ron MLP & Lan truyền ngược (MLP Backprop)", self)
+        mlp_act.setShortcut(QKeySequence("Ctrl+Alt+L"))
+        mlp_act.triggered.connect(self._on_toggle_mlp_backprop)
+        view_menu.addAction(mlp_act)
+
+        max_flow_act = QAction("🌊 Luồng cực đại & Lát cắt hẹp nhất (Max-Flow Min-Cut)", self)
+        max_flow_act.setShortcut(QKeySequence("Ctrl+Alt+1"))
+        max_flow_act.triggered.connect(self._on_toggle_max_flow)
+        view_menu.addAction(max_flow_act)
+
+        oxyz_act = QAction("📐 Hình học không gian Oxyz & Tích có hướng (Oxyz Geometry)", self)
+        oxyz_act.setShortcut(QKeySequence("Ctrl+Alt+2"))
+        oxyz_act.triggered.connect(self._on_toggle_oxyz_geometry)
+        view_menu.addAction(oxyz_act)
+
+        diode_act = QAction("⚡ Bán dẫn tiếp xúc P-N & Điốt Shockley (Semiconductor Diode)", self)
+        diode_act.setShortcut(QKeySequence("Ctrl+Alt+3"))
+        diode_act.triggered.connect(self._on_toggle_semiconductor_diode)
+        view_menu.addAction(diode_act)
+
+        nuclear_act = QAction("⚛️ Vật lý Hạt nhân & Năng lượng liên kết (Nuclear Reactions)", self)
+        nuclear_act.setShortcut(QKeySequence("Ctrl+Alt+4"))
+        nuclear_act.triggered.connect(self._on_toggle_nuclear_reactions)
+        view_menu.addAction(nuclear_act)
+
+        doppler_act = QAction("📢 Hiệu ứng Doppler & Nón sóng Mach (Doppler & Shockwave)", self)
+        doppler_act.setShortcut(QKeySequence("Ctrl+Alt+5"))
+        doppler_act.triggered.connect(self._on_toggle_doppler_effect)
+        view_menu.addAction(doppler_act)
+
+        rb_tree_act = QAction("🌲 Cây tự cân bằng Đỏ-Đen (Red-Black Tree)", self)
+        rb_tree_act.setShortcut(QKeySequence("Ctrl+Alt+6"))
+        rb_tree_act.triggered.connect(self._on_toggle_red_black_tree)
+        view_menu.addAction(rb_tree_act)
+
+        millikan_act = QAction("💧 Giọt dầu Millikan & Điện tích nguyên tố (Millikan Oil Drop)", self)
+        millikan_act.setShortcut(QKeySequence("Ctrl+Alt+7"))
+        millikan_act.triggered.connect(self._on_toggle_millikan_oil_drop)
+        view_menu.addAction(millikan_act)
+
+        quantum_well_act = QAction("⚛️ Giếng lượng tử & Sóng Schrödinger (Particle in a Box)", self)
+        quantum_well_act.setShortcut(QKeySequence("Ctrl+Alt+8"))
+        quantum_well_act.triggered.connect(self._on_toggle_quantum_well)
+        view_menu.addAction(quantum_well_act)
+
+        hohmann_act = QAction("🚀 Cơ học Thiên thể & Chuyển quỹ đạo Hohmann (Orbital Mechanics)", self)
+        hohmann_act.setShortcut(QKeySequence("Ctrl+Alt+9"))
+        hohmann_act.triggered.connect(self._on_toggle_hohmann_transfer)
+        view_menu.addAction(hohmann_act)
+
+        photoelectric_act = QAction("⚡ Hiện tượng Quang điện Ngoài & Photon Einstein (Photoelectric Effect)", self)
+        photoelectric_act.setShortcut(QKeySequence("Ctrl+Alt+0"))
+        photoelectric_act.triggered.connect(self._on_toggle_photoelectric_effect)
+        view_menu.addAction(photoelectric_act)
+
+        punnett_act = QAction("🧬 Di truyền Mendel & Khung Punnett (Mendelian Genetics)", self)
+        punnett_act.setShortcut(QKeySequence("Ctrl+Shift+G"))
+        punnett_act.triggered.connect(self._on_toggle_punnett_genetics)
+        view_menu.addAction(punnett_act)
+
+        kinetics_act = QAction("🧪 Động Hóa học & Định luật Arrhenius (Reaction Kinetics)", self)
+        kinetics_act.setShortcut(QKeySequence("Ctrl+Shift+K"))
+        kinetics_act.triggered.connect(self._on_toggle_reaction_kinetics)
+        view_menu.addAction(kinetics_act)
+
+        calculus_act = QAction("📐 Tích phân Riemann & Chuỗi Taylor (Riemann Calculus)", self)
+        calculus_act.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        calculus_act.triggered.connect(self._on_toggle_calculus_taylor)
+        view_menu.addAction(calculus_act)
+
+        michelson_act = QAction("🔬 Giao thoa kế Michelson & Sóng Hấp dẫn LIGO (Michelson Interferometer)", self)
+        michelson_act.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        michelson_act.triggered.connect(self._on_toggle_michelson_interferometer)
+        view_menu.addAction(michelson_act)
+
+        huffman_act = QAction("🌲 Cây Mã hóa Huffman & Lý thuyết Thông tin Shannon (Huffman Coding)", self)
+        huffman_act.setShortcut(QKeySequence("Ctrl+Shift+H"))
+        huffman_act.triggered.connect(self._on_toggle_huffman_coding)
+        view_menu.addAction(huffman_act)
+
+        action_potential_act = QAction("⚡ Điện thế Hoạt động & Mô hình Hodgkin-Huxley (Action Potential)", self)
+        action_potential_act.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        action_potential_act.triggered.connect(self._on_toggle_action_potential)
+        view_menu.addAction(action_potential_act)
+
+        cyclotron_act = QAction("⚛️ Máy Gia tốc Hạt Cyclotron & Hiệu ứng Khối lượng γ (Cyclotron)", self)
+        cyclotron_act.setShortcut(QKeySequence("Ctrl+Alt+C"))
+        cyclotron_act.triggered.connect(self._on_toggle_cyclotron)
+        view_menu.addAction(cyclotron_act)
+
+        aho_corasick_act = QAction("🔤 Máy Tự động Tìm kiếm Chuỗi Aho-Corasick (Aho-Corasick Automaton)", self)
+        aho_corasick_act.setShortcut(QKeySequence("Ctrl+Alt+A"))
+        aho_corasick_act.triggered.connect(self._on_toggle_aho_corasick)
+        view_menu.addAction(aho_corasick_act)
+
+        phase_diagram_act = QAction("🌡️ Giản đồ Pha P-T & Clausius-Clapeyron (Phase Diagram)", self)
+        phase_diagram_act.setShortcut(QKeySequence("Ctrl+Alt+P"))
+        phase_diagram_act.triggered.connect(self._on_toggle_phase_diagram)
+        view_menu.addAction(phase_diagram_act)
+
+        em_wave_act = QAction("📡 Sóng Điện từ Maxwell & Vectơ Poynting (EM Waves)", self)
+        em_wave_act.setShortcut(QKeySequence("Ctrl+Alt+E"))
+        em_wave_act.triggered.connect(self._on_toggle_em_wave)
+        view_menu.addAction(em_wave_act)
+
+        hardy_weinberg_act = QAction("🧬 Cân bằng Di truyền Quần thể Hardy-Weinberg (Hardy-Weinberg)", self)
+        hardy_weinberg_act.setShortcut(QKeySequence("Ctrl+Alt+H"))
+        hardy_weinberg_act.triggered.connect(self._on_toggle_hardy_weinberg)
+        view_menu.addAction(hardy_weinberg_act)
+
+        fft_act = QAction("📊 Biến đổi Fourier Nhanh FFT & Phổ Tần số (Fast Fourier Transform)", self)
+        fft_act.setShortcut(QKeySequence("Ctrl+Alt+F"))
+        fft_act.triggered.connect(self._on_toggle_fft)
+        view_menu.addAction(fft_act)
+
+        fabry_perot_act = QAction("🔬 Giao thoa kế Fabry-Pérot & Hốc Cộng hưởng Laser (Fabry-Perot)", self)
+        fabry_perot_act.setShortcut(QKeySequence("Ctrl+Alt+O"))
+        fabry_perot_act.triggered.connect(self._on_toggle_fabry_perot)
+        view_menu.addAction(fabry_perot_act)
+
+        hplc_act = QAction("🧪 Sắc ký Lỏng HPLC & Hiệu suất Cột Van Deemter (HPLC)", self)
+        hplc_act.setShortcut(QKeySequence("Ctrl+Alt+L"))
+        hplc_act.triggered.connect(self._on_toggle_hplc)
+        view_menu.addAction(hplc_act)
+
+        photoelectric_act = QAction("⚡ Quang điện Einstein & Lượng tử Ánh sáng (Photoelectric)", self)
+        photoelectric_act.setShortcut(QKeySequence("Ctrl+Alt+Q"))
+        photoelectric_act.triggered.connect(self._on_toggle_photoelectric)
+        view_menu.addAction(photoelectric_act)
+
+        pcr_act = QAction("🧬 Phản ứng Chuỗi Polymerase PCR & Điện di Gel (PCR)", self)
+        pcr_act.setShortcut(QKeySequence("Ctrl+Alt+R"))
+        pcr_act.triggered.connect(self._on_toggle_pcr)
+        view_menu.addAction(pcr_act)
+
+        thin_lens_act = QAction("🔍 Hệ Thấu kính Mỏng & Vẽ Tia sáng (Thin Lens)", self)
+        thin_lens_act.setShortcut(QKeySequence("Ctrl+Alt+T"))
+        thin_lens_act.triggered.connect(self._on_toggle_thin_lens)
+        view_menu.addAction(thin_lens_act)
+
+        bragg_act = QAction("💎 Nhiễu xạ Tia X Bragg & Tinh thể học (Bragg XRD)", self)
+        bragg_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+B"))
+        bragg_act.triggered.connect(self._on_toggle_bragg_diffraction)
+        view_menu.addAction(bragg_act)
+
+        buffer_act = QAction("🧪 Hệ Đệm Axit-Bazơ & Dung lượng Van Slyke (Buffer System)", self)
+        buffer_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+H"))
+        buffer_act.triggered.connect(self._on_toggle_buffer_system)
+        view_menu.addAction(buffer_act)
+
+        sg_act = QAction("⚛️ Thí nghiệm Stern-Gerlach & Spin 1/2 (Stern-Gerlach)", self)
+        sg_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+S"))
+        sg_act.triggered.connect(self._on_toggle_stern_gerlach)
+        view_menu.addAction(sg_act)
+
+        enzyme_act = QAction("🧪 Động học Enzyme Michaelis-Menten & Lineweaver-Burk (Enzyme Kinetics)", self)
+        enzyme_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+E"))
+        enzyme_act.triggered.connect(self._on_toggle_enzyme_kinetics)
+        view_menu.addAction(enzyme_act)
+
+        poiseuille_act = QAction("🌊 Dòng Chảy Nhớt Poiseuille & Số Reynolds (Poiseuille Flow)", self)
+        poiseuille_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+P"))
+        poiseuille_act.triggered.connect(self._on_toggle_poiseuille_flow)
+        view_menu.addAction(poiseuille_act)
+
+        cosmic_act = QAction("🌌 Định Luật Hubble & Vũ Trụ Giãn Nở (Cosmic Expansion)", self)
+        cosmic_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+U"))
+        cosmic_act.triggered.connect(self._on_toggle_cosmic_expansion)
+        view_menu.addAction(cosmic_act)
+
+        seismic_act = QAction("🌍 Sóng Địa Chấn & Định Vị Tâm Chấn (Seismic Waves)", self)
+        seismic_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+Q"))
+        seismic_act.triggered.connect(self._on_toggle_seismic_waves)
+        view_menu.addAction(seismic_act)
+
+        spectrometer_act = QAction("⚡ Máy Khối Phổ & Bộ Lọc Vận Tốc Wien (Mass Spectrometer)", self)
+        spectrometer_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+M"))
+        spectrometer_act.triggered.connect(self._on_toggle_mass_spectrometer)
+        view_menu.addAction(spectrometer_act)
+
+        spectrophotometry_act = QAction("🧪 Quang Phổ Hấp Thụ & Định Luật Beer-Lambert (Spectrophotometry)", self)
+        spectrophotometry_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+L"))
+        spectrophotometry_act.triggered.connect(self._on_toggle_spectrophotometry)
+        view_menu.addAction(spectrophotometry_act)
+
+        hall_act = QAction("⚡ Hiệu Ứng Hall & Vật Lý Bán Dẫn (Hall Effect)", self)
+        hall_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+F"))
+        hall_act.triggered.connect(self._on_toggle_hall_effect)
+        view_menu.addAction(hall_act)
+
+        rad_act = QAction("☢ Độ Xuyên Sâu Phóng Xạ & Tấm Chắn HVL (Radiation Shielding)", self)
+        rad_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+R"))
+        rad_act.triggered.connect(self._on_toggle_radiation_shielding)
+        view_menu.addAction(rad_act)
+
+        maxwell_act = QAction("🔥 Phân Bố Vận Tốc Phân Tử Maxwell-Boltzmann", self)
+        maxwell_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+X"))
+        maxwell_act.triggered.connect(self._on_toggle_maxwell_boltzmann)
+        view_menu.addAction(maxwell_act)
+
+        mo_act = QAction("⚛ Obitan Phân Tử & Thuyết MO-LCAO (Molecular Orbital)", self)
+        mo_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+O"))
+        mo_act.triggered.connect(self._on_toggle_molecular_orbital)
+        view_menu.addAction(mo_act)
+
+        rlc_act = QAction("⚡ Cộng Hưởng Điện RLC & Giản Đồ Phasor", self)
+        rlc_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+C"))
+        rlc_act.triggered.connect(self._on_toggle_rlc_resonance)
+        view_menu.addAction(rlc_act)
+
+        stress_act = QAction("⚙ Đường Cong Ứng Suất - Biến Dạng (Stress-Strain Curve)", self)
+        stress_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+T"))
+        stress_act.triggered.connect(self._on_toggle_stress_strain)
+        view_menu.addAction(stress_act)
+
+        kepler_act = QAction("🪐 Quỹ Đạo Hấp Dẫn & 3 Định Luật Kepler (Kepler Orbits)", self)
+        kepler_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+K"))
+        kepler_act.triggered.connect(self._on_toggle_kepler_orbits)
+        view_menu.addAction(kepler_act)
+
+        logic_act = QAction("🔌 Điện Tử Số & Cổng Logic (Digital Logic & Circuits)", self)
+        logic_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+G"))
+        logic_act.triggered.connect(self._on_toggle_logic_circuits)
+        view_menu.addAction(logic_act)
+
         laser_color_act = QAction("🔴 Đổi màu tia Laser (Laser Color)", self)
         laser_color_act.setShortcut(QKeySequence("Ctrl+L"))
         laser_color_act.triggered.connect(self._on_cycle_laser_color)
@@ -1207,6 +1623,505 @@ class MainWindow(QMainWindow):
         dna_tb_act.setShortcut(QKeySequence("Ctrl+Shift+D"))
         dna_tb_act.triggered.connect(self._on_toggle_dna_replication)
         nav_tb.addAction(dna_tb_act)
+
+        kepler_tb_act = QAction("🪐 Quỹ đạo Kepler", self)
+        kepler_tb_act.setToolTip("Bật/Tắt mô phỏng 3 định luật Kepler & chuyển động thiên thể (Ctrl+Shift+K)")
+        kepler_tb_act.setShortcut(QKeySequence("Ctrl+Shift+K"))
+        kepler_tb_act.triggered.connect(self._on_toggle_kepler_orbit)
+        nav_tb.addAction(kepler_tb_act)
+
+        graph_tb_act = QAction("🕸️ Đồ thị Dijkstra", self)
+        graph_tb_act.setToolTip("Bật/Tắt mô phỏng Lý thuyết đồ thị & Thuật toán tìm đường ngắn nhất Dijkstra / A* (Ctrl+Shift+P)")
+        graph_tb_act.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        graph_tb_act.triggered.connect(self._on_toggle_graph_pathfinding)
+        nav_tb.addAction(graph_tb_act)
+
+        electric_field_tb_act = QAction("⚡ Điện trường Coulomb", self)
+        electric_field_tb_act.setToolTip("Bật/Tắt mô phỏng Đường sức điện trường & Định luật Coulomb tĩnh điện (Ctrl+Shift+E)")
+        electric_field_tb_act.setShortcut(QKeySequence("Ctrl+Shift+E"))
+        electric_field_tb_act.triggered.connect(self._on_toggle_electric_field)
+        nav_tb.addAction(electric_field_tb_act)
+
+        lorentz_tb_act = QAction("🧲 Lực Lorentz", self)
+        lorentz_tb_act.setToolTip("Bật/Tắt mô phỏng Từ trường & Lực từ Lorentz làm lệch hạt mang điện (Ctrl+Shift+B)")
+        lorentz_tb_act.setShortcut(QKeySequence("Ctrl+Shift+B"))
+        lorentz_tb_act.triggered.connect(self._on_toggle_lorentz_force)
+        nav_tb.addAction(lorentz_tb_act)
+
+        trophic_tb_act = QAction("🌿 Lưới thức ăn", self)
+        trophic_tb_act.setToolTip("Bật/Tắt mô phỏng Lưới thức ăn & Cân bằng sinh thái Lotka-Volterra (Ctrl+Shift+U)")
+        trophic_tb_act.setShortcut(QKeySequence("Ctrl+Shift+U"))
+        trophic_tb_act.triggered.connect(self._on_toggle_trophic_web)
+        nav_tb.addAction(trophic_tb_act)
+
+        gas_tb_act = QAction("🎈 Khí lý tưởng", self)
+        gas_tb_act.setToolTip("Bật/Tắt mô phỏng Định luật khí lý tưởng Clapeyron & Động học phân tử Maxwell-Boltzmann (Ctrl+Shift+J)")
+        gas_tb_act.setShortcut(QKeySequence("Ctrl+Shift+J"))
+        gas_tb_act.triggered.connect(self._on_toggle_gas_laws)
+        nav_tb.addAction(gas_tb_act)
+
+        titration_tb_act = QAction("🧪 Chuẩn độ pH", self)
+        titration_tb_act.setToolTip("Bật/Tắt mô phỏng Chuẩn độ Axit - Bazơ & Đường cong pH đệm Henderson-Hasselbalch (Ctrl+Shift+Q)")
+        titration_tb_act.setShortcut(QKeySequence("Ctrl+Shift+Q"))
+        titration_tb_act.triggered.connect(self._on_toggle_titration)
+        nav_tb.addAction(titration_tb_act)
+
+        oscillator_tb_act = QAction("🧲 Dao động cơ", self)
+        oscillator_tb_act.setToolTip("Bật/Tắt mô phỏng Dao động điều hòa, Tắt dần & Cộng hưởng cơ học (Ctrl+Shift+H)")
+        oscillator_tb_act.setShortcut(QKeySequence("Ctrl+Shift+H"))
+        oscillator_tb_act.triggered.connect(self._on_toggle_harmonic_oscillator)
+        nav_tb.addAction(oscillator_tb_act)
+
+        decay_tb_act = QAction("☢️ Phóng xạ", self)
+        decay_tb_act.setToolTip("Bật/Tắt mô phỏng Định luật phóng xạ hạt nhân & Chuỗi phân rã Monte Carlo (Ctrl+Alt+R)")
+        decay_tb_act.setShortcut(QKeySequence("Ctrl+Alt+R"))
+        decay_tb_act.triggered.connect(self._on_toggle_radioactive_decay)
+        nav_tb.addAction(decay_tb_act)
+
+        kinetics_tb_act = QAction("🧪 Động hóa học", self)
+        kinetics_tb_act.setToolTip("Bật/Tắt mô phỏng Tốc độ phản ứng, Năng lượng hoạt hóa Arrhenius & Cân bằng hóa học (Ctrl+Alt+K)")
+        kinetics_tb_act.setShortcut(QKeySequence("Ctrl+Alt+K"))
+        kinetics_tb_act.triggered.connect(self._on_toggle_chemical_kinetics)
+        nav_tb.addAction(kinetics_tb_act)
+
+        crypto_tb_act = QAction("🔐 Mật mã RSA", self)
+        crypto_tb_act.setToolTip("Bật/Tắt mô phỏng Mật mã khóa công khai RSA & Vòng tròn số học đồng dư (Ctrl+Alt+C)")
+        crypto_tb_act.setShortcut(QKeySequence("Ctrl+Alt+C"))
+        crypto_tb_act.triggered.connect(self._on_toggle_cryptography)
+        nav_tb.addAction(crypto_tb_act)
+
+        orbits_tb_act = QAction("🌌 Quỹ đạo hấp dẫn", self)
+        orbits_tb_act.setToolTip("Bật/Tắt mô phỏng Quỹ đạo vạn vật hấp dẫn N-vật thể & Điểm Lagrange (Ctrl+Alt+G)")
+        orbits_tb_act.setShortcut(QKeySequence("Ctrl+Alt+G"))
+        orbits_tb_act.triggered.connect(self._on_toggle_gravitational_orbits)
+        nav_tb.addAction(orbits_tb_act)
+
+        relativity_tb_act = QAction("⚡ Minkowski", self)
+        relativity_tb_act.setToolTip("Bật/Tắt mô phỏng Không-thời gian Minkowski & Biến đổi Lorentz (Ctrl+Alt+M)")
+        relativity_tb_act.setShortcut(QKeySequence("Ctrl+Alt+M"))
+        relativity_tb_act.triggered.connect(self._on_toggle_spacetime_relativity)
+        nav_tb.addAction(relativity_tb_act)
+
+        young_tb_act = QAction("🌈 Giao thoa sóng", self)
+        young_tb_act.setToolTip("Bật/Tắt mô phỏng Giao thoa sóng ánh sáng qua khe Young & Cách tử nhiễu xạ (Ctrl+Alt+Y)")
+        young_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Y"))
+        young_tb_act.triggered.connect(self._on_toggle_young_interference)
+        nav_tb.addAction(young_tb_act)
+
+        rlc_tb_act = QAction("⚡ Mạch RLC", self)
+        rlc_tb_act.setToolTip("Bật/Tắt mô phỏng Mạch điện xoay chiều RLC nối tiếp & Giản đồ Fresnel (Ctrl+Alt+E)")
+        rlc_tb_act.setShortcut(QKeySequence("Ctrl+Alt+E"))
+        rlc_tb_act.triggered.connect(self._on_toggle_rlc_circuit)
+        nav_tb.addAction(rlc_tb_act)
+
+        thin_lens_tb_act = QAction("🔬 Thấu kính mỏng", self)
+        thin_lens_tb_act.setToolTip("Bật/Tắt mô phỏng Thấu kính mỏng & Băng quang học vẽ tia sáng (Ctrl+Alt+O)")
+        thin_lens_tb_act.setShortcut(QKeySequence("Ctrl+Alt+O"))
+        thin_lens_tb_act.triggered.connect(self._on_toggle_thin_lens)
+        nav_tb.addAction(thin_lens_tb_act)
+
+        photoelectric_tb_act = QAction("⚡ Quang điện", self)
+        photoelectric_tb_act.setToolTip("Bật/Tắt mô phỏng Hiệu ứng Quang điện & Thuyết Lượng tử Ánh sáng Einstein (Ctrl+Alt+P)")
+        photoelectric_tb_act.setShortcut(QKeySequence("Ctrl+Alt+P"))
+        photoelectric_tb_act.triggered.connect(self._on_toggle_photoelectric_effect)
+        nav_tb.addAction(photoelectric_tb_act)
+
+        carnot_tb_act = QAction("🔥 Chu trình Carnot", self)
+        carnot_tb_act.setToolTip("Bật/Tắt mô phỏng Động cơ nhiệt lý tưởng Carnot & Đồ thị PV / TS (Ctrl+Alt+T)")
+        carnot_tb_act.setShortcut(QKeySequence("Ctrl+Alt+T"))
+        carnot_tb_act.triggered.connect(self._on_toggle_carnot_engine)
+        nav_tb.addAction(carnot_tb_act)
+        bohr_tb_act = QAction("⚛️ Nguyên tử Bohr", self)
+        bohr_tb_act.setToolTip("Bật/Tắt mô phỏng Mô hình Nguyên tử Bohr & Dãy vạch quang phổ Hydro (Ctrl+Alt+B)")
+        bohr_tb_act.setShortcut(QKeySequence("Ctrl+Alt+B"))
+        bohr_tb_act.triggered.connect(self._on_toggle_bohr_atom)
+        nav_tb.addAction(bohr_tb_act)
+        automata_tb_act = QAction("🤖 Máy trạng thái", self)
+        automata_tb_act.setToolTip("Bật/Tắt mô phỏng Máy trạng thái hữu hạn & Automata DFA/NFA (Ctrl+Alt+A)")
+        automata_tb_act.setShortcut(QKeySequence("Ctrl+Alt+A"))
+        automata_tb_act.triggered.connect(self._on_toggle_automata)
+        nav_tb.addAction(automata_tb_act)
+        sorting_tb_act = QAction("📊 Sắp xếp Big-O", self)
+        sorting_tb_act.setToolTip("Bật/Tắt mô phỏng Thuật toán sắp xếp & Bảng độ phức tạp Big-O (Ctrl+Alt+S)")
+        sorting_tb_act.setShortcut(QKeySequence("Ctrl+Alt+S"))
+        sorting_tb_act.triggered.connect(self._on_toggle_sorting)
+        nav_tb.addAction(sorting_tb_act)
+        punnett_tb_act = QAction("🧬 Di truyền Mendel", self)
+        punnett_tb_act.setToolTip("Bật/Tắt mô phỏng Di truyền Mendel & Khung Punnett Square (Ctrl+Alt+G)")
+        punnett_tb_act.setShortcut(QKeySequence("Ctrl+Alt+G"))
+        punnett_tb_act.triggered.connect(self._on_toggle_punnett_genetics)
+        nav_tb.addAction(punnett_tb_act)
+        organic_tb_act = QAction("🧪 Đồng phân Hóa học", self)
+        organic_tb_act.setToolTip("Bật/Tắt mô phỏng Đồng phân Hóa học Hữu cơ & Nhóm chức (Ctrl+Alt+H)")
+        organic_tb_act.setShortcut(QKeySequence("Ctrl+Alt+H"))
+        organic_tb_act.triggered.connect(self._on_toggle_organic_chemistry)
+        nav_tb.addAction(organic_tb_act)
+
+        fluid_tb_act = QAction("🌊 Cơ học chất lưu", self)
+        fluid_tb_act.setToolTip("Bật/Tắt mô phỏng Cơ học chất lưu & Ống Venturi Bernoulli (Ctrl+Alt+F)")
+        fluid_tb_act.setShortcut(QKeySequence("Ctrl+Alt+F"))
+        fluid_tb_act.triggered.connect(self._on_toggle_fluid_venturi)
+        nav_tb.addAction(fluid_tb_act)
+
+        tree_tb_act = QAction("🌳 Cây nhị phân", self)
+        tree_tb_act.setToolTip("Bật/Tắt mô phỏng Cây nhị phân tìm kiếm & Mã hóa Huffman (Ctrl+Alt+U)")
+        tree_tb_act.setShortcut(QKeySequence("Ctrl+Alt+U"))
+        tree_tb_act.triggered.connect(self._on_toggle_binary_tree)
+        nav_tb.addAction(tree_tb_act)
+
+        electro_tb_act = QAction("⚡ Điện hóa & Điện phân", self)
+        electro_tb_act.setToolTip("Bật/Tắt mô phỏng Pin Galvani & Bình điện phân (Ctrl+Alt+E)")
+        electro_tb_act.setShortcut(QKeySequence("Ctrl+Alt+E"))
+        electro_tb_act.triggered.connect(self._on_toggle_electrochemistry)
+        nav_tb.addAction(electro_tb_act)
+
+        circ_tb_act = QAction("🔄 Chuyển động tròn", self)
+        circ_tb_act.setToolTip("Bật/Tắt mô phỏng Chuyển động tròn đều & Lực hướng tâm (Ctrl+Alt+C)")
+        circ_tb_act.setShortcut(QKeySequence("Ctrl+Alt+C"))
+        circ_tb_act.triggered.connect(self._on_toggle_circular_motion)
+        nav_tb.addAction(circ_tb_act)
+
+        titr_tb_act = QAction("🧪 Chuẩn độ pH", self)
+        titr_tb_act.setToolTip("Bật/Tắt mô phỏng Chuẩn độ Axit - Bazơ & Đường cong pH (Ctrl+Alt+I)")
+        titr_tb_act.setShortcut(QKeySequence("Ctrl+Alt+I"))
+        titr_tb_act.triggered.connect(self._on_toggle_ph_titration)
+        nav_tb.addAction(titr_tb_act)
+
+        ind_tb_act = QAction("🧲 Cảm ứng điện từ", self)
+        ind_tb_act.setToolTip("Bật/Tắt mô phỏng Cảm ứng điện từ & Định luật Faraday (Ctrl+Alt+M)")
+        ind_tb_act.setShortcut(QKeySequence("Ctrl+Alt+M"))
+        ind_tb_act.triggered.connect(self._on_toggle_electromagnetic_induction)
+        nav_tb.addAction(ind_tb_act)
+
+        osc_tb_act = QAction("🌀 Dao động & Cộng hưởng", self)
+        osc_tb_act.setToolTip("Bật/Tắt mô phỏng Dao động cơ học: Điều hòa, Tắt dần & Cộng hưởng (Ctrl+Alt+W)")
+        osc_tb_act.setShortcut(QKeySequence("Ctrl+Alt+W"))
+        osc_tb_act.triggered.connect(self._on_toggle_harmonic_oscillator)
+        nav_tb.addAction(osc_tb_act)
+
+        gcms_tb_act = QAction("🧪 Sắc ký GC-MS", self)
+        gcms_tb_act.setToolTip("Bật/Tắt mô phỏng Sắc ký khí & Khối phổ GC-MS 70 eV (Ctrl+Alt+Y)")
+        gcms_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Y"))
+        gcms_tb_act.triggered.connect(self._on_toggle_gcms)
+        nav_tb.addAction(gcms_tb_act)
+
+        photo_tb_act = QAction("🍃 Quang hợp & Calvin", self)
+        photo_tb_act.setToolTip("Bật/Tắt mô phỏng Quang hợp: Pha sáng Thylakoid & Chu trình Calvin (Ctrl+Alt+Q)")
+        photo_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Q"))
+        photo_tb_act.triggered.connect(self._on_toggle_photosynthesis)
+        nav_tb.addAction(photo_tb_act)
+
+        proj_tb_act = QAction("🚀 Chuyển động ném", self)
+        proj_tb_act.setToolTip("Bật/Tắt mô phỏng Chuyển động ném & Động học 2D (Ctrl+Alt+K)")
+        proj_tb_act.setShortcut(QKeySequence("Ctrl+Alt+K"))
+        proj_tb_act.triggered.connect(self._on_toggle_projectile_motion)
+        nav_tb.addAction(proj_tb_act)
+
+        dp_tb_act = QAction("📐 Quy hoạch động", self)
+        dp_tb_act.setToolTip("Bật/Tắt mô phỏng Quy hoạch động (Knapsack, LCS, Coin Change) (Ctrl+Alt+D)")
+        dp_tb_act.setShortcut(QKeySequence("Ctrl+Alt+D"))
+        dp_tb_act.triggered.connect(self._on_toggle_dynamic_programming)
+        nav_tb.addAction(dp_tb_act)
+
+        cnn_tb_act = QAction("🧠 Mạng nơ-ron CNN", self)
+        cnn_tb_act.setToolTip("Bật/Tắt mô phỏng Mạng nơ-ron CNN & Tích chập 2D (Ctrl+Alt+N)")
+        cnn_tb_act.setShortcut(QKeySequence("Ctrl+Alt+N"))
+        cnn_tb_act.triggered.connect(self._on_toggle_cnn_visualizer)
+        nav_tb.addAction(cnn_tb_act)
+
+        airfoil_tb_act = QAction("✈️ Khí động học cánh", self)
+        airfoil_tb_act.setToolTip("Bật/Tắt mô phỏng Khí động học cánh máy bay & Lực nâng/cản NACA (Ctrl+Alt+V)")
+        airfoil_tb_act.setShortcut(QKeySequence("Ctrl+Alt+V"))
+        airfoil_tb_act.triggered.connect(self._on_toggle_airfoil_aerodynamics)
+        nav_tb.addAction(airfoil_tb_act)
+
+        periodic_tb_act = QAction("⚛️ Bảng tuần hoàn", self)
+        periodic_tb_act.setToolTip("Bật/Tắt mô phỏng Bảng tuần hoàn nguyên tố & Cấu hình electron Bohr (Ctrl+Alt+J)")
+        periodic_tb_act.setShortcut(QKeySequence("Ctrl+Alt+J"))
+        periodic_tb_act.triggered.connect(self._on_toggle_periodic_table)
+        nav_tb.addAction(periodic_tb_act)
+
+        respiration_tb_act = QAction("⚡ Hô hấp tế bào", self)
+        respiration_tb_act.setToolTip("Bật/Tắt mô phỏng Hô hấp tế bào, Krebs & Chuỗi chuyền electron ti thể ETC (Ctrl+Alt+Z)")
+        respiration_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Z"))
+        respiration_tb_act.triggered.connect(self._on_toggle_cellular_respiration)
+        nav_tb.addAction(respiration_tb_act)
+
+        protein_tb_act = QAction("🧬 Gấp nếp Protein", self)
+        protein_tb_act.setToolTip("Bật/Tắt mô phỏng Cấu trúc bậc hai Protein & Đồ thị Ramachandran (Ctrl+Alt+X)")
+        protein_tb_act.setShortcut(QKeySequence("Ctrl+Alt+X"))
+        protein_tb_act.triggered.connect(self._on_toggle_protein_folding)
+        nav_tb.addAction(protein_tb_act)
+
+        mlp_tb_act = QAction("🧠 Mạng MLP Backprop", self)
+        mlp_tb_act.setToolTip("Bật/Tắt mô phỏng Mạng nơ-ron MLP, Lan truyền ngược & Biên quyết định (Ctrl+Alt+L)")
+        mlp_tb_act.setShortcut(QKeySequence("Ctrl+Alt+L"))
+        mlp_tb_act.triggered.connect(self._on_toggle_mlp_backprop)
+        nav_tb.addAction(mlp_tb_act)
+
+        max_flow_tb_act = QAction("🌊 Luồng cực đại", self)
+        max_flow_tb_act.setToolTip("Bật/Tắt mô phỏng Luồng cực đại trên mạng & Lát cắt Min-Cut (Ctrl+Alt+1)")
+        max_flow_tb_act.setShortcut(QKeySequence("Ctrl+Alt+1"))
+        max_flow_tb_act.triggered.connect(self._on_toggle_max_flow)
+        nav_tb.addAction(max_flow_tb_act)
+
+        oxyz_tb_act = QAction("📐 Hình học Oxyz", self)
+        oxyz_tb_act.setToolTip("Bật/Tắt mô phỏng Hình học không gian Oxyz & Tích có hướng Vector (Ctrl+Alt+2)")
+        oxyz_tb_act.setShortcut(QKeySequence("Ctrl+Alt+2"))
+        oxyz_tb_act.triggered.connect(self._on_toggle_oxyz_geometry)
+        nav_tb.addAction(oxyz_tb_act)
+
+        diode_tb_act = QAction("⚡ Điốt Bán dẫn", self)
+        diode_tb_act.setToolTip("Bật/Tắt mô phỏng Bán dẫn P-N, Điốt Shockley & Vùng nghèo (Ctrl+Alt+3)")
+        diode_tb_act.setShortcut(QKeySequence("Ctrl+Alt+3"))
+        diode_tb_act.triggered.connect(self._on_toggle_semiconductor_diode)
+        nav_tb.addAction(diode_tb_act)
+
+        nuclear_tb_act = QAction("⚛️ Hạt nhân", self)
+        nuclear_tb_act.setToolTip("Bật/Tắt mô phỏng Vật lý Hạt nhân, Eb/A, Phân hạch & Nhiệt hạch (Ctrl+Alt+4)")
+        nuclear_tb_act.setShortcut(QKeySequence("Ctrl+Alt+4"))
+        nuclear_tb_act.triggered.connect(self._on_toggle_nuclear_reactions)
+        nav_tb.addAction(nuclear_tb_act)
+
+        doppler_tb_act = QAction("📢 Sóng Doppler", self)
+        doppler_tb_act.setToolTip("Bật/Tắt mô phỏng Hiệu ứng Doppler, Nén bước sóng & Nón Mach (Ctrl+Alt+5)")
+        doppler_tb_act.setShortcut(QKeySequence("Ctrl+Alt+5"))
+        doppler_tb_act.triggered.connect(self._on_toggle_doppler_effect)
+        nav_tb.addAction(doppler_tb_act)
+
+        rb_tree_tb_act = QAction("🌲 Cây Đỏ-Đen", self)
+        rb_tree_tb_act.setToolTip("Bật/Tắt mô phỏng Cây tự cân bằng Đỏ-Đen & CLRS Invariants (Ctrl+Alt+6)")
+        rb_tree_tb_act.setShortcut(QKeySequence("Ctrl+Alt+6"))
+        rb_tree_tb_act.triggered.connect(self._on_toggle_red_black_tree)
+        nav_tb.addAction(rb_tree_tb_act)
+
+        millikan_tb_act = QAction("💧 Giọt dầu Millikan", self)
+        millikan_tb_act.setToolTip("Bật/Tắt mô phỏng Giọt dầu Millikan, Lực cản Stokes & Điện tích e (Ctrl+Alt+7)")
+        millikan_tb_act.setShortcut(QKeySequence("Ctrl+Alt+7"))
+        millikan_tb_act.triggered.connect(self._on_toggle_millikan_oil_drop)
+        nav_tb.addAction(millikan_tb_act)
+
+        quantum_well_tb_act = QAction("⚛️ Giếng lượng tử", self)
+        quantum_well_tb_act.setToolTip("Bật/Tắt mô phỏng Giếng thế vô hạn, Sóng dừng ψ và Xác suất |ψ|² (Ctrl+Alt+8)")
+        quantum_well_tb_act.setShortcut(QKeySequence("Ctrl+Alt+8"))
+        quantum_well_tb_act.triggered.connect(self._on_toggle_quantum_well)
+        nav_tb.addAction(quantum_well_tb_act)
+
+        hohmann_tb_act = QAction("🚀 Quỹ đạo Hohmann", self)
+        hohmann_tb_act.setToolTip("Bật/Tắt mô phỏng Cơ học thiên thể Kepler & Chuyển quỹ đạo Hohmann (Ctrl+Alt+9)")
+        hohmann_tb_act.setShortcut(QKeySequence("Ctrl+Alt+9"))
+        hohmann_tb_act.triggered.connect(self._on_toggle_hohmann_transfer)
+        nav_tb.addAction(hohmann_tb_act)
+
+        photoelectric_tb_act = QAction("⚡ Quang điện Ngoài", self)
+        photoelectric_tb_act.setToolTip("Bật/Tắt mô phỏng Hiện tượng Quang điện Ngoài, Công thoát & Photon Einstein (Ctrl+Alt+0)")
+        photoelectric_tb_act.setShortcut(QKeySequence("Ctrl+Alt+0"))
+        photoelectric_tb_act.triggered.connect(self._on_toggle_photoelectric_effect)
+        nav_tb.addAction(photoelectric_tb_act)
+
+        punnett_tb_act = QAction("🧬 Di truyền Punnett", self)
+        punnett_tb_act.setToolTip("Bật/Tắt mô phỏng Di truyền Mendel, Khung Punnett & Nhóm máu ABO (Ctrl+Shift+G)")
+        punnett_tb_act.setShortcut(QKeySequence("Ctrl+Shift+G"))
+        punnett_tb_act.triggered.connect(self._on_toggle_punnett_genetics)
+        nav_tb.addAction(punnett_tb_act)
+
+        kinetics_tb_act = QAction("🧪 Động Hóa học", self)
+        kinetics_tb_act.setToolTip("Bật/Tắt mô phỏng Động hóa học, Năng lượng hoạt hóa & Xúc tác Arrhenius (Ctrl+Shift+K)")
+        kinetics_tb_act.setShortcut(QKeySequence("Ctrl+Shift+K"))
+        kinetics_tb_act.triggered.connect(self._on_toggle_reaction_kinetics)
+        nav_tb.addAction(kinetics_tb_act)
+
+        calculus_tb_act = QAction("📐 Tích phân Riemann", self)
+        calculus_tb_act.setToolTip("Bật/Tắt mô phỏng Tích phân Riemann, Cầu phương Simpson & Chuỗi Taylor (Ctrl+Shift+R)")
+        calculus_tb_act.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        calculus_tb_act.triggered.connect(self._on_toggle_calculus_taylor)
+        nav_tb.addAction(calculus_tb_act)
+
+        michelson_tb_act = QAction("🔬 Giao thoa Michelson", self)
+        michelson_tb_act.setToolTip("Bật/Tắt mô phỏng Giao thoa kế Michelson & Sóng Hấp dẫn LIGO (Ctrl+Shift+M)")
+        michelson_tb_act.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        michelson_tb_act.triggered.connect(self._on_toggle_michelson_interferometer)
+        nav_tb.addAction(michelson_tb_act)
+
+        huffman_tb_act = QAction("🌲 Mã hóa Huffman", self)
+        huffman_tb_act.setToolTip("Bật/Tắt mô phỏng Cây tiền tố tối ưu Huffman & Entropy Shannon (Ctrl+Shift+H)")
+        huffman_tb_act.setShortcut(QKeySequence("Ctrl+Shift+H"))
+        huffman_tb_act.triggered.connect(self._on_toggle_huffman_coding)
+        nav_tb.addAction(huffman_tb_act)
+
+        action_potential_tb_act = QAction("⚡ Điện thế Hoạt động", self)
+        action_potential_tb_act.setToolTip("Bật/Tắt mô phỏng Điện thế Hoạt động & Mô hình Hodgkin-Huxley (Ctrl+Shift+P)")
+        action_potential_tb_act.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        action_potential_tb_act.triggered.connect(self._on_toggle_action_potential)
+        nav_tb.addAction(action_potential_tb_act)
+
+        cyclotron_tb_act = QAction("⚛️ Gia tốc Cyclotron", self)
+        cyclotron_tb_act.setToolTip("Bật/Tắt mô phỏng Máy gia tốc hạt Cyclotron & Synchrocyclotron (Ctrl+Alt+C)")
+        cyclotron_tb_act.setShortcut(QKeySequence("Ctrl+Alt+C"))
+        cyclotron_tb_act.triggered.connect(self._on_toggle_cyclotron)
+        nav_tb.addAction(cyclotron_tb_act)
+
+        aho_corasick_tb_act = QAction("🔤 Otomat Aho-Corasick", self)
+        aho_corasick_tb_act.setToolTip("Bật/Tắt mô phỏng Máy tự động tìm kiếm chuỗi Aho-Corasick O(n+m+z) (Ctrl+Alt+A)")
+        aho_corasick_tb_act.setShortcut(QKeySequence("Ctrl+Alt+A"))
+        aho_corasick_tb_act.triggered.connect(self._on_toggle_aho_corasick)
+        nav_tb.addAction(aho_corasick_tb_act)
+
+        phase_diagram_tb_act = QAction("🌡️ Giản đồ Pha P-T", self)
+        phase_diagram_tb_act.setToolTip("Bật/Tắt mô phỏng Giản đồ pha nhiệt động P-T, điểm tam giác & tới hạn (Ctrl+Alt+P)")
+        phase_diagram_tb_act.setShortcut(QKeySequence("Ctrl+Alt+P"))
+        phase_diagram_tb_act.triggered.connect(self._on_toggle_phase_diagram)
+        nav_tb.addAction(phase_diagram_tb_act)
+
+        em_wave_tb_act = QAction("📡 Sóng Điện từ", self)
+        em_wave_tb_act.setToolTip("Bật/Tắt mô phỏng Sóng điện từ Maxwell, phân cực & vectơ Poynting (Ctrl+Alt+E)")
+        em_wave_tb_act.setShortcut(QKeySequence("Ctrl+Alt+E"))
+        em_wave_tb_act.triggered.connect(self._on_toggle_em_wave)
+        nav_tb.addAction(em_wave_tb_act)
+
+        hardy_weinberg_tb_act = QAction("🧬 Hardy-Weinberg", self)
+        hardy_weinberg_tb_act.setToolTip("Bật/Tắt mô phỏng Di truyền học quần thể Hardy-Weinberg & phiêu bạt gen (Ctrl+Alt+H)")
+        hardy_weinberg_tb_act.setShortcut(QKeySequence("Ctrl+Alt+H"))
+        hardy_weinberg_tb_act.triggered.connect(self._on_toggle_hardy_weinberg)
+        nav_tb.addAction(hardy_weinberg_tb_act)
+
+        fft_tb_act = QAction("📊 Phân tích Phổ FFT", self)
+        fft_tb_act.setToolTip("Bật/Tắt mô phỏng Biến đổi Fourier Nhanh Cooley-Tukey FFT & Phân tích Phổ tần số (Ctrl+Alt+F)")
+        fft_tb_act.setShortcut(QKeySequence("Ctrl+Alt+F"))
+        fft_tb_act.triggered.connect(self._on_toggle_fft)
+        nav_tb.addAction(fft_tb_act)
+
+        fabry_perot_tb_act = QAction("🔬 Fabry-Pérot", self)
+        fabry_perot_tb_act.setToolTip("Bật/Tắt mô phỏng Giao thoa kế Fabry-Pérot & Hốc quang học Finesse cao (Ctrl+Alt+O)")
+        fabry_perot_tb_act.setShortcut(QKeySequence("Ctrl+Alt+O"))
+        fabry_perot_tb_act.triggered.connect(self._on_toggle_fabry_perot)
+        nav_tb.addAction(fabry_perot_tb_act)
+
+        hplc_tb_act = QAction("🧪 Sắc ký HPLC", self)
+        hplc_tb_act.setToolTip("Bật/Tắt mô phỏng Sắc ký lỏng HPLC & Hiệu suất cột Van Deemter (Ctrl+Alt+L)")
+        hplc_tb_act.setShortcut(QKeySequence("Ctrl+Alt+L"))
+        hplc_tb_act.triggered.connect(self._on_toggle_hplc)
+        nav_tb.addAction(hplc_tb_act)
+
+        photoelectric_tb_act = QAction("⚡ Quang điện", self)
+        photoelectric_tb_act.setToolTip("Bật/Tắt mô phỏng Hiệu ứng quang điện ngoài Einstein & Công thoát kim loại (Ctrl+Alt+Q)")
+        photoelectric_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Q"))
+        photoelectric_tb_act.triggered.connect(self._on_toggle_photoelectric)
+        nav_tb.addAction(photoelectric_tb_act)
+
+        pcr_tb_act = QAction("🧬 PCR & Điện di", self)
+        pcr_tb_act.setToolTip("Bật/Tắt mô phỏng Phản ứng chuỗi Polymerase PCR & Điện di gel agarose (Ctrl+Alt+R)")
+        pcr_tb_act.setShortcut(QKeySequence("Ctrl+Alt+R"))
+        pcr_tb_act.triggered.connect(self._on_toggle_pcr)
+        nav_tb.addAction(pcr_tb_act)
+
+        thin_lens_tb_act = QAction("🔍 Thấu kính Mỏng", self)
+        thin_lens_tb_act.setToolTip("Bật/Tắt mô phỏng Hệ thấu kính mỏng, tạo ảnh thật/ảo & ma trận ABCD (Ctrl+Alt+T)")
+        thin_lens_tb_act.setShortcut(QKeySequence("Ctrl+Alt+T"))
+        thin_lens_tb_act.triggered.connect(self._on_toggle_thin_lens)
+        nav_tb.addAction(thin_lens_tb_act)
+
+        bragg_tb_act = QAction("💎 Nhiễu xạ Bragg", self)
+        bragg_tb_act.setToolTip("Bật/Tắt mô phỏng Nhiễu xạ Tia X Bragg, Phổ XRD & Làm rộng vạch Scherrer (Ctrl+Alt+Shift+B)")
+        bragg_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+B"))
+        bragg_tb_act.triggered.connect(self._on_toggle_bragg_diffraction)
+        nav_tb.addAction(bragg_tb_act)
+
+        buffer_tb_act = QAction("🧪 Hệ Đệm Axit-Bazơ", self)
+        buffer_tb_act.setToolTip("Bật/Tắt mô phỏng Hệ đệm axit-bazơ, Phương trình Henderson-Hasselbalch & Dung lượng Van Slyke (Ctrl+Alt+Shift+H)")
+        buffer_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+H"))
+        buffer_tb_act.triggered.connect(self._on_toggle_buffer_system)
+        nav_tb.addAction(buffer_tb_act)
+
+        sg_tb_act = QAction("⚛️ Stern-Gerlach", self)
+        sg_tb_act.setToolTip("Bật/Tắt mô phỏng Thí nghiệm Stern-Gerlach, Lượng tử hóa không gian & Spin 1/2 (Ctrl+Alt+Shift+S)")
+        sg_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+S"))
+        sg_tb_act.triggered.connect(self._on_toggle_stern_gerlach)
+        nav_tb.addAction(sg_tb_act)
+
+        enzyme_tb_act = QAction("🧪 Động học Enzyme", self)
+        enzyme_tb_act.setToolTip("Bật/Tắt mô phỏng Động học Enzyme Michaelis-Menten & Đồ thị Lineweaver-Burk (Ctrl+Alt+Shift+E)")
+        enzyme_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+E"))
+        enzyme_tb_act.triggered.connect(self._on_toggle_enzyme_kinetics)
+        nav_tb.addAction(enzyme_tb_act)
+
+        poiseuille_tb_act = QAction("🌊 Dòng Poiseuille", self)
+        poiseuille_tb_act.setToolTip("Bật/Tắt mô phỏng Dòng Chảy Nhớt Hagen-Poiseuille & Số Reynolds (Ctrl+Alt+Shift+P)")
+        poiseuille_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+P"))
+        poiseuille_tb_act.triggered.connect(self._on_toggle_poiseuille_flow)
+        nav_tb.addAction(poiseuille_tb_act)
+
+        cosmic_tb_act = QAction("🌌 Vũ Trụ Giãn Nở", self)
+        cosmic_tb_act.setToolTip("Bật/Tắt mô phỏng Định Luật Hubble & Vũ Trụ Giãn Nở (Ctrl+Alt+Shift+U)")
+        cosmic_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+U"))
+        cosmic_tb_act.triggered.connect(self._on_toggle_cosmic_expansion)
+        nav_tb.addAction(cosmic_tb_act)
+
+        seismic_tb_act = QAction("🌍 Sóng Địa Chấn", self)
+        seismic_tb_act.setToolTip("Bật/Tắt mô phỏng Sóng Địa Chấn & Định Vị Tâm Chấn (Ctrl+Alt+Shift+Q)")
+        seismic_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+Q"))
+        seismic_tb_act.triggered.connect(self._on_toggle_seismic_waves)
+        nav_tb.addAction(seismic_tb_act)
+
+        spectrometer_tb_act = QAction("⚡ Máy Khối Phổ", self)
+        spectrometer_tb_act.setToolTip("Bật/Tắt mô phỏng Máy Khối Phổ & Bộ Lọc Vận Tốc Wien (Ctrl+Alt+Shift+M)")
+        spectrometer_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+M"))
+        spectrometer_tb_act.triggered.connect(self._on_toggle_mass_spectrometer)
+        nav_tb.addAction(spectrometer_tb_act)
+
+        spectrophotometry_tb_act = QAction("🧪 Quang Phổ Beer-Lambert", self)
+        spectrophotometry_tb_act.setToolTip("Bật/Tắt mô phỏng Quang Phổ Hấp Thụ & Định Luật Beer-Lambert (Ctrl+Alt+Shift+L)")
+        spectrophotometry_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+L"))
+        spectrophotometry_tb_act.triggered.connect(self._on_toggle_spectrophotometry)
+        nav_tb.addAction(spectrophotometry_tb_act)
+
+        hall_tb_act = QAction("⚡ Hiệu Ứng Hall", self)
+        hall_tb_act.setToolTip("Bật/Tắt mô phỏng Hiệu Ứng Hall & Vật Lý Bán Dẫn (Ctrl+Alt+Shift+F)")
+        hall_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+F"))
+        hall_tb_act.triggered.connect(self._on_toggle_hall_effect)
+        nav_tb.addAction(hall_tb_act)
+
+        rad_tb_act = QAction("☢ Che Chắn Phóng Xạ", self)
+        rad_tb_act.setToolTip("Bật/Tắt mô phỏng Độ Xuyên Sâu Phóng Xạ & Tấm Chắn HVL (Ctrl+Alt+Shift+R)")
+        rad_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+R"))
+        rad_tb_act.triggered.connect(self._on_toggle_radiation_shielding)
+        nav_tb.addAction(rad_tb_act)
+
+        maxwell_tb_act = QAction("🔥 Phân Bố Maxwell", self)
+        maxwell_tb_act.setToolTip("Bật/Tắt mô phỏng Phân Bố Vận Tốc Phân Tử Maxwell-Boltzmann (Ctrl+Alt+Shift+X)")
+        maxwell_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+X"))
+        maxwell_tb_act.triggered.connect(self._on_toggle_maxwell_boltzmann)
+        nav_tb.addAction(maxwell_tb_act)
+
+        mo_tb_act = QAction("⚛ Obitan Phân Tử", self)
+        mo_tb_act.setToolTip("Bật/Tắt mô phỏng Obitan Phân Tử & Thuyết MO-LCAO (Ctrl+Alt+Shift+O)")
+        mo_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+O"))
+        mo_tb_act.triggered.connect(self._on_toggle_molecular_orbital)
+        nav_tb.addAction(mo_tb_act)
+
+        rlc_tb_act = QAction("⚡ Cộng Hưởng RLC", self)
+        rlc_tb_act.setToolTip("Bật/Tắt mô phỏng Cộng Hưởng Điện RLC & Giản Đồ Phasor (Ctrl+Alt+Shift+C)")
+        rlc_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+C"))
+        rlc_tb_act.triggered.connect(self._on_toggle_rlc_resonance)
+        nav_tb.addAction(rlc_tb_act)
+
+        stress_tb_act = QAction("⚙ Đường Cong Ứng Suất", self)
+        stress_tb_act.setToolTip("Bật/Tắt mô phỏng Đường Cong Ứng Suất - Biến Dạng & Kéo Thử Cơ Học (Ctrl+Alt+Shift+T)")
+        stress_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+T"))
+        stress_tb_act.triggered.connect(self._on_toggle_stress_strain)
+        nav_tb.addAction(stress_tb_act)
+
+        kepler_tb_act = QAction("🪐 Quỹ Đạo Kepler", self)
+        kepler_tb_act.setToolTip("Bật/Tắt mô phỏng Quỹ Đạo Hấp Dẫn & 3 Định Luật Kepler (Ctrl+Alt+Shift+K)")
+        kepler_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+K"))
+        kepler_tb_act.triggered.connect(self._on_toggle_kepler_orbits)
+        nav_tb.addAction(kepler_tb_act)
+
+        logic_tb_act = QAction("🔌 Cổng Logic & Adder", self)
+        logic_tb_act.setToolTip("Bật/Tắt mô phỏng Điện Tử Số, Cổng Logic & Mạch Cộng Nhị Phân (Ctrl+Alt+Shift+G)")
+        logic_tb_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+G"))
+        logic_tb_act.triggered.connect(self._on_toggle_logic_circuits)
+        nav_tb.addAction(logic_tb_act)
 
         desktop_tb_act = QAction("🖥️ Vẽ Desktop", self)
         desktop_tb_act.setToolTip("Chuyển đổi Chế độ vẽ đè màn hình Desktop trong suốt (Phím F11)")
@@ -2459,6 +3374,38 @@ class MainWindow(QMainWindow):
                                     self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#ec4899", radius=9.0)
                                     self._finalize_hand_stroke(h.track_id)
                                     break
+                        elif item.__class__.__name__ == "InteractiveKeplerOrbitItem":
+                            if item.isVisible() and hasattr(item, "handle_air_tap"):
+                                if item.handle_air_tap(QPointF(bx, by), board=self._scene):
+                                    item_consumed_tap = True
+                                    tapped_hand_ids.add(h.track_id)
+                                    self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#38bdf8", radius=9.0)
+                                    self._finalize_hand_stroke(h.track_id)
+                                    break
+                        elif item.__class__.__name__ == "InteractiveGraphPathfindingItem":
+                            if item.isVisible() and hasattr(item, "handle_air_tap"):
+                                if item.handle_air_tap(QPointF(bx, by), board=self._scene):
+                                    item_consumed_tap = True
+                                    tapped_hand_ids.add(h.track_id)
+                                    self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#06b6d4", radius=9.0)
+                                    self._finalize_hand_stroke(h.track_id)
+                                    break
+                        elif item.__class__.__name__ == "InteractiveElectricFieldItem":
+                            if item.isVisible() and hasattr(item, "handle_air_tap"):
+                                if item.handle_air_tap(QPointF(bx, by), board=self._scene):
+                                    item_consumed_tap = True
+                                    tapped_hand_ids.add(h.track_id)
+                                    self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#38bdf8", radius=9.0)
+                                    self._finalize_hand_stroke(h.track_id)
+                                    break
+                        elif item.__class__.__name__ == "InteractiveLorentzForceItem":
+                            if item.isVisible() and hasattr(item, "handle_air_tap"):
+                                if item.handle_air_tap(QPointF(bx, by), board=self._scene):
+                                    item_consumed_tap = True
+                                    tapped_hand_ids.add(h.track_id)
+                                    self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#ef4444", radius=9.0)
+                                    self._finalize_hand_stroke(h.track_id)
+                                    break
 
                     # Also check floating view overlays (Mini-Map)
                     if not item_consumed_tap and hasattr(self, "_zoom_ctrl") and self._zoom_ctrl is not None:
@@ -2776,6 +3723,100 @@ class MainWindow(QMainWindow):
                 self._on_toggle_vsepr_geometry()
             elif val in ("dna_replication", "dna_double_helix", "dna"):
                 self._on_toggle_dna_replication()
+            elif val in ("kepler_orbit", "kepler", "orbit", "astronomy"):
+                self._on_toggle_kepler_orbit()
+            elif val in ("graph_pathfinding", "graph", "dijkstra", "astar", "pathfinding"):
+                self._on_toggle_graph_pathfinding()
+            elif val in ("electric_field", "coulomb", "charges", "electrostatic"):
+                self._on_toggle_electric_field()
+            elif val in ("lorentz_force", "lorentz", "magnetism", "b_field"):
+                self._on_toggle_lorentz_force()
+            elif val in ("trophic_web", "ecosystem", "lotka_volterra", "food_web", "trophic"):
+                self._on_toggle_trophic_web()
+            elif val in ("gas_laws", "ideal_gas", "gas", "maxwell_boltzmann", "thermodynamics", "gas_chamber"):
+                self._on_toggle_gas_laws()
+            elif val in ("titration", "acid_base", "ph_buffer", "henderson_hasselbalch", "ph_curve"):
+                self._on_toggle_titration()
+            elif val in ("harmonic_oscillator", "oscillator", "resonance", "spring_mass", "dao_dong", "shm"):
+                self._on_toggle_harmonic_oscillator()
+            elif val in ("radioactive_decay", "decay", "nuclear", "phong_xa", "half_life"):
+                self._on_toggle_radioactive_decay()
+            elif val in ("chemical_kinetics", "kinetics", "arrhenius", "equilibrium", "can_bang"):
+                self._on_toggle_chemical_kinetics()
+            elif val in ("cryptography", "rsa", "diffie_hellman", "crypto", "mat_ma", "modular"):
+                self._on_toggle_cryptography()
+            elif val in ("gravitational_orbits", "orbits", "lagrange", "n_body", "kepler_nbody", "hap_dan"):
+                self._on_toggle_gravitational_orbits()
+            elif val in ("spacetime_relativity", "minkowski", "relativity", "lorentz", "tuong_doi", "khong_thoi_gian"):
+                self._on_toggle_spacetime_relativity()
+            elif val in ("young_interference", "young", "interference", "giao_thoa", "nhieu_xa", "grating", "cach_tu", "quang_song"):
+                self._on_toggle_young_interference()
+            elif val in ("rlc_circuit", "rlc", "fresnel", "phasor", "xoay_chieu", "dien_xoay_chieu", "cong_huong"):
+                self._on_toggle_rlc_circuit()
+            elif val in ("thin_lens", "lens", "thau_kinh", "optical_bench", "bang_quang_hoc", "kinh_lup"):
+                self._on_toggle_thin_lens()
+            elif val in ("bragg", "xrd", "x_ray_diffraction", "nhieu_xa_bragg", "tinh_the"):
+                self._on_toggle_bragg_diffraction()
+            elif val in ("buffer", "buffer_system", "he_dem", "henderson", "van_slyke"):
+                self._on_toggle_buffer_system()
+            elif val in ("stern_gerlach", "spin", "spin_half", "gerlach", "luong_tu_hoa_khong_gian"):
+                self._on_toggle_stern_gerlach()
+            elif val in ("enzyme", "enzyme_kinetics", "michaelis_menten", "lineweaver_burk", "dong_hoc_enzyme"):
+                self._on_toggle_enzyme_kinetics()
+            elif val in ("poiseuille", "hagen_poiseuille", "dong_chay_nhot", "reynolds", "viscous_flow"):
+                self._on_toggle_poiseuille_flow()
+            elif val in ("hubble", "cosmic", "universe", "redshift", "vu_tru_gian_no", "cosmology"):
+                self._on_toggle_cosmic_expansion()
+            elif val in ("seismic", "earthquake", "song_dia_chan", "tam_chan", "epicenter", "seismology"):
+                self._on_toggle_seismic_waves()
+            elif val in ("spectrometer", "mass_spectrometer", "wien", "khoi_pho", "dong_vi", "isotope"):
+                self._on_toggle_mass_spectrometer()
+            elif val in ("spectrophotometry", "beer_lambert", "absorbance", "quang_pho_hap_thu", "beer", "cuvette", "do_hap_thu"):
+                self._on_toggle_spectrophotometry()
+            elif val in ("hall", "hall_effect", "hieu_ung_hall", "ban_dan", "semiconductor", "lorentz_drift"):
+                self._on_toggle_hall_effect()
+            elif val in ("radiation", "phong_xa", "shielding", "hvl", "gamma", "alpha", "beta", "che_chan_phong_xa", "geiger"):
+                self._on_toggle_radiation_shielding()
+            elif val in ("maxwell", "boltzmann", "maxwell_boltzmann", "phan_bo_van_toc", "kinetic_theory", "thuyet_dong_hoc"):
+                self._on_toggle_maxwell_boltzmann()
+            elif val in ("orbital", "molecular_orbital", "obitan", "mo_lcao", "hybridization", "lai_hoa", "obitan_phan_tu"):
+                self._on_toggle_molecular_orbital()
+            elif val in ("rlc", "resonance", "cong_huong", "cong_huong_rlc", "phasor", "freznel", "impedance", "tong_tro"):
+                self._on_toggle_rlc_resonance()
+            elif val in ("stress_strain", "ung_suat", "bien_dang", "young_modulus", "dan_hoi", "keo_dut", "tensile_test", "do_ben_keo"):
+                self._on_toggle_stress_strain()
+            elif val in ("kepler", "orbit", "quy_dao", "hanh_tinh", "ve_tinh", "vis_viva", "apogee", "perigee", "can_nhat", "vien_nhat"):
+                self._on_toggle_kepler_orbits()
+            elif val in ("logic", "logic_gates", "cong_logic", "half_adder", "full_adder", "mach_cong", "truth_table", "bang_chan_tri", "boole"):
+                self._on_toggle_logic_circuits()
+            elif val in ("photoelectric", "photoelectric_effect", "quang_dien", "einstein", "luong_tu", "hieu_ung_quang_dien"):
+                self._on_toggle_photoelectric_effect()
+            elif val in ("carnot", "carnot_engine", "dong_co_nhiet", "chu_trinh_carnot", "nhiet_dong_luc"):
+                self._on_toggle_carnot_engine()
+            elif val in ("bohr", "bohr_atom", "nguyen_tu_bohr", "quang_pho_hydro", "lyman", "balmer", "paschen"):
+                self._on_toggle_bohr_atom()
+            elif val in ("automata", "fsm", "dfa", "nfa", "finite_state", "may_trang_thai", "automaton"):
+                self._on_toggle_automata()
+            elif val in ("sorting", "sort", "sap_xep", "big_o", "bubble_sort", "quick_sort", "merge_sort"):
+                self._on_toggle_sorting()
+            elif val in ("punnett", "genetics", "mendel", "di_truyen", "khung_punnett", "lai_giong"):
+                self._on_toggle_punnett_genetics()
+            elif val in ("organic", "organic_chem", "isomer", "dong_phan", "hoa_huu_co", "hydrocarbon"):
+                self._on_toggle_organic_chemistry()
+            elif val in ("fluid", "fluid_venturi", "venturi", "bernoulli", "chat_luu", "ap_suat_tinh", "manometer"):
+                self._on_toggle_fluid_venturi()
+            elif val in ("tree", "binary_tree", "bst", "huffman", "cay_nhi_phan", "duyet_cay"):
+                self._on_toggle_binary_tree()
+            elif val in ("electro", "galvanic", "daniell", "electrolysis", "pin_dien_hoa", "dien_phan", "nernst"):
+                self._on_toggle_electrochemistry()
+            elif val in ("circular", "circular_motion", "centripetal", "tron_deu", "huong_tam", "banked_curve", "vong_xiec"):
+                self._on_toggle_circular_motion()
+            elif val in ("titration", "ph_titration", "chuan_do", "duong_cong_ph", "axit_bazo", "burette", "chi_thi"):
+                self._on_toggle_ph_titration()
+            elif val in ("induction", "faraday", "lenz", "cam_ung_dien_tu", "tu_thong", "may_phat_dien", "bien_ap"):
+                self._on_toggle_electromagnetic_induction()
+            elif val in ("dp", "dynamic_programming", "knapsack", "cai_tui", "quy_hoach_dong", "lcs", "coin_change", "bang_dp"):
+                self._on_toggle_dynamic_programming()
             elif val == "timer":
                 self._on_toggle_timer()
             elif val == "metronome":
@@ -4007,6 +5048,736 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_dna_replication()
         self._status.showMessage(
             f"Tự nhân đôi DNA (Nguyên tắc bổ sung): {'Hiển thị (Ctrl+Shift+D)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_kepler_orbit(self) -> bool:
+        """Toggle interactive astronomy Kepler orbit & planetary motion simulator on LessonBoard."""
+        is_visible = self._scene.toggle_kepler_orbit()
+        self._status.showMessage(
+            f"Quỹ đạo hành tinh Kepler: {'Hiển thị (Ctrl+Shift+K)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_graph_pathfinding(self) -> bool:
+        """Toggle interactive graph theory & Dijkstra / A* pathfinding simulator on LessonBoard."""
+        is_visible = self._scene.toggle_graph_pathfinding()
+        self._status.showMessage(
+            f"Lý thuyết đồ thị & Đường đi ngắn nhất (Dijkstra/A*): {'Hiển thị (Ctrl+Shift+P)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_electric_field(self) -> bool:
+        """Toggle interactive physics electric field lines & Coulomb simulator on LessonBoard."""
+        is_visible = self._scene.toggle_electric_field()
+        self._status.showMessage(
+            f"Điện trường & Định luật Coulomb: {'Hiển thị (Ctrl+Shift+E)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_lorentz_force(self) -> bool:
+        """Toggle interactive physics magnetism & Lorentz force simulator on LessonBoard."""
+        is_visible = self._scene.toggle_lorentz_force()
+        self._status.showMessage(
+            f"Lực Lorentz & Từ trường: {'Hiển thị (Ctrl+Shift+B)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_trophic_web(self) -> bool:
+        """Toggle interactive biology ecosystem trophic food web simulator on LessonBoard."""
+        is_visible = self._scene.toggle_trophic_web()
+        self._status.showMessage(
+            f"Lưới thức ăn & Hệ sinh thái: {'Hiển thị (Ctrl+Shift+U)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_gas_laws(self) -> bool:
+        """Toggle interactive ideal gas laws & kinetic theory simulator on LessonBoard."""
+        is_visible = self._scene.toggle_gas_laws()
+        self._status.showMessage(
+            f"Định luật khí lý tưởng: {'Hiển thị (Ctrl+Shift+J)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_titration(self) -> bool:
+        """Toggle interactive acid-base titration & pH buffer simulator on LessonBoard."""
+        is_visible = self._scene.toggle_titration()
+        self._status.showMessage(
+            f"Chuẩn độ Axit - Bazơ & pH: {'Hiển thị (Ctrl+Shift+Q)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_harmonic_oscillator(self) -> bool:
+        """Toggle interactive harmonic oscillator & resonance simulator on LessonBoard."""
+        is_visible = self._scene.toggle_harmonic_oscillator()
+        self._status.showMessage(
+            f"Dao động điều hòa & Cộng hưởng: {'Hiển thị (Ctrl+Shift+H)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_radioactive_decay(self) -> bool:
+        """Toggle interactive radioactive decay simulator on LessonBoard."""
+        is_visible = self._scene.toggle_radioactive_decay()
+        self._status.showMessage(
+            f"Định luật phóng xạ & Chuỗi phân rã: {'Hiển thị (Ctrl+Alt+R)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_chemical_kinetics(self) -> bool:
+        """Toggle interactive chemical kinetics & equilibrium simulator on LessonBoard."""
+        is_visible = self._scene.toggle_chemical_kinetics()
+        self._status.showMessage(
+            f"Động hóa học & Cân bằng: {'Hiển thị (Ctrl+Alt+K)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_cryptography(self) -> bool:
+        """Toggle interactive cryptography & modular arithmetic simulator on LessonBoard."""
+        is_visible = self._scene.toggle_cryptography()
+        self._status.showMessage(
+            f"Mật mã học RSA: {'Hiển thị (Ctrl+Alt+C)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_gravitational_orbits(self) -> bool:
+        """Toggle interactive gravitational orbits & Lagrange points simulator on LessonBoard."""
+        is_visible = self._scene.toggle_gravitational_orbits()
+        self._status.showMessage(
+            f"Quỹ đạo hấp dẫn & Lagrange: {'Hiển thị (Ctrl+Alt+G)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_spacetime_relativity(self) -> bool:
+        """Toggle interactive Special Relativity Minkowski Spacetime simulator on LessonBoard."""
+        is_visible = self._scene.toggle_spacetime_relativity()
+        self._status.showMessage(
+            f"Không-thời gian Minkowski: {'Hiển thị (Ctrl+Alt+M)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_young_interference(self) -> bool:
+        """Toggle interactive Wave Optics & Young's Double-Slit simulator on LessonBoard."""
+        is_visible = self._scene.toggle_young_interference()
+        self._status.showMessage(
+            f"Giao thoa sóng khe Young: {'Hiển thị (Ctrl+Alt+Y)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_rlc_circuit(self) -> bool:
+        """Toggle interactive AC Series RLC Circuit & Phasor simulator on LessonBoard."""
+        is_visible = self._scene.toggle_rlc_circuit()
+        self._status.showMessage(
+            f"Mạch RLC xoay chiều & Fresnel: {'Hiển thị (Ctrl+Alt+E)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_thin_lens(self) -> bool:
+        """Toggle interactive Geometric Optics Thin Lens & Optical Bench simulator on LessonBoard."""
+        is_visible = self._scene.toggle_thin_lens()
+        self._status.showMessage(
+            f"Thấu kính mỏng & Băng quang học: {'Hiển thị (Ctrl+Alt+O)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_photoelectric_effect(self) -> bool:
+        """Toggle interactive Modern Physics Photoelectric Effect simulator on LessonBoard."""
+        is_visible = self._scene.toggle_photoelectric_effect()
+        self._status.showMessage(
+            f"Hiệu ứng Quang điện & Thuyết Lượng tử: {'Hiển thị (Ctrl+Alt+P)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_carnot_engine(self) -> bool:
+        """Toggle interactive Thermodynamics Carnot Heat Engine simulator on LessonBoard."""
+        is_visible = self._scene.toggle_carnot_engine()
+        self._status.showMessage(
+            f"Động cơ nhiệt Carnot (PV - TS): {'Hiển thị (Ctrl+Alt+T)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_bohr_atom(self) -> bool:
+        """Toggle interactive Quantum Physics Bohr Atom simulator on LessonBoard."""
+        is_visible = self._scene.toggle_bohr_atom()
+        self._status.showMessage(
+            f"Mô hình Nguyên tử Bohr: {'Hiển thị (Ctrl+Alt+B)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_automata(self) -> bool:
+        """Toggle interactive Computer Science Finite State Machine (Automata) simulator on LessonBoard."""
+        is_visible = self._scene.toggle_automata()
+        self._status.showMessage(
+            f"Máy trạng thái hữu hạn & Automata: {'Hiển thị (Ctrl+Alt+A)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_sorting(self) -> bool:
+        """Toggle interactive Computer Science Sorting Algorithm visualizer on LessonBoard."""
+        is_visible = self._scene.toggle_sorting()
+        self._status.showMessage(
+            f"Thuật toán sắp xếp & Big-O: {'Hiển thị (Ctrl+Alt+S)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_punnett_genetics(self) -> bool:
+        """Toggle interactive Biology Mendel Genetics & Punnett Square visualizer on LessonBoard."""
+        is_visible = self._scene.toggle_punnett_genetics()
+        self._status.showMessage(
+            f"Di truyền Mendel & Khung Punnett: {'Hiển thị (Ctrl+Alt+G)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_organic_chemistry(self) -> bool:
+        """Toggle interactive Organic Chemistry Isomer simulator on LessonBoard."""
+        is_visible = self._scene.toggle_organic_chemistry()
+        self._status.showMessage(
+            f"Đồng phân Hóa học Hữu cơ: {'Hiển thị (Ctrl+Alt+H)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_fluid_venturi(self) -> bool:
+        """Toggle interactive Fluid Dynamics Venturi simulator on LessonBoard."""
+        is_visible = self._scene.toggle_fluid_venturi()
+        self._status.showMessage(
+            f"Cơ học chất lưu Bernoulli: {'Hiển thị (Ctrl+Alt+F)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_binary_tree(self) -> bool:
+        """Toggle interactive Binary Tree & Huffman simulator on LessonBoard."""
+        is_visible = self._scene.toggle_binary_tree()
+        self._status.showMessage(
+            f"Cây nhị phân & Huffman: {'Hiển thị (Ctrl+Alt+U)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_electrochemistry(self) -> bool:
+        """Toggle interactive Electrochemistry & Electrolysis simulator on LessonBoard."""
+        is_visible = self._scene.toggle_electrochemistry()
+        self._status.showMessage(
+            f"Điện hóa & Điện phân Nernst: {'Hiển thị (Ctrl+Alt+E)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_circular_motion(self) -> bool:
+        """Toggle interactive Circular Motion simulator on LessonBoard."""
+        is_visible = self._scene.toggle_circular_motion()
+        self._status.showMessage(
+            f"Chuyển động tròn đều: {'Hiển thị (Ctrl+Alt+C)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_ph_titration(self) -> bool:
+        """Toggle interactive pH Titration simulator on LessonBoard."""
+        is_visible = self._scene.toggle_ph_titration()
+        self._status.showMessage(
+            f"Chuẩn độ Axit - Bazơ & Đường cong pH: {'Hiển thị (Ctrl+Alt+I)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_electromagnetic_induction(self) -> bool:
+        """Toggle interactive Electromagnetic Induction simulator on LessonBoard."""
+        is_visible = self._scene.toggle_electromagnetic_induction()
+        self._status.showMessage(
+            f"Cảm ứng điện từ & Định luật Faraday: {'Hiển thị (Ctrl+Alt+M)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_gcms(self) -> bool:
+        """Toggle interactive GC-MS simulator on LessonBoard."""
+        is_visible = self._scene.toggle_gcms()
+        status_msg = "Sắc ký khí & Khối phổ GC-MS: " + ("Hiển thị (Ctrl+Alt+Y)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_photosynthesis(self) -> bool:
+        """Toggle interactive Photosynthesis simulator on LessonBoard."""
+        is_visible = self._scene.toggle_photosynthesis()
+        status_msg = "Quang hợp & Chu trình Calvin: " + ("Hiển thị (Ctrl+Alt+Q)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_projectile_motion(self) -> bool:
+        """Toggle interactive Projectile Motion simulator on LessonBoard."""
+        is_visible = self._scene.toggle_projectile_motion()
+        status_msg = "Chuyển động ném & Động học 2D: " + ("Hiển thị (Ctrl+Alt+K)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_periodic_table(self) -> bool:
+        """Toggle interactive Periodic Table simulator on LessonBoard."""
+        is_visible = self._scene.toggle_periodic_table()
+        status_msg = "Bảng tuần hoàn nguyên tố: " + ("Hiển thị (Ctrl+Alt+J)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_cellular_respiration(self) -> bool:
+        """Toggle interactive Cellular Respiration & ETC simulator on LessonBoard."""
+        is_visible = self._scene.toggle_cellular_respiration()
+        status_msg = "Hô hấp tế bào & ETC: " + ("Hiển thị (Ctrl+Alt+Z)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_protein_folding(self) -> bool:
+        """Toggle interactive Protein Folding & Ramachandran simulator on LessonBoard."""
+        is_visible = self._scene.toggle_protein_folding()
+        status_msg = "Cấu trúc Protein & Ramachandran: " + ("Hiển thị (Ctrl+Alt+X)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_mlp_backprop(self) -> bool:
+        """Toggle interactive MLP Backprop simulator on LessonBoard."""
+        is_visible = self._scene.toggle_mlp_backprop()
+        status_msg = "Mạng nơ-ron MLP & Backpropagation: " + ("Hiển thị (Ctrl+Alt+L)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_max_flow(self) -> bool:
+        """Toggle interactive Max Flow Network simulator on LessonBoard."""
+        is_visible = self._scene.toggle_max_flow()
+        status_msg = "Luồng cực đại & Min-Cut: " + ("Hiển thị (Ctrl+Alt+1)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_oxyz_geometry(self) -> bool:
+        """Toggle interactive 3D Oxyz Geometry simulator on LessonBoard."""
+        is_visible = self._scene.toggle_oxyz_geometry()
+        status_msg = "Hình học không gian Oxyz: " + ("Hiển thị (Ctrl+Alt+2)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_semiconductor_diode(self) -> bool:
+        """Toggle interactive Semiconductor P-N Diode simulator on LessonBoard."""
+        is_visible = self._scene.toggle_semiconductor_diode()
+        status_msg = "Bán dẫn P-N & Điốt Shockley: " + ("Hiển thị (Ctrl+Alt+3)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_nuclear_reactions(self) -> bool:
+        """Toggle interactive Nuclear Physics & Reactions simulator on LessonBoard."""
+        is_visible = self._scene.toggle_nuclear_reactions()
+        status_msg = "Vật lý Hạt nhân & Năng lượng liên kết: " + ("Hiển thị (Ctrl+Alt+4)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_doppler_effect(self) -> bool:
+        """Toggle interactive Doppler Effect & Mach Cone simulator on LessonBoard."""
+        is_visible = self._scene.toggle_doppler_effect()
+        status_msg = "Hiệu ứng Doppler & Nón sóng Mach: " + ("Hiển thị (Ctrl+Alt+5)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_red_black_tree(self) -> bool:
+        """Toggle interactive Red-Black Tree simulator on LessonBoard."""
+        is_visible = self._scene.toggle_red_black_tree()
+        status_msg = "Cây tự cân bằng Đỏ-Đen: " + ("Hiển thị (Ctrl+Alt+6)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_millikan_oil_drop(self) -> bool:
+        """Toggle interactive Millikan Oil Drop simulator on LessonBoard."""
+        is_visible = self._scene.toggle_millikan_oil_drop()
+        status_msg = "Giọt dầu Millikan & Điện tích nguyên tố: " + ("Hiển thị (Ctrl+Alt+7)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_quantum_well(self) -> bool:
+        """Toggle interactive Quantum Well & Particle in a Box simulator on LessonBoard."""
+        is_visible = self._scene.toggle_quantum_well()
+        status_msg = "Giếng lượng tử & Sóng Schrödinger: " + ("Hiển thị (Ctrl+Alt+8)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_hohmann_transfer(self) -> bool:
+        """Toggle interactive Hohmann Transfer Orbit simulator on LessonBoard."""
+        is_visible = self._scene.toggle_hohmann_transfer()
+        status_msg = "Cơ học Thiên thể & Chuyển quỹ đạo Hohmann: " + ("Hiển thị (Ctrl+Alt+9)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_photoelectric_effect(self) -> bool:
+        """Toggle interactive Photoelectric Effect simulator on LessonBoard."""
+        is_visible = self._scene.toggle_photoelectric_effect()
+        status_msg = "Hiện tượng Quang điện Ngoài: " + ("Hiển thị (Ctrl+Alt+0)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_punnett_genetics(self) -> bool:
+        """Toggle interactive Punnett Genetics simulator on LessonBoard."""
+        is_visible = self._scene.toggle_punnett_genetics()
+        status_msg = "Di truyền Mendel & Khung Punnett: " + ("Hiển thị (Ctrl+Shift+G)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_reaction_kinetics(self) -> bool:
+        """Toggle interactive Reaction Kinetics simulator on LessonBoard."""
+        is_visible = self._scene.toggle_reaction_kinetics()
+        status_msg = "Động Hóa học & Định luật Arrhenius: " + ("Hiển thị (Ctrl+Shift+K)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_calculus_taylor(self) -> bool:
+        """Toggle interactive Riemann Calculus & Taylor simulator on LessonBoard."""
+        is_visible = self._scene.toggle_calculus_taylor()
+        status_msg = "Tích phân Riemann & Chuỗi Taylor: " + ("Hiển thị (Ctrl+Shift+R)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_michelson_interferometer(self) -> bool:
+        """Toggle interactive Michelson Interferometer & LIGO simulator on LessonBoard."""
+        is_visible = self._scene.toggle_michelson_interferometer()
+        status_msg = "Giao thoa kế Michelson & LIGO: " + ("Hiển thị (Ctrl+Shift+M)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_huffman_coding(self) -> bool:
+        """Toggle interactive Huffman Coding & Shannon Entropy simulator on LessonBoard."""
+        is_visible = self._scene.toggle_huffman_coding()
+        status_msg = "Mã hóa Huffman & Entropy Shannon: " + ("Hiển thị (Ctrl+Shift+H)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_action_potential(self) -> bool:
+        """Toggle interactive Hodgkin-Huxley Action Potential simulator on LessonBoard."""
+        is_visible = self._scene.toggle_action_potential()
+        status_msg = "Điện thế Hoạt động Hodgkin-Huxley: " + ("Hiển thị (Ctrl+Shift+P)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_cyclotron(self) -> bool:
+        """Toggle interactive Cyclotron particle accelerator simulator on LessonBoard."""
+        is_visible = self._scene.toggle_cyclotron()
+        status_msg = "Máy gia tốc Cyclotron & Synchro: " + ("Hiển thị (Ctrl+Alt+C)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_aho_corasick(self) -> bool:
+        """Toggle interactive Aho-Corasick multi-pattern automaton simulator on LessonBoard."""
+        is_visible = self._scene.toggle_aho_corasick()
+        status_msg = "Mô phỏng Otomat Aho-Corasick: " + ("Hiển thị (Ctrl+Alt+A)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_phase_diagram(self) -> bool:
+        """Toggle interactive Thermodynamics P-T phase diagram simulator on LessonBoard."""
+        is_visible = self._scene.toggle_phase_diagram()
+        status_msg = "Giản đồ Pha P-T & Clausius-Clapeyron: " + ("Hiển thị (Ctrl+Alt+P)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_em_wave(self) -> bool:
+        """Toggle interactive Maxwell's electromagnetic wave simulator on LessonBoard."""
+        is_visible = self._scene.toggle_em_wave()
+        status_msg = "Sóng Điện từ Maxwell & Vectơ Poynting: " + ("Hiển thị (Ctrl+Alt+E)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_hardy_weinberg(self) -> bool:
+        """Toggle interactive Hardy-Weinberg population genetics simulator on LessonBoard."""
+        is_visible = self._scene.toggle_hardy_weinberg()
+        status_msg = "Cân bằng Hardy-Weinberg: " + ("Hiển thị (Ctrl+Alt+H)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_fft(self) -> bool:
+        """Toggle interactive Cooley-Tukey Fast Fourier Transform (FFT) simulator on LessonBoard."""
+        is_visible = self._scene.toggle_fft()
+        status_msg = "Phân tích Phổ FFT: " + ("Hiển thị (Ctrl+Alt+F)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_fabry_perot(self) -> bool:
+        """Toggle interactive Fabry-Perot Interferometer & Cavity Resonator simulator on LessonBoard."""
+        is_visible = self._scene.toggle_fabry_perot()
+        status_msg = "Giao thoa kế Fabry-Pérot: " + ("Hiển thị (Ctrl+Alt+O)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_hplc(self) -> bool:
+        """Toggle interactive HPLC & Van Deemter simulator on LessonBoard."""
+        is_visible = self._scene.toggle_hplc()
+        status_msg = "Sắc ký Lỏng HPLC: " + ("Hiển thị (Ctrl+Alt+L)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_photoelectric(self) -> bool:
+        """Toggle interactive Photoelectric Effect simulator on LessonBoard."""
+        is_visible = self._scene.toggle_photoelectric()
+        status_msg = "Hiệu ứng Quang điện Einstein: " + ("Hiển thị (Ctrl+Alt+Q)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_pcr(self) -> bool:
+        """Toggle interactive PCR & Gel Electrophoresis simulator on LessonBoard."""
+        is_visible = self._scene.toggle_pcr()
+        status_msg = "Phản ứng Chuỗi PCR & Điện di: " + ("Hiển thị (Ctrl+Alt+R)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_thin_lens(self) -> bool:
+        """Toggle interactive Thin Lens Systems & Geometrical Optics simulator on LessonBoard."""
+        is_visible = self._scene.toggle_thin_lens()
+        status_msg = "Hệ Thấu kính Mỏng: " + ("Hiển thị (Ctrl+Alt+T)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_bragg_diffraction(self) -> bool:
+        """Toggle interactive Bragg's Law & XRD Crystallography simulator on LessonBoard."""
+        is_visible = self._scene.toggle_bragg_diffraction()
+        status_msg = "Nhiễu xạ Tia X Bragg XRD: " + ("Hiển thị (Ctrl+Alt+Shift+B)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_buffer_system(self) -> bool:
+        """Toggle interactive Acid-Base Buffer Systems & Van Slyke Capacity simulator on LessonBoard."""
+        is_visible = self._scene.toggle_buffer_system()
+        status_msg = "Hệ Đệm Axit-Bazơ & Van Slyke: " + ("Hiển thị (Ctrl+Alt+Shift+H)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_stern_gerlach(self) -> bool:
+        """Toggle interactive Stern-Gerlach Experiment & Spin 1/2 simulator on LessonBoard."""
+        is_visible = self._scene.toggle_stern_gerlach()
+        status_msg = "Thí nghiệm Stern-Gerlach & Spin 1/2: " + ("Hiển thị (Ctrl+Alt+Shift+S)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_enzyme_kinetics(self) -> bool:
+        """Toggle interactive Michaelis-Menten Enzyme Kinetics & Lineweaver-Burk simulator on LessonBoard."""
+        is_visible = self._scene.toggle_enzyme_kinetics()
+        status_msg = "Động học Enzyme Michaelis-Menten: " + ("Hiển thị (Ctrl+Alt+Shift+E)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_poiseuille_flow(self) -> bool:
+        """Toggle interactive Hagen-Poiseuille Viscous Tube Flow & Reynolds simulator on LessonBoard."""
+        is_visible = self._scene.toggle_poiseuille_flow()
+        status_msg = "Dòng Chảy Nhớt Hagen-Poiseuille: " + ("Hiển thị (Ctrl+Alt+Shift+P)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_cosmic_expansion(self) -> bool:
+        """Toggle interactive Hubble-Lemaître Law & Cosmic Expansion simulator on LessonBoard."""
+        is_visible = self._scene.toggle_cosmic_expansion()
+        status_msg = "Định Luật Hubble & Vũ Trụ Giãn Nở: " + ("Hiển thị (Ctrl+Alt+Shift+U)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_seismic_waves(self) -> bool:
+        """Toggle interactive Seismic Waves & Epicenter Triangulation simulator on LessonBoard."""
+        is_visible = self._scene.toggle_seismic_waves()
+        status_msg = "Sóng Địa Chấn & Tâm Chấn: " + ("Hiển thị (Ctrl+Alt+Shift+Q)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_mass_spectrometer(self) -> bool:
+        """Toggle interactive Mass Spectrometer & Wien Filter simulator on LessonBoard."""
+        is_visible = self._scene.toggle_mass_spectrometer()
+        status_msg = "Máy Khối Phổ & Bộ Lọc Wien: " + ("Hiển thị (Ctrl+Alt+Shift+M)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_spectrophotometry(self) -> bool:
+        """Toggle interactive Spectrophotometry & Beer-Lambert Law simulator on LessonBoard."""
+        is_visible = self._scene.toggle_spectrophotometry()
+        status_msg = "Quang Phổ Hấp Thụ Beer-Lambert: " + ("Hiển thị (Ctrl+Alt+Shift+L)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_hall_effect(self) -> bool:
+        """Toggle interactive Hall Effect & Semiconductor Lorentz Drift simulator on LessonBoard."""
+        is_visible = self._scene.toggle_hall_effect()
+        status_msg = "Hiệu Ứng Hall & Bán Dẫn: " + ("Hiển thị (Ctrl+Alt+Shift+F)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_radiation_shielding(self) -> bool:
+        """Toggle interactive Nuclear Radiation Shielding simulator on LessonBoard."""
+        is_visible = self._scene.toggle_radiation_shielding()
+        status_msg = "Che Chắn Phóng Xạ & HVL: " + ("Hiển thị (Ctrl+Alt+Shift+R)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_maxwell_boltzmann(self) -> bool:
+        """Toggle interactive Maxwell-Boltzmann Distribution simulator on LessonBoard."""
+        is_visible = self._scene.toggle_maxwell_boltzmann()
+        status_msg = "Phân Bố Vận Tốc Maxwell-Boltzmann: " + ("Hiển thị (Ctrl+Alt+Shift+X)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_molecular_orbital(self) -> bool:
+        """Toggle interactive Molecular Orbital & Hybridization simulator on LessonBoard."""
+        is_visible = self._scene.toggle_molecular_orbital()
+        status_msg = "Obitan Phân Tử MO-LCAO: " + ("Hiển thị (Ctrl+Alt+Shift+O)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_rlc_resonance(self) -> bool:
+        """Toggle interactive RLC AC Resonance & Phasor simulator on LessonBoard."""
+        is_visible = self._scene.toggle_rlc_resonance()
+        status_msg = "Cộng Hưởng Điện RLC & Phasor: " + ("Hiển thị (Ctrl+Alt+Shift+C)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_stress_strain(self) -> bool:
+        """Toggle interactive Stress-Strain Curve & Tensile Test simulator on LessonBoard."""
+        is_visible = self._scene.toggle_stress_strain()
+        status_msg = "Đường Cong Ứng Suất - Biến Dạng: " + ("Hiển thị (Ctrl+Alt+Shift+T)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_kepler_orbits(self) -> bool:
+        """Toggle interactive Kepler Gravitational Orbits simulator on LessonBoard."""
+        is_visible = self._scene.toggle_kepler_orbits()
+        status_msg = "Quỹ Đạo Hấp Dẫn & Định Luật Kepler: " + ("Hiển thị (Ctrl+Alt+Shift+K)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_logic_circuits(self) -> bool:
+        """Toggle interactive Digital Logic Circuits simulator on LessonBoard."""
+        is_visible = self._scene.toggle_logic_circuits()
+        status_msg = "Điện Tử Số & Cổng Logic: " + ("Hiển thị (Ctrl+Alt+Shift+G)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+
+
+
+
+
+
+    @Slot()
+    def _on_toggle_airfoil_aerodynamics(self) -> bool:
+        """Toggle interactive Airfoil Aerodynamics simulator on LessonBoard."""
+        is_visible = self._scene.toggle_airfoil_aerodynamics()
+        status_msg = "Khí động học cánh NACA: " + ("Hiển thị (Ctrl+Alt+V)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_cnn_visualizer(self) -> bool:
+        """Toggle interactive CNN 2D Convolution simulator on LessonBoard."""
+        is_visible = self._scene.toggle_cnn_visualizer()
+        status_msg = "Mạng nơ-ron CNN & Tích chập 2D: " + ("Hiển thị (Ctrl+Alt+N)" if is_visible else "Đã ẩn")
+        self._status.showMessage(status_msg, 2000)
+        return is_visible
+
+    @Slot()
+    def _on_toggle_dynamic_programming(self) -> bool:
+        """Toggle interactive Dynamic Programming simulator on LessonBoard."""
+        is_visible = self._scene.toggle_dynamic_programming()
+        self._status.showMessage(
+            f"Quy hoạch động & Bảng trạng thái: {'Hiển thị (Ctrl+Alt+D)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

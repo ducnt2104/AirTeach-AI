@@ -85,8 +85,10 @@ class CameraWidget(QLabel):
             h, w, ch = rgb.shape
             qi = QImage(rgb.data, w, h, w * ch, QImage.Format.Format_RGB888).copy()
             pixmap = QPixmap.fromImage(qi)
+            target_w = max(self._MIN_W, self.width())
+            target_h = max(self._MIN_H, self.height())
             scaled = pixmap.scaled(
-                self.width(), self.height(),
+                target_w, target_h,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )

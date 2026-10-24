@@ -746,6 +746,46 @@ class TestHandGestureFSM:
         assert len(transitions) >= 1, "No state change callbacks fired"
         assert transitions[-1][1] == GestureState.DRAW
 
+    def test_swipe_right_gesture(self, fsm):
+        """Moving open palm horizontally rightward at high velocity triggers SWIPE_RIGHT."""
+        xs = [0.20, 0.35, 0.50, 0.70]
+        ts = [0.0, 40.0, 80.0, 120.0]
+        states = []
+        for x, t in zip(xs, ts):
+            lm = _make_synthetic_landmarks(
+                index_tip_y=0.15, index_pip_y=0.40,
+                middle_tip_y=0.15, middle_pip_y=0.40,
+                ring_tip_y=0.15, ring_pip_y=0.40,
+                pinky_tip_y=0.15, pinky_pip_y=0.40,
+                thumb_tip_xy=(x - 0.20, 0.45),
+                wrist_xy=(x, 0.80),
+                middle_mcp_xy=(x, 0.55),
+            )
+            state, _, _ = fsm.process_landmarks(lm, 0.95, t)
+            states.append(state)
+
+        assert GestureState.SWIPE_RIGHT in states, f"Expected SWIPE_RIGHT, got {states}"
+
+    def test_swipe_left_gesture(self, fsm):
+        """Moving open palm horizontally leftward at high velocity triggers SWIPE_LEFT."""
+        xs = [0.80, 0.65, 0.50, 0.30]
+        ts = [1000.0, 1040.0, 1080.0, 1120.0]
+        states = []
+        for x, t in zip(xs, ts):
+            lm = _make_synthetic_landmarks(
+                index_tip_y=0.15, index_pip_y=0.40,
+                middle_tip_y=0.15, middle_pip_y=0.40,
+                ring_tip_y=0.15, ring_pip_y=0.40,
+                pinky_tip_y=0.15, pinky_pip_y=0.40,
+                thumb_tip_xy=(x + 0.20, 0.45),
+                wrist_xy=(x, 0.80),
+                middle_mcp_xy=(x, 0.55),
+            )
+            state, _, _ = fsm.process_landmarks(lm, 0.95, t)
+            states.append(state)
+
+        assert GestureState.SWIPE_LEFT in states, f"Expected SWIPE_LEFT, got {states}"
+
     def test_confirm_hold_timer(self, fsm):
         """is_confirm_held() must return True only after hold_ms elapsed."""
         lm_thumbs_up = _make_synthetic_landmarks(

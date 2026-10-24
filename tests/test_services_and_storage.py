@@ -1152,3 +1152,29 @@ class TestGeometricMathParser:
         assert out.confidence >= 0.8
         assert out.render_image_rgba is not None
 
+
+
+class TestApplicationCommandLine:
+    """Verify application CLI entry point flags (--version, --help, --check)."""
+
+    def test_cli_version_flag(self):
+        import subprocess
+        import sys
+        proc = subprocess.run([sys.executable, "main.py", "--version"], capture_output=True, text=True)
+        assert proc.returncode == 0
+        assert "AirTeach AI v2.5.0-Release" in proc.stdout
+
+    def test_cli_help_flag(self):
+        import subprocess
+        import sys
+        proc = subprocess.run([sys.executable, "main.py", "--help"], capture_output=True, text=True)
+        assert proc.returncode == 0
+        assert "AirTeach AI" in proc.stdout
+        assert "--check" in proc.stdout
+
+    def test_cli_check_flag(self):
+        import subprocess
+        import sys
+        proc = subprocess.run([sys.executable, "main.py", "--check"], capture_output=True, text=True)
+        assert proc.returncode == 0
+        assert "All systems operational. Ready to launch." in proc.stdout

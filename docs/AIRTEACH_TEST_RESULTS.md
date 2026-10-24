@@ -5,7 +5,7 @@
 **Thời điểm thực thi:** 23/10/2026 - 24/10/2026  
 **Môi trường thực thi:** Microsoft Windows 11 (AMD64), Python 3.15.0rc1, PySide6 6.12.0, OpenCV 5.0.0.93, MediaPipe 1.1.1, SciPy 1.18.1, Keyring 25.7.0  
 **Khung kiểm thử:** `pytest` 9.1.1 kết hợp `pytest-qt` 4.5.0  
-**Kết quả chung cuộc:** **602 / 602 BÀI TEST VƯỢT QUA THÀNH CÔNG (100% PASSED) TRÊN 42 BỘ KIỂM THỬ**
+**Kết quả chung cuộc:** **689 / 689 BÀI TEST VƯỢT QUA THÀNH CÔNG (100% PASSED) TRÊN 53 BỘ KIỂM THỬ**
 
 ---
 
@@ -55,7 +55,18 @@
 | **SUITE-40** | `tests/test_interactive_standing_wave.py` | Sóng cơ & Sóng dừng cộng hưởng (Interactive Standing Wave), điều kiện 2 đầu cố định $L=k(\lambda/2)$ & 1 đầu tự do, nút N / bụng B, bao sóng đối xứng, hoạt họa 40 FPS, dập vector | 8 | **PASSED** | 7.83s | **100%** |
 | **SUITE-41** | `tests/test_interactive_vsepr_geometry.py` | Mô phỏng 3D hình học phân tử VSEPR & Lai hóa orbital (Interactive 3D VSEPR Geometry), xoay 3D Euler Pitch/Yaw, 8 mô hình AX₂-AX₆, thùy e tự do, dập vector | 7 | **PASSED** | 8.74s | **100%** |
 | **SUITE-42** | `tests/test_interactive_dna_replication.py` | Tự nhân đôi DNA & Nguyên tắc bổ sung (Interactive DNA Replication), $A=T$ (2 lk H), $G \equiv C$ (3 lk H), chạc ba tái bản, đột biến điểm, dập vector | 8 | **PASSED** | 7.81s | **100%** |
-| **TỔNG KẾT** | **Toàn Bộ Hệ Thống** | **42 Bộ kiểm thử chuyên sâu toàn diện** | **602** | **ALL PASSED** | **395.0s** | **100.0%** |
+| **SUITE-43** | `tests/test_interactive_kepler_orbit.py` | Mô phỏng 3 Định luật Kepler & Chuyển động thiên thể (Interactive Kepler Orbit Item), quỹ đạo Elip $r(\theta)=\frac{a(1-e^2)}{1+e\cos\theta}$, quét diện tích $S_1=S_2$, Vis-Viva $v(\theta)$, 4 preset hành tinh, dập vector | 8 | **PASSED** | 4.68s | **100%** |
+| **SUITE-44** | `tests/test_interactive_graph_pathfinding.py` | Lý thuyết đồ thị & Đường đi ngắn nhất Dijkstra / A* (Interactive Graph Pathfinding), đồ thị có trọng số $G=(V, E)$, Priority Queue Min-Heap, hàm $f=g+h$, kéo thả đỉnh, dập vector | 8 | **PASSED** | 2.21s | **100%** |
+| **SUITE-45** | `tests/test_interactive_electric_field.py` | Đường sức điện trường & Định luật Coulomb tĩnh điện (Interactive Electric Field), RK4 streamline integration, đa điện tích điểm $+/-$, đầu dò vector $E(P)$ & điện thế $V(P)$, dập vector | 8 | **PASSED** | 2.35s | **100%** |
+| **SUITE-46** | `tests/test_interactive_lorentz_force.py` | Mô phỏng Từ trường & Lực từ Lorentz làm lệch hạt mang điện (Interactive Lorentz Force), bảo toàn động năng $W=0$, bán kính Cyclotron $R=mv/(qB)$, Boris rotation solver, đảo chiều B-field $\otimes/\odot$, dập vector | 8 | **PASSED** | 3.12s | **100%** |
+| **SUITE-47** | `tests/test_interactive_trophic_web.py` | Lưới thức ăn sinh thái & Động học quần thể Lotka-Volterra (Interactive Trophic Web Item), tích phân số RK4, bảo toàn $V(x,y)$, sốc sinh thái (hạn hán, dịch bệnh), kim tự tháp Lindeman 10%, dập vector | 8 | **PASSED** | 1.64s | **100%** |
+| **SUITE-48** | `tests/test_interactive_gas_laws.py` | Định luật khí lý tưởng Clapeyron & Phân bố vận tốc Maxwell-Boltzmann (Interactive Gas Laws), piston di động, quá trình Đẳng nhiệt/Đẳng áp/Đẳng tích/Tự do, khí He/N₂/Ar, đun nóng/làm lạnh, dập vector | 8 | **PASSED** | 1.42s | **100%** |
+| **SUITE-49** | `tests/test_interactive_acid_base_titration.py` | Chuẩn độ Axit - Bazơ & Đường cong pH đệm Henderson-Hasselbalch (Interactive Titration), Buret thủy tinh nhỏ giọt, bình tam giác đổi màu chỉ thị, đạo hàm dpH/dV, dập vector | 7 | **PASSED** | 1.68s | **100%** |
+| **SUITE-50** | `tests/test_interactive_harmonic_oscillator.py` | Dao động điều hòa, Tắt dần & Cộng hưởng cơ học (Interactive Harmonic Oscillator), tích phân số RK4, lò xo xoắn ốc động, kéo vật air pinch, bao sóng tắt dần, cộng hưởng Lorentzian, dập vector | 8 | **PASSED** | 1.45s | **100%** |
+| **SUITE-51** | `tests/test_interactive_radioactive_decay.py` | Định luật phóng xạ hạt nhân & Chuỗi phân rã (Interactive Radioactive Decay), ma trận 100 hạt Monte Carlo, chớp phát xạ alpha/beta/gamma, máy đếm Geiger, tuổi mẫu vật, dập vector | 8 | **PASSED** | 1.47s | **100%** |
+| **SUITE-52** | `tests/test_interactive_chemical_kinetics.py` | Động hóa học, Năng lượng hoạt hóa Arrhenius & Cân bằng Le Chatelier (Interactive Chemical Kinetics), sơ đồ thế năng Ea/ΔH, xúc tác, đồ thị nồng độ [A]/[C], dập vector | 8 | **PASSED** | 1.56s | **100%** |
+| **SUITE-53** | `tests/test_interactive_cryptography.py` | Mật mã học RSA & Số học đồng dư (Interactive Cryptography), thuật toán Euclid mở rộng, nghịch đảo modulo, mã hóa/giải mã RSA, Diffie-Hellman, mạng dây cung Cardioid, dập vector | 8 | **PASSED** | 3.67s | **100%** |
+| **TỔNG KẾT** | **Toàn Bộ Hệ Thống** | **53 Bộ kiểm thử chuyên sâu toàn diện** | **689** | **ALL PASSED** | **340.9s** | **100.0%** |
 
 ---
 
@@ -204,4 +215,148 @@
 - `test_point_mutation_and_reset`: Thử nghiệm đột biến điểm `[🧬 Thử đột biến điểm]` (thay thế cặp nucleotit thứ 6), phát hiện sai hỏng cấu trúc và nút `[↺ Khôi phục]` đưa về chuỗi hoang dại ban đầu.
 - `test_touchless_air_gestures`: Hỗ trợ thao tác không chạm: véo tay trượt chạc ba tái bản (Air Drag Fork), vẫy chạm không chạm (Air Tap) vào các nút đột biến, khôi phục và tự nhân đôi.
 - `test_stamp_to_canvas_and_lessonboard`: Dập chuỗi xoắn kép vector lên bảng vẽ `LessonBoard` thông qua `BiologyTools.create_dna_double_helix`.
-- `test_lessonboard_and_main_window_integration`: Tích hợp vòng đời hiển thị trên `LessonBoard` (`show_dna_replication`, `toggle_dna_replication`), phím tắt `Ctrl+Shift+D`, nút thanh công cụ `🧬 Tự nhân đôi DNA` và liên kết menu nổi không chạm.
+
+#### 2.12. Mô Phỏng 3 Định Luật Kepler & Chuyển Động Thiên Thể Thiên Văn Học (`tests/test_interactive_kepler_orbit.py`)
+- `test_kepler_orbit_init_and_properties`: Khởi tạo mô phỏng chuyển động thiên thể hình elip với bán trục lớn $a = 190.0\text{ px}$, tâm sai $e = 0.45$, bán trục bé $b = a\sqrt{1-e^2}$, tiêu cự $c = a \cdot e$, khoảng cách cận nhật $r_p = a(1-e)$ và viễn nhật $r_a = a(1+e)$, vị trí tiêu điểm Mặt Trời $F_1$ và tiêu điểm phụ $F_2$.
+- `test_kepler_polar_equation`: Kiểm chứng phương trình tọa độ cực chính xác của quỹ đạo Kepler $r(\theta) = \frac{a(1-e^2)}{1+e\cos\theta}$:
+  - Tại cận nhật $\theta = 0$: $r = a(1-e) = r_p$.
+  - Tại viễn nhật $\theta = \pi$: $r = a(1+e) = r_a$.
+  - Tại góc vuông $\theta = \pi/2$: $r = a(1-e^2)$ (bán trục thông số $p$).
+- `test_kepler_presets`: Kiểm chứng các giá trị thực tế của hệ Mặt Trời: Trái Đất ($e=0.017$), Sao Hỏa ($e=0.093$), Sao Thủy ($e=0.206$), Sao Chổi Halley ($e=0.800$), và khả năng kẹp biên tâm sai tùy chỉnh $[0.0, 0.85]$.
+- `test_kepler_vis_viva_velocity`: Kiểm chứng phương trình Vis-Viva $v = \sqrt{GM(2/r - 1/a)}$: vận tốc cực đại tại cận nhật $P$ và cực tiểu tại viễn nhật $A$, tỉ số tốc độ $v_p / v_a = \frac{1+e}{1-e}$ đúng chuẩn cơ học thiên thể.
+- `test_kepler_toggle_and_tick`: Bật/tắt chuyển động hành tinh `[▶ Chuyển động]`, bật/tắt diện tích quét bằng nhau $S_1 = S_2$ theo định luật 2 Kepler, tích phân thời gian thực $\frac{d\theta}{dt} = \frac{h}{r^2}$ với $h = \frac{2\pi ab}{T}$.
+- `test_kepler_air_gestures`: Hỗ trợ thao tác không chạm: véo tay điều chỉnh tâm sai tại điểm cận nhật, vẫy chạm không chạm (Air Tap) chọn các hành tinh và bật/tắt hoạt họa.
+- `test_kepler_stamping`: Dập quỹ đạo elip vector sắc nét, Mặt Trời tỏa sáng và thẻ định luật Kepler lên bảng vẽ thông qua `MathTools.create_conic_section`.
+- `test_lesson_board_kepler_integration`: Tích hợp vòng đời hiển thị trên `LessonBoard` (`show_kepler_orbit`, `toggle_kepler_orbit`), phím tắt `Ctrl+Shift+K`, nút thanh công cụ `🪐 Quỹ đạo Kepler` và liên kết menu nổi không chạm.
+
+#### 2.13. Lý Thuyết Đồ Thị & Thuật Toán Tìm Đường Đi Ngắn Nhất Dijkstra / A* (`tests/test_interactive_graph_pathfinding.py`)
+- `test_graph_init_and_properties`: Khởi tạo mô hình đồ thị có trọng số $G = (V, E)$ gồm 7 đỉnh, 12 cạnh, đỉnh xuất phát $A$, đỉnh đích $G$, khởi tạo chi phí ban đầu $g(A) = 0.0$ và $g(V \setminus \{A\}) = \infty$, trạng thái đỉnh xuất phát `OPEN` đưa vào hàng đợi ưu tiên Min-Heap.
+- `test_dijkstra_full_run_optimal_path`: Kiểm chứng thuật toán Dijkstra tìm kiếm chính xác đường đi tối ưu tuyệt đối trên topo mạng `NETWORK_7`: Lộ trình tối ưu $A \to C (2) \to F (4) \to E (3) \to G (3)$ với tổng chi phí ngắn nhất bằng $12.0$, cập nhật trạng thái các đỉnh trên lộ trình thành `PATH` và làm sáng các cạnh tương ứng với viền vàng dạ quang (`#fbbf24`).
+- `test_astar_search_and_heuristic`: Kiểm chứng thuật toán A* Search với hàm đánh giá $f(n) = g(n) + h(n)$ sử dụng khoảng cách Euclid làm heuristic chấp nhận được (admissible), đảm bảo tìm ra lộ trình ngắn nhất trùng khớp với Dijkstra trong khi giảm số đỉnh cần duyệt.
+- `test_step_by_step_execution_and_signals`: Kiểm chứng bộ máy máy trạng thái hữu hạn (FSM) từng bước: mỗi bước lấy đỉnh có $f$ nhỏ nhất ra khỏi Min-Heap, gán nhãn `CURRENT`, duyệt giãn (relax) các đỉnh kề, cập nhật chi phí $g$ và con trỏ cha (parent), phát tín hiệu `step_advanced` và `path_found`.
+- `test_graph_presets_switching`: Chuyển đổi linh hoạt giữa các topo đồ thị mẫu: Mạng 7 đỉnh (DAG), Vòng lục giác 6 đỉnh (Ring - tìm ra lộ trình tối ưu $A \to F \to E \to D$ chi phí 8.0 thay vì $A \to B \to C \to D$ chi phí 9.0), và Cây nhị phân 7 đỉnh (Binary Tree).
+- `test_node_repositioning`: Kéo thả chuột hoặc véo tay không chạm (Air Pinch Drag) di chuyển đỉnh tự do trên bảng vẽ; hệ thống tự động tính toán lại góc kết nối, vị trí nhãn trọng số cạnh và khoảng cách heuristic theo thời gian thực.
+- `test_touchless_air_gestures`: Hỗ trợ thao tác không chạm: véo tay di chuyển đỉnh đồ thị, vẫy chạm không chạm (Air Tap) vào các nút điều khiển (`[▶ Chạy tự động]`, `[⏭ Từng bước]`, `[↺ Đặt lại]`, `[Thuật toán: Dijkstra ↔ A*]`, `[📌 Đóng dấu]`, `[✕]`).
+- `test_stamp_to_canvas_and_lessonboard`: Dập mô hình đồ thị vector sắc nét, nhãn trọng số cạnh, lộ trình vàng tối ưu và thẻ lý thuyết thuật toán lên bảng vẽ `LessonBoard` thông qua `InformaticsTools.create_graph_diagram`.
+- `test_lessonboard_and_main_window_integration`: Tích hợp vòng đời hiển thị trên `LessonBoard` (`show_graph_pathfinding`, `toggle_graph_pathfinding`), phím tắt `Ctrl+Shift+P`, nút thanh công cụ `🕸️ Đồ thị Dijkstra` và liên kết menu nổi không chạm.
+
+#### 2.14. Mô Phỏng Đường Sức Điện Trường & Định Luật Coulomb Tĩnh Điện (`tests/test_interactive_electric_field.py`)
+- `test_electric_field_init_and_properties`: Khởi tạo mô phỏng tĩnh điện Coulomb với cấu hình lưỡng cực điện (Dipole) gồm 2 điện tích điểm: $Q_1 = +1.0\ \mu\text{C}$ tại $(220, 220)$ và $Q_2 = -1.0\ \mu\text{C}$ tại $(440, 220)$, kích hoạt đầu dò vector kiểm tra và tích phân dòng đường sức ban đầu.
+- `test_coulomb_law_superposition_dipole`: Kiểm chứng nguyên lý chồng chất điện trường $\vec{E} = k_e \sum \frac{q_i}{r_i^3} \vec{r}_i$ và điện thế $V = k_e \sum \frac{q_i}{r_i}$ trên lưỡng cực điện:
+  - Tại trung điểm $M(330, 220)$: vector điện trường hướng sang phải về phía điện tích âm ($E_x > 0, E_y = 0$).
+  - Điện thế $V(M) = 0.0\text{ V}$ triệt tiêu hoàn hảo do tính đối xứng của mặt phẳng trung trực.
+- `test_coulomb_law_like_charges_neutral_point`: Kiểm chứng hai điện tích cùng dấu dương ($+1\ \mu\text{C}, +1\ \mu\text{C}$):
+  - Tại trung điểm, hai vector lực điện trường đẩy nhau ngược chiều và triệt tiêu hoàn toàn ($\vec{E} = \vec{0}$, điểm trung hòa điện trường).
+  - Điện thế $V(M) > 0$ do chồng chất dương cùng dấu.
+- `test_rk4_field_lines_computation`: Kiểm chứng thuật toán giải tích số Runge-Kutta bậc 4 (RK4) tích phân đường cong vi phân $\frac{d\vec{r}}{ds} = \frac{\vec{E}}{\|\vec{E}\|}$:
+  - Các đường sức điện xuất phát từ điện tích dương, uốn cong mượt mà theo phương vector điện trường và kết thúc tại điện tích âm hoặc biên mô phỏng.
+  - Mỗi đường cong có tối thiểu $\ge 3$ điểm tọa độ liên tục, không tự cắt nhau.
+- `test_electrostatic_presets_and_inversion`: Kiểm chứng các cấu hình tĩnh điện chuẩn: Lưỡng cực điện (Dipole), Hai điện tích dương ($+/+$), Hai điện tích âm ($-/-$), Tứ cực điện (Quadrupole 4 điện tích xen kẽ), và nút đổi dấu `[± Đổi dấu]` đảo ngược cực tính toàn bộ hệ thống.
+- `test_probe_movement_and_signals`: Đầu dò vector $P(x, y)$ có thể kéo thả di chuyển tự do:
+  - Hiển thị vector mũi tên cường độ điện trường $\vec{E}$ thời gian thực.
+  - Thẻ thông số nổi hiển thị độ lớn $|\vec{E}|$ ($\text{V/m}$) và điện thế $V$ ($\text{V}$), phát tín hiệu `probe_updated`.
+- `test_touchless_air_gestures`: Hỗ trợ thao tác không chạm: véo tay di chuyển hạt điện tích và đầu dò, vẫy chạm không chạm (Air Tap) vào các nút điều khiển (`[🎯 Đầu dò E⃗]`, `[± Đổi dấu]`, `[📌 Đóng dấu]`, `[✕]`, các nút preset).
+- `test_stamp_to_canvas_and_lessonboard`: Dập đường sức điện trường vector, mũi tên định hướng, các hạt điện tích phát sáng và công thức định luật Coulomb lên bảng vẽ `LessonBoard` thông qua `PhysicsTools.create_electric_field_diagram`.
+- `test_lessonboard_and_main_window_integration`: Tích hợp vòng đời hiển thị trên `LessonBoard` (`show_electric_field`, `toggle_electric_field`), phím tắt `Ctrl+Shift+E`, nút thanh công cụ `⚡ Điện trường Coulomb` và liên kết menu nổi không chạm.
+
+#### 2.15. Mô Phỏng Từ Trường & Lực Từ Lorentz Làm Lệch Hạt Mang Điện (`tests/test_interactive_lorentz_force.py`)
+- `test_lorentz_init_and_properties`: Khởi tạo buồng từ trường đồng nhất với hạt electron ($q=-1.0, m=1.0$), vận tốc ban đầu $v_0 = 160.0\text{ px/s}$, cảm ứng từ $B = 1.0\text{ T}$ hướng vào trang giấy ($\otimes$), tính toán bán kính Cyclotron lý thuyết $R = \frac{mv}{|q|B} = 160.0\text{ px}$ và chu kỳ quay $T = \frac{2\pi m}{|q|B} = 2\pi\text{ s}$.
+- `test_lorentz_force_perpendicularity`: Kiểm chứng phương trình định luật Lorentz $\vec{F}_L = q(\vec{v} \times \vec{B})$. Do từ trường vuông góc với mặt phẳng vận tốc ($B_z \neq 0, B_x = B_y = 0$), lực từ Lorentz luôn vuông góc tuyệt đối với vận tốc tức thời: $\vec{F}_L \cdot \vec{v} = 0$, sinh công tức thời $dW = \vec{F}_L \cdot d\vec{r} = 0$.
+- `test_kinetic_energy_conservation`: Kiểm chứng định luật bảo toàn động năng trong từ trường: Sau 60 bước tích phân số liên tục bằng thuật toán quay vận tốc Boris (Boris rotation solver), độ lớn vận tốc $|\vec{v}|$ và động năng $E_k = \frac{1}{2}mv^2$ được bảo toàn chính xác tuyệt đối ở mức sai số máy ($\Delta E_k / E_k < 10^{-12}$), triệt tiêu hoàn toàn hiện tượng năng lượng giả (artificial energy drift) của phương pháp Euler thông thường.
+- `test_particle_types_deflection_and_cyclotron_radius`: Kiểm chứng phản ứng từ của các loại hạt mang điện:
+  - Electron ($e^-$: $q=-1, m=1$): Bán kính nhỏ, quỹ đạo uốn cong ngược chiều kim đồng hồ.
+  - Proton ($p^+$: $q=+1, m=6$): Bán kính lớn gấp 6 lần, uốn cong thuận chiều kim đồng hồ.
+  - Hạt Alpha ($\alpha$: $q=+2, m=12$): Bán kính $R = 6 \cdot R_e$, lệch thuận chiều kim đồng hồ.
+- `test_b_field_direction_reversal`: Đảo chiều vector cảm ứng từ $\vec{B}$ giữa $\otimes$ (Hạt bay vào trong) và $\odot$ (Hạt bay ra ngoài): hướng uốn cong của quỹ đạo hạt tự động đảo chiều $180^\circ$ đúng quy tắc bàn tay trái.
+- `test_play_pause_and_reset`: Thử nghiệm phím bấm tạm dừng `[⏸ Dừng]`, phát tiếp `[▶ Tiếp tục]`, và khôi phục `[↺ Đặt lại]` hạt về vị trí nguồn phát ban đầu.
+- `test_touchless_air_gestures`: Hỗ trợ thao tác không chạm: véo tay di chuyển nguồn phát hạt, vẫy chạm không chạm (Air Tap) vào các nút đổi hạt ($e^-, p^+, \alpha$), đảo chiều từ trường, tăng/giảm cảm ứng từ và vận tốc.
+- `test_stamp_to_canvas_and_lessonboard`: Dập mô hình buồng từ trường vector, ký hiệu $\otimes/\odot$, quỹ đạo tròn hạt, vector vận tốc $\vec{v}$ (xanh lá), vector lực Lorentz $\vec{F}_L$ (đỏ) và thẻ công thức Cyclotron lên bảng vẽ `LessonBoard` thông qua `PhysicsTools.create_lorentz_force_diagram`.
+
+#### 2.16. Lưới Thức Ăn Sinh Thái & Động Học Quần Thể Lotka-Volterra (`tests/test_interactive_trophic_web.py`)
+- `test_trophic_web_init_and_properties`: Khởi tạo hệ sinh thái gồm 4 bậc dinh dưỡng (Sinh vật sản xuất $P$, Sinh vật tiêu thụ bậc 1 $H$, Bậc 2 $C$, Đầu bảng $A$), hệ số Lotka-Volterra chuẩn ($\alpha = 0.80, \beta = 0.02, \gamma = 0.40, \delta = 0.005$), số lượng khởi điểm Thỏ $x_0 = 100.0$, Cáo $y_0 = 30.0$, tính toán chính xác điểm cân bằng bền $x^* = \gamma/\delta = 80.0$, $y^* = \alpha/\beta = 40.0$.
+- `test_lotka_volterra_rk4_dynamics`: Kiểm chứng thuật toán giải tích số vi phân phi tuyến Runge-Kutta bậc 4 (RK4):
+  $$\frac{dx}{dt} = \alpha x - \beta x y, \quad \frac{dy}{dt} = \delta x y - \gamma y$$
+  Hệ thống mô phỏng trơn tru dao động điều hòa tự nhiên lệch pha kinh điển (quần thể thú săn mồi trễ pha $\approx \pi/2$ so với quần thể con mồi), không bị bùng nổ hay tuyệt chủng.
+- `test_conserved_quantity_approximate_invariance`: Kiểm chứng tích phân thứ nhất (hàm Liapunov bất biến) bảo toàn của hệ Lotka-Volterra:
+  $$V(x, y) = \delta x - \gamma \ln(x) + \beta y - \alpha \ln(y) = \text{const}$$
+  Sau nhiều bước tích phân, sai số độ lệch tương đối của $V$ dưới $2\%$.
+- `test_ecological_perturbations_drought_and_disease`: Thử nghiệm các cú sốc sinh thái tương tác:
+  - Hạn hán (`[⚡ Hạn hán]`): Giảm $50\%$ số lượng thực vật và con mồi, kích hoạt cảnh báo vàng và hiển thị chu kỳ hồi phục tự nhiên.
+  - Dịch bệnh (`[🎯 Dịch bệnh]`): Giảm $60\%$ quần thể kẻ săn mồi, kích hoạt hiện tượng bùng nổ dân số con mồi (trophic cascade).
+  - Bổ sung cá thể (`[🌾 +30 Thỏ]`, `[🦊 +20 Cáo]`): Tiêm xung số lượng cá thể vào hệ sinh thái.
+  - Đặt lại (`[🔄 Đặt lại]`): Khôi phục nguyên vẹn trạng thái cân bằng sinh thái ban đầu.
+- `test_parameter_tuning_and_pyramid_toggle`: Tinh chỉnh hệ số sinh sản $\alpha$ và săn mồi $\beta$, bật/tắt thẻ trực quan hóa Kim tự tháp năng lượng sinh thái.
+- `test_touchless_air_gestures`: Hỗ trợ thao tác không chạm: véo tay kéo thả các đỉnh loài sinh vật trong lưới thức ăn để bố trí lại sơ đồ mạng, vẫy chạm không chạm (Air Tap) vào các nút hạn hán, dịch bệnh, kim tự tháp, đóng dấu.
+- `test_stem_tools_create_trophic_pyramid_and_stamping`: Kiểm chứng hàm dựng hình vector `BiologyTools.create_trophic_pyramid` sinh 4 bậc hình thang kim tự tháp Lindeman (100% $\to$ 10% $\to$ 1% $\to$ 0.1%), nhãn năng lượng $\text{kcal/m}^2/\text{năm}$, mũi tên thất thoát nhiệt hô hấp $90\%$, dập chuẩn xác lên `LessonBoard`.
+- `test_lessonboard_and_main_window_integration`: Tích hợp vòng đời hiển thị trên `LessonBoard` (`show_trophic_web`, `toggle_trophic_web`), phím tắt `Ctrl+Shift+U`, nút thanh công cụ `🌿 Lưới thức ăn`, liên kết menu nổi không chạm và loại trừ khỏi vùng tẩy xóa.
+
+#### 2.17. Định Luật Khí Lý Tưởng & Phân Bố Vận Tốc Maxwell-Boltzmann (`tests/test_interactive_gas_laws.py`)
+- `test_gas_laws_init_and_properties`: Khởi tạo xilanh khí lý tưởng với khí Helium ($m=4\text{ u}$), nhiệt độ phòng $T = 300.0\text{ K}$, tỷ lệ thể tích ban đầu $70\%$ ($V = 15.68\text{ L}$), tính toán chính xác áp suất lý thuyết theo phương trình Clapeyron-Mendeleev:
+  $$P = \frac{nRT}{V} = \frac{0.5 \times 8.314 \times 300}{0.01568 \times 1000} \approx 79.5\text{ kPa}$$
+  và vận tốc căn quân phương phân tử $v_{\text{rms}} = \sqrt{\frac{2k_BT}{m}} > 0$.
+- `test_kinetic_particle_step_and_pressure_updates`: Mô phỏng va chạm đàn hồi hoàn hảo của các phân tử khí vi mô với các thành xilanh và piston di động:
+  - Tọa độ tất cả phân tử luôn được giới hạn chặt chẽ trong $[x_{\text{left}}, x_{\text{piston}}] \times [y_{\text{top}}, y_{\text{bot}}]$.
+  - Tích lũy độ biến thiên động lượng $\Delta p = \sum 2m|v_\perp|$ trên các thành chứa làm cơ sở xác định áp suất vĩ mô thực tế, lọc mượt bằng bộ lọc số đáp ứng chuẩn xác áp suất lý thuyết.
+- `test_isothermal_process_boyle_mariotte`: Kiểm chứng quá trình Đẳng nhiệt (Boyle-Mariotte, $T = \text{const}$):
+  - Khi khóa chế độ `ISOTHERMAL`, nhiệt độ $T$ được bảo toàn tuyệt đối khi nén piston từ $0.70 \to 0.40$ ($V \downarrow$).
+  - Tích số $P \cdot V = \text{const}$ ($P_1 V_1 = P_2 V_2$) với sai số $< 0.1\%$, áp suất $P_2 > P_1$ tăng tương ứng với mức độ nén thể tích.
+- `test_isobaric_process_charles`: Kiểm chứng quá trình Đẳng áp (Charles, $P = \text{const}$):
+  - Khi tăng nhiệt độ chất khí từ $300\text{ K} \to 400\text{ K}$, piston tự động giãn nở tăng thể tích xilanh sao cho tỉ số $V/T = \text{const}$ ($V_1/T_1 = V_2/T_2$).
+  - Áp suất $P$ giữ nguyên giá trị không đổi.
+- `test_isochoric_process_gay_lussac`: Kiểm chứng quá trình Đẳng tích (Gay-Lussac, $V = \text{const}$):
+  - Khi khóa chế độ `ISOCHORIC`, vị trí piston được cố định cứng (thể tích $V$ không thể thay đổi).
+  - Tăng nhiệt độ chất khí $\Delta T = +150\text{ K}$ làm áp suất trong bình tăng tỉ lệ thuận: $\frac{P_1}{T_1} = \frac{P_2}{T_2}$ ($P_2 > P_1$).
+- `test_gas_species_switching_and_speeds`: Hoán đổi giữa 3 loại khí: Helium ($m=4$), Nitơ ($m=28$), Argon ($m=40$):
+  - Tốc độ chuyển động nhiệt $v_{\text{rms}}$ của các hạt khí nhẹ (He) nhanh hơn rõ rệt so với khí nặng (Ar), thỏa mãn tỉ số căn bậc hai khối lượng mol: $\frac{v_{\text{rms}}(\text{He})}{v_{\text{rms}}(\text{Ar})} = \sqrt{\frac{M_{\text{Ar}}}{M_{\text{He}}}} = \sqrt{10} \approx 3.162$.
+- `test_touchless_air_gestures`: Hỗ trợ thao tác không chạm: véo tay (Air Pinch Drag) kéo thanh gạt piston để nén/giãn thể tích xilanh khí, vẫy chạm không chạm (Air Tap) vào các nút đun nóng `[🔥 Đun nóng]`, làm mát `[❄️ Làm mát]`, chọn khí mẫu, chuyển chế độ đẳng nhiệt/đẳng áp/đẳng tích và đặt lại.
+- `test_stem_tools_create_gas_chamber_and_stamping`: Kiểm chứng hàm dựng hình vector `ChemistryTools.create_gas_chamber_diagram` sinh đầy đủ xilanh, piston kim loại, đồng hồ đo áp suất có kim chỉ, nhiệt kế thủy ngân có cột chất lỏng đỏ, các hạt phân tử có vệt vector vận tốc và thẻ phương trình $PV=nRT$, dập chuẩn xác lên `LessonBoard`.
+- `test_lessonboard_and_main_window_integration`: Tích hợp vòng đời hiển thị trên `LessonBoard` (`show_gas_laws`, `toggle_gas_laws`), phím tắt `Ctrl+Shift+J`, nút thanh công cụ `🎈 Khí lý tưởng`, liên kết menu nổi không chạm và loại trừ khỏi vùng tẩy xóa.
+
+#### 2.18. Chuẩn Độ Axit - Bazơ & Đường Cong pH Đệm Henderson-Hasselbalch (`tests/test_interactive_acid_base_titration.py`)
+- `test_titration_init_and_properties`: Khởi tạo hệ chuẩn độ phân tích hóa học với axit axetic yếu $CH_3COOH$ ($pK_a = 4.76$, $C_a = 0.10\text{ M}$, $V_a = 25.0\text{ mL}$), dung dịch chuẩn bazơ $NaOH$ ($C_b = 0.10\text{ M}$), tính toán chính xác thể tích tương đương lý thuyết $V_{eq} = \frac{C_a V_a}{C_b} = 25.0\text{ mL}$, pH ban đầu $pH_0 \approx 2.88$, và chỉ thị Phenolphthalein.
+- `test_weak_acid_henderson_hasselbalch_buffer_and_equivalence`: Kiểm chứng các điểm đặc trưng then chốt trên đường cong chuẩn độ axit yếu:
+  - Điểm nửa tương đương (Half-equivalence point, $V = 12.5\text{ mL}$): Nồng độ axit và muối axetat bằng nhau $[CH_3COO^-] = [CH_3COOH]$, phương trình Henderson-Hasselbalch cho kết quả chính xác tuyệt đối $pH = pK_a = 4.76$.
+  - Vùng đệm hóa học (Buffer capacity): Trong khoảng $V \in [10.0, 15.0]\text{ mL}$, pH biến thiên cực kỳ chậm rãi chứng minh khả năng kháng thay đổi pH của hệ đệm.
+  - Điểm tương đương ($V = 25.0\text{ mL}$): Thủy phân muối bazơ yếu $CH_3COONa$ tạo môi trường kiềm nhẹ $pH = 8.73 > 7.00$.
+  - Sau tương đương ($V = 40.0\text{ mL}$): Lượng dư bazơ mạnh $NaOH$ đẩy pH vọt lên vùng kiềm mạnh $pH > 12.0$.
+- `test_strong_acid_equivalence_point_neutral`: Hoán đổi sang hệ axit mạnh ($HCl + NaOH$):
+  - pH ban đầu: $[H^+] = 0.10\text{ M} \implies pH = 1.00$.
+  - Điểm tương đương ($V = 25.0\text{ mL}$): Muối trung tính $NaCl$ không thủy phân cho $pH = 7.00$ chính xác tuyệt đối.
+  - Bước nhảy pH (pH jump) dốc đứng từ $pH \approx 3 \to pH \approx 11$ chỉ trong vài giọt chuẩn độ.
+- `test_first_derivative_peak_detection`: Kiểm chứng đạo hàm bậc nhất giải tích số $\frac{dpH}{dV}$:
+  - Đạt đỉnh cực đại nhọn hoắt tại $V = 25.0\text{ mL}$ ($\frac{dpH}{dV} > 5.0$) so với vùng đệm phẳng ($\frac{dpH}{dV} < 0.2$), xác thực thuật toán dò tìm tự động điểm uốn tương đương.
+- `test_indicator_color_transitions`: Kiểm chứng sự đổi màu của các chất chỉ thị màu axit-bazơ:
+  - Phenolphthalein: Không màu ở môi trường axit/trung tính ($pH < 8.2$) $\to$ hồng cánh sen/đỏ fuchsia rực rỡ ở môi trường bazơ ($pH > 8.2$).
+  - Metyl Da Cam (Methyl Orange): Đỏ ở $pH < 3.1$ $\to$ da cam $\to$ vàng ở $pH > 4.4$.
+  - Chỉ thị vạn năng (Universal Indicator): Biến đổi tuần tự qua 7 sắc cầu vồng theo thang pH chuẩn từ đỏ $\to$ cam $\to$ vàng $\to$ lục $\to$ lam $\to$ tím.
+- `test_touchless_air_gestures`: Hỗ trợ thao tác không chạm: véo tay trượt cột chất lỏng trên buret để điều chỉnh thể tích dung dịch chuẩn thêm vào, vẫy chạm không chạm (Air Tap) vào các nút nhỏ giọt `[💧 +0.5 mL]`, xả nhanh `[💧 +2.0 mL]`, nhỏ tự động `[▶ Nhỏ tự động]`, đổi chỉ thị và đổi hệ axit.
+- `test_stem_tools_create_titration_curve_and_stamping`: Kiểm chứng hàm dựng hình vector `ChemistryTools.create_titration_curve_diagram` sinh đầy đủ giá đỡ buret, buret thủy tinh có vạch chia, khóa van stopcock, bình tam giác Erlenmeyer chứa dung dịch đổi màu, hệ trục tọa độ đường cong chuẩn độ pH, điểm tương đương $E(V_{eq}, pH_{eq})$ và điểm nửa tương đương $pH = pK a$, dập chuẩn xác lên `LessonBoard`.
+- `test_lessonboard_and_main_window_integration`: Tích hợp vòng đời hiển thị trên `LessonBoard` (`show_titration`, `toggle_titration`), phím tắt `Ctrl+Shift+Q`, nút thanh công cụ `🧪 Chuẩn độ pH`, liên kết menu nổi không chạm và loại trừ khỏi vùng tẩy xóa.
+
+#### 2.19. Dao Động Điều Hòa, Tắt Dần & Cộng Hưởng Cơ Học (`tests/test_interactive_harmonic_oscillator.py`)
+- `test_harmonic_oscillator_energy_conservation_shm`: Kiểm chứng tích phân số Runge-Kutta bậc 4 (RK4) giải phương trình $m\ddot{x} + b\dot{x} + kx = F_0\cos(\omega t)$. Trong chế độ dao động điều hòa tự do không ma sát ($\zeta=0$), cơ năng $E = E_k + E_p$ được bảo toàn nghiêm ngặt với sai số dưới 0.1% qua nhiều chu kỳ liên tiếp.
+- `test_damping_regimes_and_envelope`: Kiểm chứng 3 chế độ tắt dần:
+  - Dưới tới hạn ($\zeta < 1.0$): Dao động tắt dần bám sát đường bao mũ $x(t) \le A_0 e^{-\gamma t}$.
+  - Tới hạn ($\zeta = 1.0$): Vật về vị trí cân bằng nhanh nhất mà không đổi chiều dao động.
+  - Quá tới hạn ($\zeta > 1.0$): Dịch chuyển chậm về VTCB do cản lớn.
+- `test_resonance_lorentzian_curve`: Kiểm chứng biên độ dao động cưỡng bức đạt cực đại sắc nhọn khi tần số kích thích tiệm cận tần số riêng $\omega \approx \omega_0 = \sqrt{k/m}$.
+- `test_air_pinch_and_stamping`: Véo tay điều chỉnh độ biến dạng lò xo và dập sơ đồ cơ học lên bảng qua `PhysicsTools.create_harmonic_oscillator_diagram`.
+
+#### 2.20. Định Luật Phóng Xạ & Chuỗi Phân Rã Hạt Nhân (`tests/test_interactive_radioactive_decay.py`)
+- `test_radioactive_decay_law_theory`: Kiểm chứng định luật phân rã phóng xạ $N(t) = N_0 2^{-t/T_{1/2}}$ qua 5 đồng vị phóng xạ thực nghiệm (Carbon-14, Radon-222, Iodine-131, Uranium-238, Cobalt-60).
+- `test_monte_carlo_lattice_simulation`: Tích hợp mạng 100 hạt nhân Monte Carlo rời rạc với xác suất phân rã mỗi chu kỳ $P = 1 - 2^{-\Delta t/T_{1/2}}$, xuất hiện hạt phát xạ $\alpha, \beta^-, \gamma$ và xung máy đếm Geiger-Müller.
+- `test_radiometric_dating_calculator`: Tính toán chính xác tuổi mẫu vật từ tỷ lệ số hạt còn lại: $t = -T_{1/2} \log_2(N/N_0)$.
+- `test_stamping_and_lessonboard_integration`: Dập sơ đồ phóng xạ lên bảng qua `PhysicsTools.create_radioactive_decay_diagram`, phím tắt `Ctrl+Alt+R`, và loại trừ khỏi vùng tẩy xóa.
+
+#### 2.21. Tốc Độ Phản Ứng, Năng Lượng Hoạt Hóa Arrhenius & Cân Bằng Le Chatelier (`tests/test_interactive_chemical_kinetics.py`)
+- `test_chemical_kinetics_rate_equations`: Giải hệ phương trình vi phân tốc độ phản ứng thuận nghịch: $v_f = k_f [A][B], v_r = k_r [C][D]$, tại trạng thái cân bằng $v_f = v_r$ và thương số phản ứng $Q_c = K_c$.
+- `test_arrhenius_activation_energy`: Kiểm chứng phương trình Arrhenius $k(T) = A e^{-E_a/RT}$. Chất xúc tác hạ rào cản hoạt hóa $\Delta E_{\text{cat}}$ đồng thời trên cả chiều thuận và nghịch, tăng tốc độ phản ứng mà giữ nguyên hằng số cân bằng $K_c$.
+- `test_le_chatelier_perturbations`: Nhiễu loạn cân bằng theo nguyên lý Le Chatelier (bơm thêm chất phản ứng/sản phẩm hoặc tăng/giảm nhiệt độ cho phản ứng tỏa/thu nhiệt) làm dịch chuyển cân bằng đúng chiều nhiệt động học.
+- `test_stamping_and_lessonboard_integration`: Dập biểu đồ thế năng và nồng độ qua `ChemistryTools.create_reaction_kinetics_diagram`, phím tắt `Ctrl+Alt+K`.
+
+#### 2.22. Mật Mã Học RSA & Số Học Đồng Dư (`tests/test_interactive_cryptography.py`)
+- `test_extended_euclidean_and_modular_inverse`: Kiểm chứng thuật toán Euclid mở rộng tìm ước số chung lớn nhất $ax + by = \gcd(a,b)$ và tính nghịch đảo nhân modulo $d = e^{-1} \pmod{\phi(n)}$ (ví dụ với $e=7, \phi=60 \implies d=43$).
+- `test_rsa_key_generation_and_presets`: Tạo khóa công khai $(n, e)$ và khóa bí mật $(n, d)$ từ tích 2 số nguyên tố $n = p \cdot q$ và phi hàm Euler $\phi(n) = (p-1)(q-1)$ trên 4 cặp số nguyên tố mẫu chuẩn.
+- `test_rsa_encryption_decryption_roundtrip`: Mã hóa và giải mã thông điệp $M$: $C = M^e \pmod n$, $M' = C^d \pmod n$ chứng minh $M' \equiv M$ với 100% độ chính xác số học.
+- `test_diffie_hellman_shared_secret`: Giao thức trao đổi khóa Diffie-Hellman trên số nguyên tố $p=23$ và căn nguyên thủy $g=5$, tính khóa chung của Alice và Bob độc lập $K_A = B^a \pmod p = K_B = A^b \pmod p = 2$.
+- `test_air_tap_and_pinch_interactions`: Véo tay điều chỉnh thông điệp $M$ trên vòng tròn số học đồng dư, chạm không chạm chuyển đổi chế độ và dập sơ đồ vector lên bảng qua `InformaticsTools.create_rsa_crypto_diagram`, phím tắt `Ctrl+Alt+C`.

@@ -206,15 +206,22 @@ def ramer_douglas_peucker(points: np.ndarray, epsilon: float) -> np.ndarray:
 
         seg_start = pts[start]
         seg_end = pts[end]
+        sub_pts = pts[start + 1 : end]
 
-        max_dist = 0.0
-        max_idx = start
+        d = seg_end - seg_start
+        norm_d_sq = float(np.dot(d, d))
+        diff = sub_pts - seg_start
 
-        for i in range(start + 1, end):
-            d = _perpendicular_distance(pts[i], seg_start, seg_end)
-            if d > max_dist:
-                max_dist = d
-                max_idx = i
+        if norm_d_sq < 1e-12:
+            dists = np.linalg.norm(diff, axis=1)
+        else:
+            t = np.clip(np.dot(diff, d) / norm_d_sq, 0.0, 1.0)
+            proj = seg_start + t[:, np.newaxis] * d
+            dists = np.linalg.norm(sub_pts - proj, axis=1)
+
+        max_rel_idx = int(np.argmax(dists))
+        max_dist = float(dists[max_rel_idx])
+        max_idx = start + 1 + max_rel_idx
 
         if max_dist > epsilon:
             keep[max_idx] = True

@@ -21,8 +21,12 @@ project_root = Path.cwd()
 datas = [
     (str(project_root / "models"), "models"),
     (str(project_root / "assets"), "assets"),
-    (str(project_root / ".env"), "."),
 ]
+env_file = project_root / ".env"
+if not env_file.exists():
+    env_file = project_root / ".env.example"
+if env_file.exists():
+    datas.append((str(env_file), "."))
 
 hiddenimports = [
     "PySide6.QtSvg",
@@ -46,6 +50,22 @@ hiddenimports = [
     "dotenv",
     "sqlite3",
     "google.genai",
+    "keyring",
+    "keyring.backends",
+    "keyring.backends.Windows",
+    "src.core.adaptive_vision_pipeline",
+    "src.core.multi_hand_coordinator",
+    "src.services.credential_service",
+    "src.ui.floating_action_menu",
+    "src.ui.camera_diagnostics_dialog",
+    "src.ui.ai_workbench",
+    "src.ui.measurement_tools",
+    "src.ui.spotlight_overlay",
+    "src.ui.virtual_loupe",
+    "src.ui.presentation_timer",
+    "src.ui.desktop_overlay_bar",
+    "src.ui.gesture_guide_overlay",
+    "src.utils.audio_feedback",
 ]
 
 # Collect any additional dynamic submodules

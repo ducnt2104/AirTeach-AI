@@ -179,21 +179,27 @@ class OfficeConverter:
             return False
 
         suffix = input_path.suffix.lower()
+        app = None
+        doc_or_prs = None
         try:
             if suffix in (".pptx", ".ppt"):
                 app = comtypes.client.CreateObject("PowerPoint.Application")
                 app.Visible = False
-                prs = app.Presentations.Open(str(input_path.resolve()), WithWindow=False)
-                prs.SaveAs(str(output_pdf.resolve()), 32)  # 32 = ppSaveAsPDF
-                prs.Close()
+                doc_or_prs = app.Presentations.Open(str(input_path.resolve()), WithWindow=False)
+                doc_or_prs.SaveAs(str(output_pdf.resolve()), 32)  # 32 = ppSaveAsPDF
+                doc_or_prs.Close()
+                doc_or_prs = None
                 app.Quit()
+                app = None
             elif suffix in (".docx", ".doc"):
                 app = comtypes.client.CreateObject("Word.Application")
                 app.Visible = False
-                doc = app.Documents.Open(str(input_path.resolve()))
-                doc.SaveAs2(str(output_pdf.resolve()), FileFormat=17)  # 17 = wdFormatPDF
-                doc.Close()
+                doc_or_prs = app.Documents.Open(str(input_path.resolve()))
+                doc_or_prs.SaveAs2(str(output_pdf.resolve()), FileFormat=17)  # 17 = wdFormatPDF
+                doc_or_prs.Close()
+                doc_or_prs = None
                 app.Quit()
+                app = None
             else:
                 return False
             logger.info("MS Office COM conversion: %s → %s", input_path.name, output_pdf.name)
@@ -201,6 +207,17 @@ class OfficeConverter:
         except Exception as exc:
             logger.warning("MS Office COM conversion failed: %s", exc)
             return False
+        finally:
+            if doc_or_prs is not None:
+                try:
+                    doc_or_prs.Close()
+                except Exception:
+                    pass
+            if app is not None:
+                try:
+                    app.Quit()
+                except Exception:
+                    pass
 
     @staticmethod
     def _try_libreoffice(input_path: Path, output_dir: Path) -> Optional[Path]:
@@ -237,6 +254,8 @@ class OfficeConverter:
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
             if result.returncode != 0:
@@ -602,6 +621,7 @@ class DocumentManager:
         if not annotated_pages:
             raise RuntimeError("No pages to export.")
 
+        output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
         first = annotated_pages[0]
         rest = annotated_pages[1:]
         first.save(

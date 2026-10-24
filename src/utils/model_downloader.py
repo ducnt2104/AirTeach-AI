@@ -25,18 +25,19 @@ logger = logging.getLogger(__name__)
 # ─── Known SHA-256 hashes for official OpenCV Zoo & MediaPipe models ─────────
 # Obtained from the official repositories at the time of project creation.
 # Update these if you upgrade to a newer model version.
-_KNOWN_HASHES: dict[str, str] = {
+_KNOWN_HASHES: dict[str, Optional[str]] = {
     "face_detection_yunet_2023mar.onnx": (
-        "ba3bef5a7ba0a9be0271d0d8d08fcb45"
-        "d78f4c5ae0f87d5e9e2f8bbecf0c3d24"
+        "8f2383e4dd3cfbb4553ea8718107fc04"
+        "23210dc964f9f4280604804ed2552fa4"
     ),
     "face_recognition_sface_2021dec.onnx": (
-        "6f601ae2b7d24c79a9f3b5d8e1a4c7f0"
-        "b3e6a9c2f5b8d1e4a7c0f3b6d9e2a5c8"
+        "0ba9fbfa01b5270c96627c4ef784da85"
+        "9931e02f04419c829e83484087c34e79"
     ),
-    # MediaPipe hand_landmarker.task hash may differ across SDK versions;
-    # we perform a soft check (file-size sanity) if no hash is registered.
-    "hand_landmarker.task": None,
+    "hand_landmarker.task": (
+        "fbc2a30080c3c557093b5ddfc3346981"
+        "32eb341044ccee322ccf8bcf3607cde1"
+    ),
 }
 
 # Minimum expected file sizes in bytes (sanity guard against truncated downloads)

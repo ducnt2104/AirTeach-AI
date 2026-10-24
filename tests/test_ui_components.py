@@ -630,3 +630,194 @@ class TestMainWindowMultiPage:
         assert len(self.window._page_strokes[1]) == 1
         assert self.window._page_strokes[0][0].stroke_id == "rec_p0"
         assert self.window._page_strokes[1][0].stroke_id == "rec_p1"
+
+
+class TestSettingsDialogSmoothingPresets:
+    def test_smoothing_preset_selection(self, qapp):
+        from src.ui.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(teacher_id="test_teacher", teacher_name="Test Teacher")
+
+        # 1. Default is balanced
+        assert dlg.preset_combo.currentData() == "balanced"
+        assert abs(dlg.one_euro_beta - 0.35) < 1e-3
+        assert abs(dlg.rdp_epsilon - 2.5) < 1e-3
+        assert dlg.smoothing_preset == "balanced"
+
+        # 2. Switch to smooth
+        dlg.preset_combo.setCurrentIndex(1)  # smooth
+        assert dlg.preset_combo.currentData() == "smooth"
+        assert abs(dlg.one_euro_beta - 0.15) < 1e-3
+        assert abs(dlg.rdp_epsilon - 3.5) < 1e-3
+        assert dlg.smoothing_preset == "smooth"
+
+        # 3. Switch to instant
+        dlg.preset_combo.setCurrentIndex(2)  # instant
+        assert dlg.preset_combo.currentData() == "instant"
+        assert abs(dlg.one_euro_beta - 0.70) < 1e-3
+        assert abs(dlg.rdp_epsilon - 1.0) < 1e-3
+        assert dlg.smoothing_preset == "instant"
+
+        # 4. Manual adjustments switch to custom
+        dlg.beta_spin.setValue(0.55)
+        assert dlg.preset_combo.currentData() == "custom"
+        assert dlg.smoothing_preset == "custom"
+        assert abs(dlg.one_euro_beta - 0.55) < 1e-3
+
+
+class TestLessonBoardGridAndAxes:
+    def test_lesson_board_grid_toggle_and_modes(self, qapp):
+        from src.ui.lesson_board import LessonBoard
+        board = LessonBoard()
+        assert board.grid_mode() == "none"
+
+        assert board.toggle_grid() == "grid"
+        assert board.grid_mode() == "grid"
+
+        assert board.toggle_grid() == "cartesian"
+        assert board.grid_mode() == "cartesian"
+
+        assert board.toggle_grid() == "dots"
+        assert board.grid_mode() == "dots"
+
+        assert board.toggle_grid() == "none"
+        assert board.grid_mode() == "none"
+
+        board.set_grid_mode("cartesian")
+        assert board.grid_mode() == "cartesian"
+
+    def test_lesson_board_draw_background_rendering(self, qapp):
+        from PySide6.QtGui import QImage, QPainter
+        from src.ui.lesson_board import LessonBoard, BOARD_WIDTH, BOARD_HEIGHT
+        board = LessonBoard()
+        board.set_grid_mode("cartesian")
+
+        img = QImage(BOARD_WIDTH, BOARD_HEIGHT, QImage.Format.Format_ARGB32)
+        img.fill(Qt.GlobalColor.white)
+        p = QPainter(img)
+        board.drawBackground(p, QRectF(0, 0, BOARD_WIDTH, BOARD_HEIGHT))
+        p.end()
+
+        # Verify pixels were rendered
+        ptr = img.bits()
+        arr = np.frombuffer(ptr, np.uint8).reshape((BOARD_HEIGHT, BOARD_WIDTH, 4))
+        # Not all pixels should be white (grid lines are drawn)
+        assert np.any(arr[:, :, :3] < 250)
+
+    def test_main_window_toggle_grid_slot(self, qapp):
+        from src.ui.main_window import MainWindow
+        win = MainWindow(camera_index=-1)
+        assert win._scene.grid_mode() == "none"
+
+        win._on_toggle_grid()
+        assert win._scene.grid_mode() == "grid"
+
+        win._on_toggle_grid()
+        assert win._scene.grid_mode() == "cartesian"
+
+        win.close()
+
+
+class TestCameraDiagnosticsDialog:
+    """Validate CameraDiagnosticsDialog optical telemetry and controls."""
+
+    def test_camera_diagnostics_initialization(self, qapp):
+        from src.ui.camera_diagnostics_dialog import CameraDiagnosticsDialog
+        dlg = CameraDiagnosticsDialog()
+        assert "Chẩn đoán Camera" in dlg.windowTitle()
+        assert dlg.lbl_fps.text() == "— FPS"
+        assert dlg.lbl_hands.text() == "0 bàn tay"
+        assert dlg.combo_mode.count() == 4
+        dlg.close()
+
+    def test_camera_diagnostics_telemetry_update(self, qapp):
+        from src.ui.camera_diagnostics_dialog import CameraDiagnosticsDialog
+        from src.core.adaptive_vision_pipeline import CameraDiagnosticsData
+
+        dlg = CameraDiagnosticsDialog()
+        diag = CameraDiagnosticsData(
+            fps=29.8,
+            width=1280,
+            height=720,
+            mean_brightness=135.2,
+            sharpness_score=62.4,
+            shadow_clipping_pct=1.8,
+            highlight_clipping_pct=0.4,
+            condition_name="NORMAL",
+            hands_detected=2,
+            tracking_confidence=0.92,
+            gesture_state_name="DRAW",
+            draw_mode_name="INDEX_UP (Air Pen)",
+            pipeline_latency_ms=11.2,
+            frame_dropped_count=0,
+        )
+        dlg.update_diagnostics(diag)
+
+        assert dlg.lbl_fps.text() == "29.8 FPS"
+        assert dlg.lbl_resolution.text() == "1280 × 720 px"
+        assert dlg.lbl_condition.text() == "NORMAL"
+        assert "62.4" in dlg.lbl_sharpness.text()
+        assert dlg.lbl_hands.text() == "2 bàn tay"
+        assert dlg.lbl_confidence.text() == "0.92"
+        assert dlg.lbl_gesture.text() == "DRAW"
+        assert dlg.lbl_latency.text() == "11.2 ms"
+        dlg.close()
+
+    def test_camera_diagnostics_signals_and_modes(self, qapp):
+        from src.ui.camera_diagnostics_dialog import CameraDiagnosticsDialog
+
+        dlg = CameraDiagnosticsDialog()
+        emitted_modes = []
+        dlg.lighting_mode_changed.connect(lambda m: emitted_modes.append(m))
+
+        dlg.combo_mode.setCurrentIndex(1)
+        assert len(emitted_modes) == 1
+        assert emitted_modes[0] == "low_light"
+
+        calib_called = []
+        dlg.calibration_requested.connect(lambda: calib_called.append(True))
+        dlg._on_calib_clicked()
+        assert len(calib_called) == 1
+
+        dlg.close()
+
+    def test_main_window_open_camera_diagnostics_slot(self, qapp):
+        from src.ui.main_window import MainWindow
+
+        win = MainWindow(camera_index=-1)
+        assert win._diagnostics_dialog is None
+
+        win._on_open_camera_diagnostics()
+        assert win._diagnostics_dialog is not None
+        assert win._diagnostics_dialog.isVisible()
+
+        win._diagnostics_dialog.close()
+        win.close()
+
+
+def test_lesson_board_grid_spacing_clamping():
+    """Verify LessonBoard.set_grid_spacing clamps values within [15, 200] px."""
+    from src.ui.lesson_board import LessonBoard
+
+    board = LessonBoard()
+    board.set_grid_spacing(50)
+    assert board.grid_spacing() == 50
+
+    # Below minimum
+    board.set_grid_spacing(5)
+    assert board.grid_spacing() == 15
+
+    # Above maximum
+    board.set_grid_spacing(500)
+    assert board.grid_spacing() == 200
+
+
+def test_settings_dialog_grid_settings():
+    """Verify SettingsDialog grid mode and spacing accessors and updates."""
+    from src.ui.settings_dialog import SettingsDialog
+
+    dlg = SettingsDialog(teacher_id="test_t", teacher_name="Test Teacher")
+    dlg.set_grid_mode("cartesian")
+    assert dlg.grid_mode == "cartesian"
+
+    dlg.set_grid_spacing(60)
+    assert dlg.grid_spacing == 60

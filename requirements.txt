@@ -28,6 +28,7 @@ matplotlib>=3.8.0
 
 # Security & Cryptography
 cryptography>=42.0.0
+keyring>=24.0.0
 
 # Environment & Configuration
 python-dotenv>=1.0.1
