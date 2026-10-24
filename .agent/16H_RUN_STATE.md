@@ -107,12 +107,23 @@
   - Added 4 new exhaustive unit tests in `TestGeometricMathParser` (`test_parse_parentheses`, `test_parse_pi_symbol`, `test_parse_inequalities_and_not_equal`, `test_parse_dot_symbol`).
   - Total passing tests raised from 1,461 to **1,465 passed tests (100% pass rate, 0 failed, 107 suites)**.
 
+### Milestone 168: Atomic Package Writing & Anti-Spoofing Sliding Window Memory Bound
+- **Resilient Storage Architecture**:
+  - Implemented transactional atomic save pattern (`output_path.with_name(...)` + `replace()`) for `.airteach` ZIP packages in `AirTeachPackage.save()`, eliminating file corruption from unexpected shutdowns, disk pressure, or crashes.
+  - Added fail-safe temporary file purging to guarantee no orphaned `.tmp` files pollute the workspace on mid-save write failures.
+- **Streaming Vision Memory Bound**:
+  - Implemented an $O(1)$ bounded sliding window (`2 * required_frames`) in `LivenessChecker.update()`.
+  - Guarantees constant memory consumption during indefinitely continuous webcam authentication feeds, eliminating memory growth during live classroom broadcasts.
+- **Test Suite Verification**:
+  - Added `test_atomic_save_cleans_up_on_failure` and `test_liveness_bounded_sliding_window` to `tests/test_services_and_storage.py`.
+  - Total passing tests raised from 1,465 to **1,467 passed tests (100% pass rate across 107 test suites)**.
+
 ---
 
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **107 Test Suites**
-- **Total Passing Tests**: **1,465 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1465 passed (100%)**
+- **Total Passing Tests**: **1,467 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1467 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

@@ -286,6 +286,9 @@ class LivenessChecker:
         rel_y = (nose_y - y) / max(h, 1)
         self._nose_history.append((rel_x, rel_y))
         self._face_size_history.append(float(w * h))
+        if len(self._nose_history) > self._required * 2:
+            self._nose_history.pop(0)
+            self._face_size_history.pop(0)
 
         if len(self._nose_history) < self._required:
             return False

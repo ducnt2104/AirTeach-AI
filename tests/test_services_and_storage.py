@@ -473,6 +473,14 @@ class TestLivenessChecker:
         checker.reset()
         assert not checker.is_ready()
 
+    def test_liveness_bounded_sliding_window(self):
+        """Feed 100 continuous frames and verify history remains bounded at 2*required_frames (no memory leak)."""
+        checker = LivenessChecker(required_frames=10)
+        for i in range(100):
+            checker.update(self._make_face_row(160.0 + (i % 5) * 0.5, 155.0 + (i % 3) * 0.4))
+        assert len(checker._nose_history) <= 20
+        assert len(checker._face_size_history) <= 20
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. AirTeach Package Tests
@@ -653,6 +661,26 @@ class TestAirTeachPackage:
         expected_hash = _sha256_file(original)
         assert links["original_sha256"] == expected_hash
         assert links["original_filename"] == "lecture_slides.pdf"
+
+    def test_atomic_save_cleans_up_on_failure(self, tmp_dir: Path, monkeypatch):
+        """If packaging fails midway, no corrupted output file remains and temp files are purged."""
+        page_paths, strokes, recognized = self._make_test_package(tmp_dir)
+        output = tmp_dir / "failed_lesson.airteach"
+
+        original_writestr = zipfile.ZipFile.writestr
+        def failing_writestr(self_zf, arcname, *args, **kwargs):
+            if arcname == AirTeachPackage.INK_PATH:
+                raise OSError("Disk simulated write failure")
+            return original_writestr(self_zf, arcname, *args, **kwargs)
+
+        monkeypatch.setattr(zipfile.ZipFile, "writestr", failing_writestr)
+
+        with pytest.raises(OSError, match="Disk simulated write failure"):
+            AirTeachPackage.save(output, AirTeachManifest(title="Failed"), page_paths, strokes, recognized)
+
+        assert not output.exists(), "Target file must not exist if write was aborted"
+        tmp_files = list(tmp_dir.glob("*.tmp"))
+        assert len(tmp_files) == 0, f"No leftover tmp files should remain, found: {tmp_files}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

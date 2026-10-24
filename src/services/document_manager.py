@@ -17,6 +17,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import uuid
 import zipfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -373,27 +374,40 @@ class AirTeachPackage:
             for r in recognized
         ]
 
-        with zipfile.ZipFile(str(output_path), "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            # manifest.json
-            zf.writestr(cls.MANIFEST_PATH, json.dumps(asdict(manifest), ensure_ascii=False, indent=2))
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = output_path.with_name(f"{output_path.stem}_{uuid.uuid4().hex[:8]}.tmp")
 
-            # pages/
-            for i, img_path in enumerate(page_image_paths):
-                if img_path.exists():
-                    arcname = f"pages/page_{i + 1:03d}.png"
-                    zf.write(str(img_path), arcname)
+        try:
+            with zipfile.ZipFile(str(temp_path), "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                # manifest.json
+                zf.writestr(cls.MANIFEST_PATH, json.dumps(asdict(manifest), ensure_ascii=False, indent=2))
 
-            # ink/strokes.json
-            zf.writestr(cls.INK_PATH, json.dumps(strokes_data, ensure_ascii=False, indent=2))
+                # pages/
+                for i, img_path in enumerate(page_image_paths):
+                    if img_path.exists():
+                        arcname = f"pages/page_{i + 1:03d}.png"
+                        zf.write(str(img_path), arcname)
 
-            # recognized/items.json
-            zf.writestr(cls.RECOGNIZED_PATH, json.dumps(recognized_data, ensure_ascii=False, indent=2))
+                # ink/strokes.json
+                zf.writestr(cls.INK_PATH, json.dumps(strokes_data, ensure_ascii=False, indent=2))
 
-            # links.json
-            zf.writestr(cls.LINKS_PATH, json.dumps(links_data, ensure_ascii=False, indent=2))
+                # recognized/items.json
+                zf.writestr(cls.RECOGNIZED_PATH, json.dumps(recognized_data, ensure_ascii=False, indent=2))
 
-        logger.info("Saved .airteach package: %s (%d pages, %d strokes)",
-                    output_path, len(page_image_paths), len(strokes))
+                # links.json
+                zf.writestr(cls.LINKS_PATH, json.dumps(links_data, ensure_ascii=False, indent=2))
+
+            temp_path.replace(output_path)
+            logger.info("Saved .airteach package atomically: %s (%d pages, %d strokes)",
+                        output_path, len(page_image_paths), len(strokes))
+        except Exception:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
+            raise
 
     # ── Load ──────────────────────────────────────────────────────────────────
 
