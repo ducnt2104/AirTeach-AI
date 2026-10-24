@@ -184,3 +184,45 @@ def test_multi_hand_coordinator_roles_and_state():
     hands_dual = coordinator.process_frame_hands(raw_dets, t_ms=200.0)
     for h in hands_dual:
         assert h.role == HandRole.INDEPENDENT
+
+
+def test_air_click_detector_reset_all():
+    detector = AirClickDetector()
+    lm = _make_synthetic_landmarks()
+    detector.process_hand("hand_0", lm, 500.0, 500.0, 0.25, t_ms=0.0)
+    detector.process_hand("hand_1", lm, 800.0, 500.0, 0.25, t_ms=0.0)
+
+    assert len(detector._history) > 0
+    assert len(detector._dwell_state) > 0
+
+    detector.reset_all()
+    assert len(detector._history) == 0
+    assert len(detector._was_pinched) == 0
+    assert len(detector._last_click_t_ms) == 0
+    assert len(detector._dwell_state) == 0
+
+
+def test_multi_hand_coordinator_reset():
+    coordinator = MultiHandCoordinator()
+    lm = _make_synthetic_landmarks()
+    coordinator.process_frame_hands([(lm, "Right", 0.9)], t_ms=0.0)
+
+    assert len(coordinator.tracker._tracks) > 0
+    assert len(coordinator._fsms) > 0
+
+    coordinator.reset()
+    assert len(coordinator.tracker._tracks) == 0
+    assert len(coordinator._fsms) == 0
+    assert len(coordinator.click_detector._history) == 0
+
+
+def test_multi_hand_coordinator_independent_mode():
+    coordinator = MultiHandCoordinator(mode=MultiHandMode.INDEPENDENT)
+    lm_a = _make_synthetic_landmarks(index_tip_y=0.15)
+    lm_b = _make_synthetic_landmarks(index_tip_y=0.20)
+    raw_dets = [(lm_a, "Right", 0.9), (lm_b, "Left", 0.9)]
+
+    hands = coordinator.process_frame_hands(raw_dets, t_ms=0.0)
+    assert len(hands) == 2
+    for h in hands:
+        assert h.role == HandRole.INDEPENDENT, "All hands in INDEPENDENT mode must have role=INDEPENDENT"

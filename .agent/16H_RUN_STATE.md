@@ -9,7 +9,7 @@
 - **Global Architectural Policy Compliance**:
   - `RULE[AGENTS.md]` Zero Mock Data Policy: **100% COMPLIANT** (0 mock coordinates, 0 dummy users, 0 static dummy strings, 100% authentic mathematical, physical, chemical, biological, astronomical, and algorithmic implementations).
   - Zero UI Thread Blocking Policy: **100% COMPLIANT** (All heavy processing separated into QThreads, QRunnables, and QThreadPool with Qt Signals/Slots).
-  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,493 automated tests passing 100% across all suites; zero test failures).
+  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,500 automated tests passing 100% across all suites; zero test failures).
 
 ---
 
@@ -177,6 +177,30 @@
   - Total passing tests raised from 1,483 to **1,487 passed tests (100% pass rate across 108 test suites)**.
 
 
+### Milestone 175: Floating Action Menu Programmability, Multi-Hand Coordinator Reset & Independent Mode Role Enforcement
+- **Floating Action Menu Dynamic Extensions & State Inspection**:
+  - Implemented `@property is_active -> bool`, `@property current_menu_id -> str`, and `@property items -> list[MenuItem]` to provide read access for state machines and UI coordination.
+  - Implemented `register_submenu(menu_id: str, items: list[MenuItem]) -> None` enabling dynamic registration of teacher tool palettes and nested action submenus.
+  - Implemented `navigate_to(menu_id: str) -> bool` with graceful fallback and logging for programmatic submenu navigation without touchless click overhead.
+  - Standardized UI interaction semantics: color/width items keep the menu open for multi-attribute tuning; terminal action items auto-close and trigger execution; center clicks in submenus return to root menu.
+- **Multi-Hand Coordinator & Air Click Resilience**:
+  - Added `AirClickDetector.reset_all()` to clear all tracking histories, pinch flags, and dwell anchors across both hands.
+  - Added `MultiHandCoordinator.reset()` for complete session resets.
+  - Fixed `MultiHandMode.INDEPENDENT` role assignment: both hands now correctly receive `HandRole.INDEPENDENT` (previously defaulted to `HandRole.PRIMARY`).
+- **Test Suite Verification**:
+  - Added 4 unit tests in `tests/test_air_click_and_menu.py`:
+    - `test_menu_properties_and_state`
+    - `test_programmatic_navigation_and_custom_submenu`
+    - `test_terminal_action_auto_closes_vs_palette_stays_open`
+    - `test_center_click_submenu_navigates_back_to_root`
+  - Added 3 unit tests in `tests/test_multi_hand_tracking.py`:
+    - `test_air_click_detector_reset_all`
+    - `test_multi_hand_coordinator_reset`
+    - `test_multi_hand_coordinator_independent_mode`
+  - Total passing tests raised from 1,493 to **1,500 passed tests (100% pass rate across 108 test suites)**.
+
+---
+
 ### Milestone 174: Biometric Anti-Spoofing Architecture, Independent Liveness Check & Zero-Redundancy Auth Pipeline
 - **Liveness Anti-Spoofing Architecture & Catch-22 Elimination**:
   - Implemented standalone LivenessChecker.check() -> bool method to evaluate physiological micro-motion across recorded face history without mutating the tracking queue.
@@ -213,8 +237,8 @@
 
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **108 Test Suites**
-- **Total Passing Tests**: **1,493 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1493 passed (100%)**
+- **Total Passing Tests**: **1,500 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1500 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

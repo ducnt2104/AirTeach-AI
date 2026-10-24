@@ -154,6 +154,13 @@ class AirClickDetector:
         self._last_click_t_ms.pop(track_id, None)
         self._dwell_state.pop(track_id, None)
 
+    def reset_all(self) -> None:
+        """Reset tracking state across all hands."""
+        self._history.clear()
+        self._was_pinched.clear()
+        self._last_click_t_ms.clear()
+        self._dwell_state.clear()
+
     def process_hand(
         self,
         track_id: str,
@@ -469,6 +476,12 @@ class MultiHandCoordinator:
         for fsm in self._fsms.values():
             fsm.reset_perspective()
 
+    def reset(self) -> None:
+        """Full reset of tracking, FSMs, and click state."""
+        self.tracker.reset()
+        self.click_detector.reset_all()
+        self._fsms.clear()
+
     def _get_or_create_fsm(self, track_id: str) -> HandGestureFSM:
         if track_id not in self._fsms:
             fsm = HandGestureFSM(
@@ -563,7 +576,7 @@ class MultiHandCoordinator:
                 else:
                     # Fallback by track order: first is primary, second is secondary
                     role = HandRole.PRIMARY if len(hands_data) == 0 else HandRole.SECONDARY
-            elif self.mode == MultiHandMode.DUAL_DRAW:
+            elif self.mode in (MultiHandMode.DUAL_DRAW, MultiHandMode.INDEPENDENT):
                 role = HandRole.INDEPENDENT
 
             h_data = HandLandmarkData(

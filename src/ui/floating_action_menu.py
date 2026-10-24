@@ -396,6 +396,43 @@ class FloatingActionMenu(QGraphicsObject):
         self.update()
         logger.info("FloatingActionMenu closed.")
 
+    @property
+    def is_active(self) -> bool:
+        """Whether the menu is actively opened and visible."""
+        return self._is_active
+
+    @property
+    def current_menu_id(self) -> str:
+        """Current submenu ID being displayed ('root', 'pen_menu', etc.)."""
+        return self._current_menu_id
+
+    @property
+    def items(self) -> list[MenuItem]:
+        """List of items in the current active menu."""
+        return list(self._items)
+
+    def register_submenu(self, menu_id: str, items: list[MenuItem]) -> None:
+        """Register or override a custom submenu."""
+        self._menus[menu_id] = list(items)
+        if self._current_menu_id == menu_id:
+            self._items = self._menus[menu_id]
+            self.prepareGeometryChange()
+            self.update()
+
+    def navigate_to(self, menu_id: str) -> bool:
+        """Switch current active view to the specified menu_id."""
+        if menu_id not in self._menus:
+            logger.warning("Attempted to navigate to unknown submenu '%s'", menu_id)
+            return False
+        self._current_menu_id = menu_id
+        self._items = self._menus[self._current_menu_id]
+        self._hovered_index = None
+        self._hovered_center = False
+        self._dwell_progress = 0.0
+        self.prepareGeometryChange()
+        self.update()
+        return True
+
     def set_layout_mode(self, mode: MenuLayoutMode | str) -> None:
         """Switch between RADIAL_WHEEL and FLOATING_PANEL."""
         if isinstance(mode, str):

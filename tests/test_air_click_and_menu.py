@@ -121,3 +121,97 @@ def test_floating_panel_mode(qapp):
 
     menu.set_layout_mode("radial_wheel")
     assert menu.layout_mode == MenuLayoutMode.RADIAL_WHEEL
+
+
+def test_menu_properties_and_state(qapp):
+    menu = FloatingActionMenu(canvas_width=1920, canvas_height=1080)
+    assert not menu.is_active
+    assert menu.current_menu_id == "root"
+    assert len(menu.items) == len(ROOT_MENU_ITEMS)
+
+    menu.show_at(600, 600)
+    assert menu.is_active
+    assert menu.isVisible()
+
+    menu.close_menu()
+    assert not menu.is_active
+    assert not menu.isVisible()
+
+
+def test_programmatic_navigation_and_custom_submenu(qapp):
+    menu = FloatingActionMenu(canvas_width=1920, canvas_height=1080)
+    menu.show_at(600, 600)
+
+    # Valid navigation
+    assert menu.navigate_to("shapes_menu") is True
+    assert menu.current_menu_id == "shapes_menu"
+    assert len(menu.items) > 0
+
+    # Invalid navigation
+    assert menu.navigate_to("nonexistent_submenu_id") is False
+    assert menu.current_menu_id == "shapes_menu"
+
+    # Register custom submenu
+    from src.ui.floating_action_menu import MenuItem
+    custom_items = [
+        MenuItem("custom_opt1", "Tùy chọn 1", command="tool", value="opt1"),
+        MenuItem("back", "Quay lại", command="submenu", submenu_id="root"),
+    ]
+    menu.register_submenu("custom_menu", custom_items)
+    assert menu.navigate_to("custom_menu") is True
+    assert menu.current_menu_id == "custom_menu"
+    assert len(menu.items) == 2
+
+
+def test_terminal_action_auto_closes_vs_palette_stays_open(qapp):
+    menu = FloatingActionMenu(canvas_width=1920, canvas_height=1080)
+    menu.show_at(600, 600)
+
+    emitted_actions = []
+    menu.action_triggered.connect(lambda cmd, val: emitted_actions.append((cmd, val)))
+
+    # Navigate to pen menu
+    menu.navigate_to("pen_menu")
+    assert menu.isVisible()
+
+    # Click a color item (palette command: "color" -> menu should stay open)
+    # Pen menu item 1 is "pen_blue" (command="color", value="#1a73e8")
+    menu._hovered_index = 1
+    menu._hovered_center = False
+    res_color = menu.trigger_click()
+    assert res_color == ("color", "#1a73e8")
+    assert menu.isVisible(), "Color selection should keep menu open for multi-attribute tuning"
+    assert ("color", "#1a73e8") in emitted_actions
+
+    # Navigate to root and trigger a tool command -> auto closes
+    menu.navigate_to("root")
+    # Item 2 in root is "laser" (command="tool", value="laser")
+    menu._hovered_index = 2
+    menu._hovered_center = False
+    res_tool = menu.trigger_click()
+    assert res_tool == ("tool", "laser")
+    assert not menu.isVisible(), "Terminal tool selection must auto-close menu"
+    assert ("tool", "laser") in emitted_actions
+
+
+def test_center_click_submenu_navigates_back_to_root(qapp):
+    menu = FloatingActionMenu(canvas_width=1920, canvas_height=1080)
+    menu.show_at(600, 600)
+
+    # In root: center click closes
+    menu._hovered_center = True
+    res_close = menu.trigger_click()
+    assert res_close == ("action", "close")
+    assert not menu.isVisible()
+
+    # Reopen and navigate to submenu
+    menu.show_at(600, 600)
+    menu.navigate_to("eraser_menu")
+    assert menu.current_menu_id == "eraser_menu"
+
+    # In submenu: center click navigates back to root
+    menu._hovered_center = True
+    res_back = menu.trigger_click()
+    assert res_back == ("nav", "root")
+    assert menu.current_menu_id == "root"
+    assert menu.isVisible(), "Submenu center-click back navigation must keep menu open"
