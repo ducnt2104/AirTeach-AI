@@ -71,6 +71,12 @@ if %errorlevel% neq 0 (
     )
 )
 
+rem Kiem tra va tao Shortcut Desktop neu chua co
+if not exist "%USERPROFILE%\Desktop\AirTeach AI.lnk" (
+    echo [INFO] Tao bieu tuong AirTeach AI tren man hinh Desktop...
+    "%PYTHON_EXE%" scripts\create_desktop_shortcut.py >nul 2>&1
+)
+
 echo [SUCCESS] Khoi chay ung dung AirTeach AI...
 echo [INFO] Launching main.py at %time% >> "%LAUNCH_LOG%"
 echo.

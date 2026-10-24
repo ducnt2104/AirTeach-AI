@@ -71,6 +71,7 @@ hiddenimports = [
 # Collect any additional dynamic submodules
 hiddenimports += collect_submodules("scipy.spatial")
 hiddenimports += collect_submodules("matplotlib.mathtext")
+hiddenimports += collect_submodules("src")
 
 a = Analysis(
     ["main.py"],
@@ -113,6 +114,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(project_root / "assets" / "icons" / "airteach.ico"),
 )
 
 coll = COLLECT(
