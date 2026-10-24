@@ -170,6 +170,9 @@ class AdaptiveVisionPipeline:
             processing_time_ms=dt_ms,
         )
 
+    MAX_LUT_CACHE_SIZE: int = 128
+    MAX_CLAHE_CACHE_SIZE: int = 64
+
     # ── LUT-based Gamma Correction ────────────────────────────────────────────
 
     def _get_gamma_lut(self, gamma: float) -> np.ndarray:
@@ -177,9 +180,12 @@ class AdaptiveVisionPipeline:
         Retrieve or build a 256-element byte LUT for gamma mapping.
         gamma < 1.0 brightens shadows (elevates dark tones).
         gamma > 1.0 compresses highlights.
+        Bounded to MAX_LUT_CACHE_SIZE entries to guarantee O(1) memory.
         """
         q_gamma = round(gamma, 2)
         if q_gamma not in self._lut_cache:
+            if len(self._lut_cache) >= self.MAX_LUT_CACHE_SIZE:
+                self._lut_cache.clear()
             table = np.array([
                 np.clip(((i / 255.0) ** q_gamma) * 255.0, 0, 255)
                 for i in range(256)
@@ -188,8 +194,11 @@ class AdaptiveVisionPipeline:
         return self._lut_cache[q_gamma]
 
     def _get_clahe(self, clip_limit: float) -> cv2.CLAHE:
+        """Bounded to MAX_CLAHE_CACHE_SIZE entries to guarantee O(1) memory."""
         q_clip = round(clip_limit, 1)
         if q_clip not in self._clahe_cache:
+            if len(self._clahe_cache) >= self.MAX_CLAHE_CACHE_SIZE:
+                self._clahe_cache.clear()
             self._clahe_cache[q_clip] = cv2.createCLAHE(
                 clipLimit=max(q_clip, 1.0),
                 tileGridSize=(8, 8),

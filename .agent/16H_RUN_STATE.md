@@ -133,12 +133,27 @@
   - Added 7 new exhaustive unit tests in `tests/test_crash_diagnostics.py`.
   - Total passing tests raised from 1,467 to **1,474 passed tests (100% pass rate across 108 test suites)**.
 
+
+### Milestone 170: Gemini AI Pedagogical Assistant Offline Hardening & Vision Cache Bounding
+- **Gemini AI Pedagogical Assistant & Offline Knowledge Base**:
+  - Implemented `CallableBool` descriptor class ensuring `assistant.is_online` acts as both a boolean attribute (`if assistant.is_online:`) and a zero-argument callable (`if assistant.is_online():`), fixing subtle truthiness ambiguities and unifying API access across `chat_panel.py`, `main_window.py`, and `side_panels.py`.
+  - Built comprehensive Vietnamese offline STEM pedagogical knowledge base in `_OFFLINE_GUIDE` (Mathematics: Pythagoras, derivatives, integrals, Taylor series, Euler identity; Physics: Newton's 3 laws, Ohm's law, Bohr atom, Compton scattering, Doppler effect; Chemistry: periodic table, pH scale, Le Chatelier, titration; Biology: DNA double helix, Mendel genetics, photosynthesis, cellular respiration; Informatics: BST, sorting complexity, graph algorithms).
+  - Upgraded `_offline_lookup` with accent-insensitive Vietnamese normalization (`_normalize_query`), handling both accented and unaccented queries seamlessly.
+  - Enhanced `explain_canvas_region` signature to support both `image_bytes` and `cropped_image_bytes` keyword arguments, maintaining complete backward compatibility with background UI workers.
+- **Adaptive Vision Pipeline O(1) Memory Bound**:
+  - Enforced strict upper bounds on dynamic caches: `MAX_LUT_CACHE_SIZE = 128` on `_lut_cache` and `MAX_CLAHE_CACHE_SIZE = 64` on `_clahe_cache` in `AdaptiveVisionPipeline`.
+  - Guaranteed constant-memory execution during indefinitely continuous lighting fluctuations in classrooms.
+- **Test Suite Verification**:
+  - Added 3 unit tests in `TestGeminiAssistant` (`test_is_online_callable_and_bool_dual_interface`, `test_stem_offline_knowledge_base_lookups`, `test_explain_canvas_region_cropped_image_bytes_compat`).
+  - Added 1 unit test in `tests/test_adaptive_vision.py` (`test_lut_and_clahe_cache_bounded_memory`).
+  - Total passing tests raised from 1,474 to **1,478 passed tests (100% pass rate across 108 test suites)**.
+
 ---
 
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **108 Test Suites**
-- **Total Passing Tests**: **1,474 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1474 passed (100%)**
+- **Total Passing Tests**: **1,478 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1478 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

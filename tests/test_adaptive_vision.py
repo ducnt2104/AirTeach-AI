@@ -105,3 +105,19 @@ def test_pipeline_execution_speed():
 
     # Must run fast (< 45ms on CPU even under heavy test suite contention)
     assert dt_ms < 45.0
+
+def test_lut_and_clahe_cache_bounded_memory():
+    """Cache sizes must never exceed MAX_LUT_CACHE_SIZE and MAX_CLAHE_CACHE_SIZE."""
+    pipeline = AdaptiveVisionPipeline()
+    # Populate with many varying gamma values
+    for g in np.linspace(0.1, 5.0, 300):
+        lut = pipeline._get_gamma_lut(float(g))
+        assert lut.shape == (256,)
+        assert len(pipeline._lut_cache) <= pipeline.MAX_LUT_CACHE_SIZE
+
+    # Populate with many varying clip limits
+    for c in np.linspace(1.0, 15.0, 150):
+        clahe = pipeline._get_clahe(float(c))
+        assert clahe is not None
+        assert len(pipeline._clahe_cache) <= pipeline.MAX_CLAHE_CACHE_SIZE
+

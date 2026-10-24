@@ -884,6 +884,64 @@ class TestGeminiAssistant:
         assert result is False
         assert not assistant.is_online()
 
+    def test_is_online_callable_and_bool_dual_interface(self):
+        """CallableBool must work as both a boolean value and a callable function."""
+        offline_assistant = GeminiAssistant(api_key="")
+        # Dual interface checks for offline state
+        assert bool(offline_assistant.is_online) is False
+        assert offline_assistant.is_online() is False
+        assert not offline_assistant.is_online
+
+        # Online state simulation with dummy client
+        from src.services.gemini_assistant import CallableBool
+        cb_true = CallableBool(True)
+        assert bool(cb_true) is True
+        assert cb_true() is True
+        assert cb_true is True or cb_true == True
+
+        cb_false = CallableBool(False)
+        assert bool(cb_false) is False
+        assert cb_false() is False
+        assert not cb_false
+
+    def test_stem_offline_knowledge_base_lookups(self):
+        """_offline_lookup must accurately return authentic STEM formulas and laws."""
+        # Math: Pythagoras / Taylor
+        math_resp = _offline_lookup("định lý pytago")
+        assert "a^2 + b^2 = c^2" in math_resp or "Pythagoras" in math_resp
+
+        # Physics: Newton / Ohm
+        physics_resp = _offline_lookup("định luật ohm")
+        assert "I = U / R" in physics_resp or "Ohm" in physics_resp
+
+        # Chemistry: Le Chatelier / pH
+        chem_resp = _offline_lookup("chuyển dịch cân bằng le chatelier")
+        assert "Le Chatelier" in chem_resp or "cân bằng" in chem_resp
+
+        # Biology: DNA / Di truyền Mendel
+        bio_resp = _offline_lookup("cấu trúc dna")
+        assert "xoắn kép" in bio_resp or "Watson" in bio_resp or "A-T" in bio_resp
+
+        # Accent-insensitive Vietnamese matching
+        unaccented_resp = _offline_lookup("dinh luat 2 newton")
+        assert "F = m" in unaccented_resp or "Newton" in unaccented_resp
+
+    def test_explain_canvas_region_cropped_image_bytes_compat(self):
+        """explain_canvas_region must accept both image_bytes and cropped_image_bytes keywords."""
+        assistant = GeminiAssistant(api_key="")
+        fake_png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+        # Standard keyword
+        res1 = assistant.explain_canvas_region(image_bytes=fake_png)
+        assert isinstance(res1, str) and len(res1) > 0
+
+        # Legacy / alternative keyword from UI workers
+        res2 = assistant.explain_canvas_region(cropped_image_bytes=fake_png)
+        assert isinstance(res2, str) and len(res2) > 0
+
+        # Positional arg
+        res3 = assistant.explain_canvas_region(fake_png)
+        assert isinstance(res3, str) and len(res3) > 0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 11. TelemetryLogger Tests
