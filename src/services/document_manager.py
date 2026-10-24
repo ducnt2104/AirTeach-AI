@@ -561,28 +561,64 @@ class DocumentManager:
         extract_dir = self.work_root / f"open_{airteach_path.stem}"
         return AirTeachPackage.load(airteach_path, extract_dir)
 
-    def export_annotated_pdf(
+    @staticmethod
+    def _overlay_rgba(bg_bgr: np.ndarray, fg_rgba: np.ndarray, x: int, y: int) -> None:
+        """Alpha blend an RGBA image onto a BGR canvas in-place at coordinate (x, y)."""
+        h_bg, w_bg = bg_bgr.shape[:2]
+        h_fg, w_fg = fg_rgba.shape[:2]
+
+        x1, y1 = max(0, x), max(0, y)
+        x2, y2 = min(w_bg, x + w_fg), min(h_bg, y + h_fg)
+
+        if x1 >= x2 or y1 >= y2:
+            return
+
+        fg_x1 = x1 - x
+        fg_y1 = y1 - y
+        fg_x2 = fg_x1 + (x2 - x1)
+        fg_y2 = fg_y1 + (y2 - y1)
+
+        fg_crop = fg_rgba[fg_y1:fg_y2, fg_x1:fg_x2]
+        alpha = (fg_crop[:, :, 3].astype(np.float32) / 255.0)[:, :, None]
+        fg_bgr = fg_crop[:, :, [2, 1, 0]]  # RGBA to BGR
+
+        bg_crop = bg_bgr[y1:y2, x1:x2].astype(np.float32)
+        blended = (1.0 - alpha) * bg_crop + alpha * fg_bgr.astype(np.float32)
+        bg_bgr[y1:y2, x1:x2] = np.clip(blended, 0, 255).astype(np.uint8)
+
+    def export_annotated_pages(
         self,
         page_image_paths: list[Path],
         strokes: list[StrokeRecord],
-        output_pdf_path: Path,
-    ) -> None:
+        output_dir: Path,
+        recognized: Optional[list[RecognizedItem]] = None,
+    ) -> list[Path]:
         """
-        Export pages with ink overlay as an annotated PDF.
+        Render each document page with handwritten ink and recognized items
+        (LaTeX formulas, text labels, bounding boxes) overlaid, saving PNG images to output_dir.
 
-        Uses reportlab-free approach: renders each page+ink to PNG,
-        then assembles via pypdfium2 or Pillow image concatenation
-        saved as a multi-page PDF.
+        Args:
+            page_image_paths: List of background page image paths.
+            strokes:          All ink strokes across the lesson.
+            output_dir:       Directory to write annotated PNG files.
+            recognized:       Optional recognized OCR and LaTeX items to stamp.
+
+        Returns:
+            List of generated annotated PNG file paths.
         """
-        import io as _io  # noqa: PLC0415
-        from PIL import Image as _PILImage  # noqa: PLC0415
-        import cv2 as _cv2  # noqa: PLC0415
+        import cv2 as _cv2
 
+        output_dir.mkdir(parents=True, exist_ok=True)
         stroke_by_page: dict[int, list[StrokeRecord]] = {}
         for s in strokes:
             stroke_by_page.setdefault(s.page_index, []).append(s)
 
-        annotated_pages: list[_PILImage.Image] = []
+        recognized_by_page: dict[int, list[RecognizedItem]] = {}
+        if recognized:
+            for r in recognized:
+                recognized_by_page.setdefault(r.page_index, []).append(r)
+
+        annotated_paths: list[Path] = []
 
         for page_idx, img_path in enumerate(page_image_paths):
             if not img_path.exists():
@@ -593,7 +629,6 @@ class DocumentManager:
             if bgr is None:
                 continue
 
-            # Compute canvas (1920x1080) to image coordinate mapping
             bgr_h, bgr_w = bgr.shape[:2]
             scale_factor = min(1920.0 / bgr_w, 1080.0 / bgr_h)
             if scale_factor < 1e-6:
@@ -603,7 +638,7 @@ class DocumentManager:
             ox = (1920.0 - scaled_w) / 2.0
             oy = (1080.0 - scaled_h) / 2.0
 
-            # Draw strokes onto the page image
+            # 1. Draw ink strokes
             for stroke in stroke_by_page.get(page_idx, []):
                 eval_pts: list[tuple[int, int]] = []
                 if stroke.bezier_segments:
@@ -629,23 +664,114 @@ class DocumentManager:
                 for j in range(1, len(eval_pts)):
                     _cv2.line(bgr, eval_pts[j - 1], eval_pts[j], color_bgr, thickness, _cv2.LINE_AA)
 
-            rgb = _cv2.cvtColor(bgr, _cv2.COLOR_BGR2RGB)
-            annotated_pages.append(_PILImage.fromarray(rgb))
+            # 2. Render recognized items (LaTeX formulas, text labels)
+            for rec in recognized_by_page.get(page_idx, []):
+                bbox = rec.bounding_box
+                if len(bbox) == 4:
+                    x1 = int(round((bbox[0] - ox) / scale_factor))
+                    y1 = int(round((bbox[1] - oy) / scale_factor))
+                else:
+                    x1, y1 = 20, 20
 
-        if not annotated_pages:
+                if rec.is_formula and rec.latex:
+                    try:
+                        from src.services.smart_ink_ocr import LaTeXRenderer
+                        rgba = LaTeXRenderer.render_to_rgba(rec.latex, fontsize=14, dpi=120)
+                        if rgba is not None:
+                            self._overlay_rgba(bgr, rgba, x1, y1)
+                    except Exception as exc:
+                        logger.debug("Failed to render LaTeX overlay in export: %s", exc)
+                elif rec.text:
+                    text_str = rec.text.strip()
+                    if text_str:
+                        font = _cv2.FONT_HERSHEY_SIMPLEX
+                        font_scale = 0.55
+                        (tw, th), baseline = _cv2.getTextSize(text_str, font, font_scale, 1)
+                        pad = 4
+                        rx1, ry1 = max(0, x1 - pad), max(0, y1 - th - pad)
+                        rx2, ry2 = min(bgr_w - 1, x1 + tw + pad), min(bgr_h - 1, y1 + baseline + pad)
+                        overlay = bgr.copy()
+                        _cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), (245, 245, 245), -1)
+                        _cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), (180, 180, 180), 1, _cv2.LINE_AA)
+                        _cv2.addWeighted(overlay, 0.85, bgr, 0.15, 0, bgr)
+                        _cv2.putText(bgr, text_str, (x1, y1), font, font_scale, (30, 30, 30), 1, _cv2.LINE_AA)
+
+            out_img_path = output_dir / f"page_{page_idx + 1:03d}_annotated.png"
+            _cv2.imwrite(str(out_img_path), bgr)
+            annotated_paths.append(out_img_path)
+
+        return annotated_paths
+
+    def export_annotated_pdf(
+        self,
+        page_image_paths: list[Path],
+        strokes: list[StrokeRecord],
+        output_pdf_path: Path,
+        recognized: Optional[list[RecognizedItem]] = None,
+    ) -> None:
+        """
+        Export pages with ink overlay and recognized items as an annotated PDF.
+        Uses transactional atomic writing to prevent corrupted or half-written PDFs.
+        """
+        from PIL import Image as _PILImage
+
+        if not page_image_paths:
             raise RuntimeError("No pages to export.")
 
+        output_pdf_path = Path(output_pdf_path)
         output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
-        first = annotated_pages[0]
-        rest = annotated_pages[1:]
-        first.save(
-            str(output_pdf_path),
-            format="PDF",
-            save_all=True,
-            append_images=rest,
-            resolution=144,
-        )
-        logger.info("Exported annotated PDF: %s (%d pages)", output_pdf_path, len(annotated_pages))
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="airteach_pdf_"))
+        temp_pdf = output_pdf_path.with_name(f".tmp_{uuid.uuid4().hex}_{output_pdf_path.name}")
+
+        try:
+            annotated_pngs = self.export_annotated_pages(
+                page_image_paths=page_image_paths,
+                strokes=strokes,
+                output_dir=temp_dir,
+                recognized=recognized,
+            )
+
+            if not annotated_pngs:
+                raise RuntimeError("No pages rendered for PDF export.")
+
+            pil_images = [_PILImage.open(str(p)) for p in annotated_pngs]
+            first = pil_images[0]
+            rest = pil_images[1:]
+
+            first.save(
+                str(temp_pdf),
+                format="PDF",
+                save_all=True,
+                append_images=rest,
+                resolution=144,
+            )
+
+            for img in pil_images:
+                img.close()
+
+            # Atomic commit
+            temp_pdf.replace(output_pdf_path)
+            logger.info("Exported annotated PDF: %s (%d pages)", output_pdf_path, len(annotated_pngs))
+
+        except PermissionError as pe:
+            if temp_pdf.exists():
+                try:
+                    temp_pdf.unlink()
+                except Exception:
+                    pass
+            raise RuntimeError(
+                f"Cannot overwrite '{output_pdf_path.name}': the file is locked by another program."
+            ) from pe
+        except Exception:
+            if temp_pdf.exists():
+                try:
+                    temp_pdf.unlink()
+                except Exception:
+                    pass
+            raise
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

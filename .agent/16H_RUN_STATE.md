@@ -164,12 +164,24 @@
   - Added 5 new unit tests in `tests/test_core_algorithms.py` (`test_one_euro_filter_reset_resets_derivatives_and_history`, `test_filter_handles_large_pause_gracefully`, `test_line_preserves_drawing_direction`, `test_snap_angle_circular_wrap_around`, `test_large_stroke_fast_rmse_evaluation`).
   - Total passing tests raised from 1,478 to **1,483 passed tests (100% pass rate across 108 test suites)**.
 
+
+### Milestone 172: Annotated PDF & Slide Image Export (LaTeX Overlay, Text Badging & Atomic Packaging)
+- **LaTeX & Text Overlay Engine (`_overlay_rgba`)**:
+  - Implemented in-place alpha blending for RGBA numpy arrays onto BGR document canvases with coordinate boundary clipping and channel alignment.
+- **Annotated Slide Export (`export_annotated_pages`)**:
+  - Implemented standalone multi-page PNG export that stamps vector ink strokes, anti-aliased text labels, and rendered LaTeX formula overlays at canvas-to-document scaled bounding boxes.
+- **Transactional Atomic PDF Export (`export_annotated_pdf`)**:
+  - Re-architected PDF export with transactional temporary files (`.tmp_<uuid>_<name>`), Pillow multi-page assembly, atomic replacement, and fail-safe cleanup of temporary directories and files on failure or lock conflicts.
+- **Test Suite Verification**:
+  - Added 4 new unit tests in `TestDocumentManager` (`test_export_annotated_pdf_single_and_multi_page`, `test_export_annotated_pdf_with_recognized_items_and_latex`, `test_export_annotated_pages_generates_valid_pngs`, `test_export_annotated_pdf_atomic_save_and_error_handling`).
+  - Total passing tests raised from 1,483 to **1,487 passed tests (100% pass rate across 108 test suites)**.
+
 ---
 
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **108 Test Suites**
-- **Total Passing Tests**: **1,483 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1483 passed (100%)**
+- **Total Passing Tests**: **1,487 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1487 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

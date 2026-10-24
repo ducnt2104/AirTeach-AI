@@ -1143,6 +1143,134 @@ class TestDocumentManager:
         assert len(strokes_out) == 1
         assert strokes_out[0].stroke_id == "round-trip"
 
+    def test_export_annotated_pdf_single_and_multi_page(self, tmp_dir: Path):
+        """export_annotated_pdf must generate a valid multi-page PDF with strokes overlaid."""
+        import cv2
+        from pypdf import PdfReader
+        dm = DocumentManager(work_root=tmp_dir / "work")
+
+        # Create two test page images
+        page1 = tmp_dir / "p1.png"
+        page2 = tmp_dir / "p2.png"
+        cv2.imwrite(str(page1), np.full((540, 960, 3), 255, dtype=np.uint8))
+        cv2.imwrite(str(page2), np.full((540, 960, 3), 250, dtype=np.uint8))
+
+        strokes = [
+            StrokeRecord(
+                stroke_id="s1",
+                page_index=0,
+                color_hex="#FF0000",
+                width=3.0,
+                points=[
+                    BezierPointRecord(x=100.0, y=100.0, t_ms=0.0),
+                    BezierPointRecord(x=200.0, y=200.0, t_ms=16.6),
+                ],
+                timestamps_ms=[0.0, 16.6],
+            ),
+            StrokeRecord(
+                stroke_id="s2",
+                page_index=1,
+                color_hex="#0000FF",
+                width=4.0,
+                bezier_segments=[{
+                    "p0": [50.0, 50.0],
+                    "p1": [100.0, 80.0],
+                    "p2": [150.0, 80.0],
+                    "p3": [200.0, 50.0],
+                }],
+                timestamps_ms=[0.0, 33.3],
+            ),
+        ]
+
+        pdf_out = tmp_dir / "lecture_notes.pdf"
+        dm.export_annotated_pdf(
+            page_image_paths=[page1, page2],
+            strokes=strokes,
+            output_pdf_path=pdf_out,
+        )
+
+        assert pdf_out.exists() and pdf_out.stat().st_size > 1000
+        reader = PdfReader(str(pdf_out))
+        assert len(reader.pages) == 2
+
+    def test_export_annotated_pdf_with_recognized_items_and_latex(self, tmp_dir: Path):
+        """export_annotated_pdf must accurately stamp LaTeX formulas and text items."""
+        import cv2
+        dm = DocumentManager(work_root=tmp_dir / "work")
+        page = tmp_dir / "stem_page.png"
+        cv2.imwrite(str(page), np.full((600, 800, 3), 255, dtype=np.uint8))
+
+        recognized = [
+            RecognizedItem(
+                item_id="math-1",
+                page_index=0,
+                text="E = mc^2",
+                latex="E = mc^2",
+                confidence=0.98,
+                bounding_box=[100.0, 100.0, 300.0, 180.0],
+                is_formula=True,
+            ),
+            RecognizedItem(
+                item_id="txt-1",
+                page_index=0,
+                text="Định luật Vạn vật Hấp dẫn",
+                latex="",
+                confidence=0.95,
+                bounding_box=[100.0, 250.0, 450.0, 310.0],
+                is_formula=False,
+            ),
+        ]
+
+        pdf_out = tmp_dir / "annotated_stem.pdf"
+        dm.export_annotated_pdf(
+            page_image_paths=[page],
+            strokes=[],
+            output_pdf_path=pdf_out,
+            recognized=recognized,
+        )
+
+        assert pdf_out.exists() and pdf_out.stat().st_size > 500
+
+    def test_export_annotated_pages_generates_valid_pngs(self, tmp_dir: Path):
+        """export_annotated_pages must generate standalone PNG images for each slide."""
+        import cv2
+        dm = DocumentManager(work_root=tmp_dir / "work")
+        page = tmp_dir / "raw_page.png"
+        cv2.imwrite(str(page), np.full((400, 600, 3), 240, dtype=np.uint8))
+
+        out_dir = tmp_dir / "exported_pngs"
+        generated = dm.export_annotated_pages(
+            page_image_paths=[page],
+            strokes=[],
+            output_dir=out_dir,
+            recognized=[
+                RecognizedItem(
+                    item_id="rec-1",
+                    page_index=0,
+                    text="Ghi chú bài giảng",
+                    latex="",
+                    confidence=1.0,
+                    bounding_box=[50.0, 50.0, 250.0, 90.0],
+                    is_formula=False,
+                )
+            ],
+        )
+
+        assert len(generated) == 1
+        assert generated[0].exists()
+        loaded = cv2.imread(str(generated[0]))
+        assert loaded is not None and loaded.shape == (400, 600, 3)
+
+    def test_export_annotated_pdf_atomic_save_and_error_handling(self, tmp_dir: Path):
+        """export_annotated_pdf must raise RuntimeError on empty page list and clean up temp files."""
+        dm = DocumentManager(work_root=tmp_dir / "work")
+        with pytest.raises(RuntimeError, match="No pages to export"):
+            dm.export_annotated_pdf(
+                page_image_paths=[],
+                strokes=[],
+                output_pdf_path=tmp_dir / "fail.pdf",
+            )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers for tests
