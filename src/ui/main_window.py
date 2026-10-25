@@ -1018,6 +1018,11 @@ class MainWindow(QMainWindow):
         cloud_chamber_act.triggered.connect(self._on_toggle_cloud_chamber)
         view_menu.addAction(cloud_chamber_act)
 
+        orbital_act = QAction("🚀 Cơ học Quỹ đạo: Chuyển tiếp Hohmann & Gravity Slingshot", self)
+        orbital_act.setShortcut(QKeySequence("Ctrl+Shift+L"))
+        orbital_act.triggered.connect(self._on_toggle_orbital_mechanics)
+        view_menu.addAction(orbital_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -3452,7 +3457,7 @@ class MainWindow(QMainWindow):
                                 self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#06b6d4", radius=9.0)
                                 self._finalize_hand_stroke(h.track_id)
                                 break
-                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "InteractiveSpecialRelativityItem", "InteractiveQuantumTunnelingItem", "InteractiveCoriolisEarthItem", "InteractiveAcousticSonarItem", "InteractiveCloudChamberItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
+                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "InteractiveSpecialRelativityItem", "InteractiveQuantumTunnelingItem", "InteractiveCoriolisEarthItem", "InteractiveAcousticSonarItem", "InteractiveCloudChamberItem", "InteractiveOrbitalMechanicsItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
 
                             if item.isVisible() and hasattr(item, "handle_air_tap"):
 
@@ -5317,6 +5322,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_cloud_chamber()
         self._status.showMessage(
             f"Buồng sương Wilson & Hạt nhân: {'Hiển thị (Ctrl+Shift+N)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_orbital_mechanics(self) -> bool:
+        """Toggle interactive Hohmann Transfer & Astrodynamics visualizer on LessonBoard."""
+        is_visible = self._scene.toggle_orbital_mechanics()
+        self._status.showMessage(
+            f"Cơ học Quỹ đạo & Hohmann: {'Hiển thị (Ctrl+Shift+L)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

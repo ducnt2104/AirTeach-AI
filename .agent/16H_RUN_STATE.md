@@ -972,9 +972,50 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 207: Astrodynamics & Orbital Mechanics: Hohmann Transfer, Gravitational Slingshot & J2 Perturbations
+- **Keplerian Astrodynamics & Orbital Maneuver Simulator (`src/ui/interactive_orbital_mechanics.py`)**:
+  - Implemented `InteractiveOrbitalMechanicsItem(QGraphicsObject)`, `OrbitalPreset`, and `TrajectoryPlot`.
+  - Authentic Astrodynamics & Orbital Mechanics:
+    - Specific Orbital Energy & Vis-Viva Equation:
+      - $\epsilon = \frac{v^2}{2} - \frac{\mu}{r} = -\frac{\mu}{2a}$ (elliptical orbits, $\epsilon < 0$).
+      - Velocity at radial distance $r$: $v(r) = \sqrt{\mu \left(\frac{2}{r} - \frac{1}{a}\right)}$.
+      - Semi-major axis $a = \frac{r_p + r_a}{2}$, eccentricity $e = \frac{r_a - r_p}{r_a + r_p}$, period $T = 2\pi\sqrt{\frac{a^3}{\mu}}$.
+    - Hohmann Bi-Elliptic Orbital Transfer:
+      - Transfer semi-major axis: $a_{\text{tx}} = \frac{r_1 + r_2}{2}$.
+      - Periapsis departure delta-V: $\Delta v_1 = \sqrt{\frac{\mu}{r_1}} \left( \sqrt{\frac{2 r_2}{r_1 + r_2}} - 1 \right)$.
+      - Apoapsis circularization delta-V: $\Delta v_2 = \sqrt{\frac{\mu}{r_2}} \left( 1 - \sqrt{\frac{2 r_1}{r_1 + r_2}} \right)$.
+      - Total mission delta-V: $\Delta v_{\text{tot}} = \Delta v_1 + \Delta v_2$.
+      - One-way transfer duration: $t_{\text{tx}} = \pi \sqrt{\frac{a_{\text{tx}}^3}{\mu}}$.
+    - Gravitational Slingshot (Planetary Gravity Assist / Hyperbolic Flyby):
+      - Hyperbolic excess velocity: $v_\infty = \|\vec{v}_1 - \vec{v}_p\|$.
+      - Flyby turning angle: $\delta = 2 \arcsin\left( \frac{1}{1 + \frac{r_p v_\infty^2}{\mu_p}} \right)$.
+      - Maximum heliocentric velocity boost $\Delta v_{\text{helio}} \approx 2 v_p \sin(\delta / 2)$.
+    - Nodal Precession & Orbital Perturbations ($J_2$ Oblateness):
+      - Earth oblateness $J_2 = 1.08263 \times 10^{-3}$, equatorial radius $R_E = 6,378\text{ km}$.
+      - Right ascension of ascending node regression rate:
+        $$\dot{\Omega} = -\frac{3}{2} J_2 \left(\frac{R_E}{p}\right)^2 n \cos(i)$$
+      - Sun-synchronous inclination condition: $\dot{\Omega} = \frac{2\pi}{365.2422 \times 86400} \approx 1.991 \times 10^{-7}\text{ rad/s}$ ($i \approx 98^\circ$).
+      - Molniya critical inclination ($i = 63.435^\circ$ or $116.565^\circ$) freezing argument of perigee ($\dot{\omega} \propto 5\cos^2 i - 1 = 0$).
+  - 5 Curriculum Presets:
+    1. Hohmann Earth-Mars Transfer ($r_1 = 1.0\text{ AU}$, $r_2 = 1.524\text{ AU}$, $\Delta v_1 = 2.94\text{ km/s}$, $\Delta v_2 = 2.65\text{ km/s}$, $t_{\text{tx}} = 259\text{ days}$).
+    2. Gravitational Slingshot (Jupiter Flyby, hyperbolic deflection $\delta = 62.4^\circ$, $\Delta v = +12.4\text{ km/s}$).
+    3. Low Earth Orbit to Geostationary Transfer (LEO $h=300\text{ km}$ to GEO $h=35,786\text{ km}$, $\Delta v_{\text{tot}} = 3.93\text{ km/s}$).
+    4. Sun-Synchronous Polar Orbit ($h = 800\text{ km}$, $i = 98.6^\circ$, constant solar illumination angle).
+    5. Molniya Orbit ($e = 0.74$, $i = 63.4^\circ$, 12-hour high-latitude apogee dwell).
+  - Touchless webcam air gestures (air-tap on presets, eccentricity slider, delta-V slider, inclination slider), bimanual manipulation, canvas stamping, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._orbital_mechanics_item`, `show_orbital_mechanics`, `toggle_orbital_mechanics`, `is_orbital_mechanics_visible`, `get_orbital_mechanics_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+L` ("Cơ học Quỹ đạo: Chuyển tiếp Hohmann & Gravity Slingshot"), `@Slot() def _on_toggle_orbital_mechanics`, and touchless air-tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_orbital_mechanics.py` (14 unit tests, all passed in 8.33s).
+  - Total test suites raised from 141 to **142 test suites**.
+  - Total passing tests raised from 1,705 to **1,719 passed tests (100% pass rate across 142 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **141 Test Suites**
-- **Total Passing Tests**: **1,705 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **142 Test Suites**
+- **Total Passing Tests**: **1,719 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
