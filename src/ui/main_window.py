@@ -539,6 +539,10 @@ class MainWindow(QMainWindow):
         self._zoom_ctrl = CanvasZoomController(self._board_view, self._scene, parent=self)
         self._zoom_ctrl.zoom_changed.connect(self._on_zoom_changed)
 
+        # Bimanual STEM Object Manipulator
+        from src.ui.bimanual_stem_manipulator import BimanualSTEMManipulator
+        self._bimanual_manipulator = BimanualSTEMManipulator(parent=self)
+
         # Stroke Replay Controller (collapsible)
         self._replay_ctrl = ReplayController(parent=self)
         self._replay_ctrl.set_canvas(self._scene)
@@ -3508,6 +3512,37 @@ class MainWindow(QMainWindow):
                         self._floating_menu.show_at(bx, by)
                         menu_interacting_hand_id = h.track_id
                         break
+
+        # Step 1.4: Bimanual STEM Object Manipulation (Two-Hand Scale, Rotate, Translate)
+        if hasattr(self, "_bimanual_manipulator") and self._bimanual_manipulator is not None:
+            if len(hands) >= 2 and not self._floating_menu.isVisible():
+                h1_m, h2_m = hands[0], hands[1]
+                both_m_pinched = (h1_m.is_pinched or h1_m.state == GestureState.SELECT) and (h2_m.is_pinched or h2_m.state == GestureState.SELECT)
+                p1_sc = (h1_m.canvas_pos[0], h1_m.canvas_pos[1])
+                p2_sc = (h2_m.canvas_pos[0], h2_m.canvas_pos[1])
+                mid_sc = QPointF((p1_sc[0] + p2_sc[0]) * 0.5, (p1_sc[1] + p2_sc[1]) * 0.5)
+                cand_items = self._scene.items(mid_sc) if hasattr(self, "_scene") and self._scene else []
+                stem_cands = [
+                    itm for itm in cand_items
+                    if itm not in (getattr(self._scene, "_background_item", None), getattr(self._scene, "_bg_item", None), getattr(self._scene, "_grid_item", None))
+                    and not getattr(itm, "_is_stroke_item", False)
+                    and (hasattr(itm, "rotate_by") or hasattr(itm, "air_click_at") or type(itm).__name__.startswith("Interactive") or type(itm).__name__.startswith("Virtual"))
+                ]
+                if (self._bimanual_manipulator.is_manipulating() or stem_cands) and both_m_pinched:
+                    t_stem = self._bimanual_manipulator.process_hands(
+                        hand1_pos=p1_sc,
+                        hand2_pos=p2_sc,
+                        hand1_active=True,
+                        hand2_active=True,
+                        candidate_items=stem_cands,
+                    )
+                    if t_stem is not None:
+                        for h in hands:
+                            self._finalize_hand_stroke(h.track_id)
+                            self._scene.move_laser(h.canvas_pos[0], h.canvas_pos[1], visible=True, hand_id=h.track_id, color="#f59e0b", radius=8.0)
+                        return
+                elif self._bimanual_manipulator.is_manipulating():
+                    self._bimanual_manipulator.end_manipulation()
 
         # Step 1.5: Bimanual Two-Hand Pinch-to-Zoom & Touchless Air Panning
         if hasattr(self, "_zoom_ctrl") and self._zoom_ctrl is not None:

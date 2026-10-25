@@ -655,9 +655,36 @@ ormalize_vietnamese_ocr_text)**:
 
 ---
 
+### Milestone 196: Bimanual STEM Transformation & Interactive Manipulator Engine
+- **Touchless Bimanual Manipulation Architecture (src/ui/bimanual_stem_manipulator.py)**:
+  - Implemented BimanualSTEMManipulator, BimanualTransformMode, BimanualTransformState, BimanualTransformTelemetry.
+  - Multi-hand geometric physics:
+    - Real-time pinch-to-scale (.15\times - 6.0\times$) with deadzone thresholding (0.012).
+    - In-air angular rotation calculation with cardinal angle snapping (^\circ, 30^\circ, 45^\circ, 60^\circ, 90^\circ, 180^\circ \dots$ within tolerance .5^\circ$).
+    - Canvas translation relative to dual-hand centroid movement.
+  - Automatic target item locking:
+    - Detects interactive STEM / measurement items under the dual hands' midpoint or falls back to active selection.
+    - Full support for both set_angle_deg() (for trigonometric unit circles, compasses, protractors) and setRotation() / setScale() for standard vector items.
+- **MainWindow Dual-Hand Gesture Routing (src/ui/main_window.py)**:
+  - Multi-gesture routing at Step 1.4: when both hands pinch, detects whether an interactive STEM item is targeted. If yes, manipulates item in-place with amber laser reticles (#f59e0b); if no STEM item is hovered, falls back to full canvas zoom & pan via _zoom_ctrl with indigo reticles (#6366f1).
+  - Added manipulator reset on stroke release / single-hand gestures to prevent stale state drift.
+- **Test Suite Verification**:
+  - Added dedicated test suite 	ests/test_bimanual_stem_manipulator.py (7 unit tests, all passed in 7.3s):
+    - 	est_bimanual_manipulator_initial_state
+    - 	est_bimanual_manipulator_start_transform
+    - 	est_bimanual_manipulator_scale_limits
+    - 	est_bimanual_manipulator_cardinal_angle_snapping
+    - 	est_bimanual_manipulator_reset
+    - 	est_bimanual_manipulator_telemetry
+    - 	est_main_window_bimanual_stem_integration
+  - Total test suites raised from 110 to **111 test suites**.
+  - Total passing tests raised from 1,565 to **1,572 passed tests (100% pass rate across 111 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **110 Test Suites**
-- **Total Passing Tests**: **1,565 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **111 Test Suites**
+- **Total Passing Tests**: **1,572 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
