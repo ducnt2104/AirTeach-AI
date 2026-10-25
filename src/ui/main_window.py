@@ -1073,6 +1073,11 @@ class MainWindow(QMainWindow):
         cryo_em_act.triggered.connect(self._on_toggle_cryo_em)
         view_menu.addAction(cryo_em_act)
 
+        gw_act = QAction("🌌 Thiên văn & Thuyết tương đối: Sóng hấp dẫn & Giao thoa kế LIGO", self)
+        gw_act.setShortcut(QKeySequence("Ctrl+Shift+0"))
+        gw_act.triggered.connect(self._on_toggle_gravitational_waves)
+        view_menu.addAction(gw_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5482,6 +5487,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_cryo_em()
         self._status.showMessage(
             f"Kính hiển vi Cryo-EM CTF & Vòng Thon: {'Hiển thị (Ctrl+Shift+9)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_gravitational_waves(self) -> bool:
+        """Toggle interactive Gravitational Waves & LIGO Interferometry on LessonBoard."""
+        is_visible = self._scene.toggle_gravitational_waves()
+        self._status.showMessage(
+            f"Sóng hấp dẫn & Giao thoa kế LIGO: {'Hiển thị (Ctrl+Shift+0)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

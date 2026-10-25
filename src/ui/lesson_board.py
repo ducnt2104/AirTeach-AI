@@ -309,6 +309,7 @@ class LessonBoard(QGraphicsScene):
         self._synchrotron_radiation_item: Optional[QGraphicsItem] = None
         self._ising_model_item: Optional[QGraphicsItem] = None
         self._cryo_em_item: Optional[QGraphicsItem] = None
+        self._gravitational_waves_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1762,6 +1763,43 @@ class LessonBoard(QGraphicsScene):
     def get_cryo_em_item(self) -> Optional[QGraphicsItem]:
         """Return interactive Cryo-EM CTF instance if created."""
         return getattr(self, "_cryo_em_item", None)
+
+    # ── Interactive Gravitational Waves & Interferometry ───────────────
+    def show_gravitational_waves(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive Gravitational Waves visualizer."""
+        if getattr(self, "_gravitational_waves_item", None) is None:
+            from src.ui.interactive_gravitational_waves import InteractiveGravitationalWavesItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 940.0 / 2.0, 110.0)
+            self._gravitational_waves_item = InteractiveGravitationalWavesItem(board=self)
+            self._gravitational_waves_item.setPos(spawn_pos[0], spawn_pos[1])
+            self.addItem(self._gravitational_waves_item)
+
+        self._gravitational_waves_item.setVisible(visible)
+        if visible and pos is not None:
+            self._gravitational_waves_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._gravitational_waves_item if visible else None
+
+    def toggle_gravitational_waves(self) -> bool:
+        """Toggle interactive Gravitational Waves simulator visibility."""
+        if getattr(self, "_gravitational_waves_item", None) is None or not self._gravitational_waves_item.isVisible():
+            self.show_gravitational_waves(True)
+            return True
+        else:
+            self.show_gravitational_waves(False)
+            return False
+
+    def is_gravitational_waves_visible(self) -> bool:
+        """Return True if interactive Gravitational Waves visualizer is active on board."""
+        return getattr(self, "_gravitational_waves_item", None) is not None and self._gravitational_waves_item.isVisible()
+
+    def get_gravitational_waves_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive Gravitational Waves instance if created."""
+        return getattr(self, "_gravitational_waves_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6805,6 +6843,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_synchrotron_radiation_item", None),
             getattr(self, "_ising_model_item", None),
             getattr(self, "_cryo_em_item", None),
+            getattr(self, "_gravitational_waves_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),
