@@ -85,6 +85,7 @@ class HandLandmarkData:
     is_pinched: bool = False           # True if pinch_distance_norm < threshold
     is_air_tap: bool = False           # True if air tap flick detected this frame
     is_pinch_click: bool = False       # True if pinch click triggered this frame
+    is_dwell_click: bool = False       # True if dwell selection triggered this frame
     dwell_progress: float = 0.0        # [0.0, 1.0] progress for dwell selection
     gesture_state: GestureState = GestureState.NONE
     role: HandRole = HandRole.PRIMARY
@@ -101,6 +102,17 @@ class HandLandmarkData:
     @property
     def normalized_pos(self) -> tuple[float, float]:
         return self.index_tip_norm
+
+    @property
+    def is_air_click(self) -> bool:
+        """True if any click modality (Air Tap, Pinch Click, Dwell Click) triggered this frame."""
+        return bool(self.is_air_tap or self.is_pinch_click or self.is_dwell_click)
+
+    def distance_to(self, other: "HandLandmarkData") -> float:
+        """Euclidean distance on canvas between this hand's index tip and other hand's index tip."""
+        if other is None:
+            return float("inf")
+        return math.hypot(self.canvas_x - other.canvas_x, self.canvas_y - other.canvas_y)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -138,6 +150,8 @@ class AirClickDetector:
 
         # Dwell tracking per hand: (anchor_x, anchor_y, start_t_ms)
         self._dwell_state: dict[str, tuple[float, float, float]] = {}
+        self._dwell_triggered: dict[str, bool] = {}
+        self._is_dwell_clicked: dict[str, bool] = {}
 
     def set_click_type(self, click_type: AirClickType | str) -> None:
         if isinstance(click_type, str):
@@ -153,6 +167,8 @@ class AirClickDetector:
         self._was_pinched.pop(track_id, None)
         self._last_click_t_ms.pop(track_id, None)
         self._dwell_state.pop(track_id, None)
+        self._dwell_triggered.pop(track_id, None)
+        self._is_dwell_clicked.pop(track_id, None)
 
     def reset_all(self) -> None:
         """Reset tracking state across all hands."""
@@ -160,6 +176,24 @@ class AirClickDetector:
         self._was_pinched.clear()
         self._last_click_t_ms.clear()
         self._dwell_state.clear()
+        self._dwell_triggered.clear()
+        self._is_dwell_clicked.clear()
+
+    def is_dwell_clicked(self, track_id: str) -> bool:
+        """Returns True if dwell selection click was triggered on this frame."""
+        return self._is_dwell_clicked.get(track_id, False)
+
+    def set_tap_velocity_threshold(self, threshold: float) -> None:
+        """Adjust index-finger forward tap velocity sensitivity."""
+        self.tap_velocity_threshold = max(0.15, min(1.50, float(threshold)))
+
+    def set_dwell_time_ms(self, time_ms: float) -> None:
+        """Adjust steady hover dwell trigger duration in milliseconds."""
+        self.dwell_time_ms = max(200.0, min(3000.0, float(time_ms)))
+
+    def set_dwell_radius(self, radius_canvas: float) -> None:
+        """Adjust steady hover jitter tolerance radius in canvas pixels."""
+        self.dwell_radius_canvas = max(5.0, min(100.0, float(radius_canvas)))
 
     def process_hand(
         self,
@@ -230,18 +264,26 @@ class AirClickDetector:
 
         # ── 3. Dwell Selection Evaluation ──────────────────────────────────────
         dwell_progress = 0.0
+        is_dwell_click = False
         if track_id not in self._dwell_state:
             self._dwell_state[track_id] = (canvas_x, canvas_y, t_ms)
+            self._dwell_triggered[track_id] = False
         else:
             anchor_x, anchor_y, start_t = self._dwell_state[track_id]
             dist_drift = math.hypot(canvas_x - anchor_x, canvas_y - anchor_y)
             if dist_drift <= self.dwell_radius_canvas:
                 elapsed = t_ms - start_t
                 dwell_progress = min(1.0, elapsed / max(100.0, self.dwell_time_ms))
+                if dwell_progress >= 1.0 and not self._dwell_triggered.get(track_id, False) and debounced:
+                    is_dwell_click = True
+                    self._dwell_triggered[track_id] = True
+                    self._last_click_t_ms[track_id] = t_ms
             else:
                 # Reset dwell anchor
                 self._dwell_state[track_id] = (canvas_x, canvas_y, t_ms)
+                self._dwell_triggered[track_id] = False
                 dwell_progress = 0.0
+        self._is_dwell_clicked[track_id] = is_dwell_click
 
         # Filter output based on active click_type
         if self.click_type == AirClickType.AIR_TAP:
@@ -563,6 +605,7 @@ class MultiHandCoordinator:
                 hand_size=hand_size,
                 t_ms=t_ms,
             )
+            is_dwell_clk = self.click_detector.is_dwell_clicked(track_id)
 
             # Assign Role: Primary vs Secondary
             role = HandRole.PRIMARY
@@ -594,6 +637,7 @@ class MultiHandCoordinator:
                 is_pinched=is_pinched,
                 is_air_tap=is_tap,
                 is_pinch_click=is_pinch_clk,
+                is_dwell_click=is_dwell_clk,
                 dwell_progress=dwell,
                 gesture_state=state,
                 role=role,
@@ -602,3 +646,37 @@ class MultiHandCoordinator:
             hands_data.append(h_data)
 
         return hands_data
+
+    def get_primary_hand(self, hands: list[HandLandmarkData]) -> Optional[HandLandmarkData]:
+        """Convenience accessor to locate the primary drawing hand."""
+        for h in hands:
+            if h.role == HandRole.PRIMARY:
+                return h
+        return hands[0] if hands else None
+
+    def get_secondary_hand(self, hands: list[HandLandmarkData]) -> Optional[HandLandmarkData]:
+        """Convenience accessor to locate the secondary tool/menu hand."""
+        for h in hands:
+            if h.role == HandRole.SECONDARY:
+                return h
+        return hands[1] if len(hands) > 1 else None
+
+    def get_bimanual_distance(self, hands: list[HandLandmarkData]) -> Optional[float]:
+        """Returns Euclidean canvas distance between primary and secondary index tips in pixels."""
+        if len(hands) < 2:
+            return None
+        h1 = self.get_primary_hand(hands)
+        h2 = self.get_secondary_hand(hands)
+        if h1 is not None and h2 is not None:
+            return h1.distance_to(h2)
+        return None
+
+    def get_bimanual_midpoint(self, hands: list[HandLandmarkData]) -> Optional[tuple[float, float]]:
+        """Returns canvas midpoint (x, y) between primary and secondary index tips."""
+        if len(hands) < 2:
+            return None
+        h1 = self.get_primary_hand(hands)
+        h2 = self.get_secondary_hand(hands)
+        if h1 is not None and h2 is not None:
+            return ((h1.canvas_x + h2.canvas_x) / 2.0, (h1.canvas_y + h2.canvas_y) / 2.0)
+        return None

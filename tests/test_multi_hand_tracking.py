@@ -226,3 +226,94 @@ def test_multi_hand_coordinator_independent_mode():
     assert len(hands) == 2
     for h in hands:
         assert h.role == HandRole.INDEPENDENT, "All hands in INDEPENDENT mode must have role=INDEPENDENT"
+
+def test_air_click_dwell_click_trigger():
+    """Verify that dwell progress hitting 1.0 sets is_dwell_clicked with debounce and single-edge trigger."""
+    detector = AirClickDetector(click_type=AirClickType.DWELL, dwell_time_ms=300.0, dwell_radius_canvas=25.0)
+    lm = _make_synthetic_landmarks()
+    hand_size = 0.25
+
+    # Start dwell
+    detector.process_hand("hand_0", lm, 400.0, 400.0, hand_size, t_ms=0.0)
+    assert detector.is_dwell_clicked("hand_0") is False
+
+    # Halfway
+    detector.process_hand("hand_0", lm, 405.0, 405.0, hand_size, t_ms=150.0)
+    assert detector.is_dwell_clicked("hand_0") is False
+
+    # Dwell complete at 300ms -> edge trigger
+    detector.process_hand("hand_0", lm, 402.0, 403.0, hand_size, t_ms=300.0)
+    assert detector.is_dwell_clicked("hand_0") is True
+
+    # Subsequent frame still inside dwell zone -> edge released (is_dwell_clicked False)
+    detector.process_hand("hand_0", lm, 402.0, 403.0, hand_size, t_ms=350.0)
+    assert detector.is_dwell_clicked("hand_0") is False
+
+
+def test_hand_landmark_data_properties_and_bimanual_metrics():
+    """Verify HandLandmarkData distance_to, is_air_click, and MultiHandCoordinator bimanual accessors."""
+    from src.core.multi_hand_coordinator import HandLandmarkData, HandRole
+
+    h1 = HandLandmarkData(
+        track_id="hand_0",
+        canvas_x=100.0,
+        canvas_y=200.0,
+        role=HandRole.PRIMARY,
+        is_air_tap=True,
+    )
+    assert h1.is_air_click is True
+
+    h2 = HandLandmarkData(
+        track_id="hand_1",
+        canvas_x=400.0,
+        canvas_y=600.0,
+        role=HandRole.SECONDARY,
+        is_air_tap=False,
+        is_pinch_click=False,
+        is_dwell_click=False,
+    )
+    assert h2.is_air_click is False
+
+    # Euclidean distance between (100, 200) and (400, 600) = sqrt(300^2 + 400^2) = 500
+    dist = h1.distance_to(h2)
+    assert dist == pytest.approx(500.0)
+
+    # Test coordinator bimanual helpers
+    coord = MultiHandCoordinator(mode=MultiHandMode.DRAW_AND_TOOL)
+    assert coord.get_primary_hand([h1, h2]) == h1
+    assert coord.get_secondary_hand([h1, h2]) == h2
+    assert coord.get_bimanual_distance([h1, h2]) == pytest.approx(500.0)
+    assert coord.get_bimanual_midpoint([h1, h2]) == (250.0, 400.0)
+
+    # Fewer than 2 hands returns None
+    assert coord.get_bimanual_distance([h1]) is None
+    assert coord.get_bimanual_midpoint([h1]) is None
+
+
+def test_air_click_detector_dynamic_setters():
+    """Verify AirClickDetector dynamic sensitivity setters and clamping."""
+    detector = AirClickDetector()
+
+    # Tap velocity threshold clamped to [0.15, 1.50]
+    detector.set_tap_velocity_threshold(0.05)
+    assert detector.tap_velocity_threshold == 0.15
+    detector.set_tap_velocity_threshold(2.50)
+    assert detector.tap_velocity_threshold == 1.50
+    detector.set_tap_velocity_threshold(0.60)
+    assert detector.tap_velocity_threshold == 0.60
+
+    # Dwell time clamped to [200.0, 3000.0]
+    detector.set_dwell_time_ms(50.0)
+    assert detector.dwell_time_ms == 200.0
+    detector.set_dwell_time_ms(5000.0)
+    assert detector.dwell_time_ms == 3000.0
+    detector.set_dwell_time_ms(800.0)
+    assert detector.dwell_time_ms == 800.0
+
+    # Dwell radius clamped to [5.0, 100.0]
+    detector.set_dwell_radius(1.0)
+    assert detector.dwell_radius_canvas == 5.0
+    detector.set_dwell_radius(200.0)
+    assert detector.dwell_radius_canvas == 100.0
+    detector.set_dwell_radius(30.0)
+    assert detector.dwell_radius_canvas == 30.0
