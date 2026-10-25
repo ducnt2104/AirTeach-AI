@@ -318,6 +318,8 @@ class AirTeachPackage:
     INK_PATH = "ink/strokes.json"
     RECOGNIZED_PATH = "recognized/items.json"
     LINKS_PATH = "links.json"
+    TIMELINE_PATH = "replay/timeline.json"
+    STEM_ITEMS_PATH = "stem/items.json"
 
     # ── Save ──────────────────────────────────────────────────────────────────
 
@@ -330,6 +332,8 @@ class AirTeachPackage:
         strokes: list[StrokeRecord],
         recognized: list[RecognizedItem],
         original_file_path: Optional[Path] = None,
+        timeline_data: Optional[dict] = None,
+        stem_items_data: Optional[list[dict]] = None,
     ) -> None:
         """
         Create a .airteach file at *output_path*.
@@ -403,6 +407,14 @@ class AirTeachPackage:
                 # links.json
                 zf.writestr(cls.LINKS_PATH, json.dumps(links_data, ensure_ascii=False, indent=2))
 
+                # replay/timeline.json
+                if timeline_data is not None:
+                    zf.writestr(cls.TIMELINE_PATH, json.dumps(timeline_data, ensure_ascii=False, indent=2))
+
+                # stem/items.json
+                if stem_items_data is not None:
+                    zf.writestr(cls.STEM_ITEMS_PATH, json.dumps(stem_items_data, ensure_ascii=False, indent=2))
+
             temp_path.replace(output_path)
             logger.info("Saved .airteach package atomically: %s (%d pages, %d strokes)",
                         output_path, len(page_image_paths), len(strokes))
@@ -413,6 +425,51 @@ class AirTeachPackage:
                 except Exception:
                     pass
             raise
+
+    # ── Replay Timeline & STEM Items ────────────────────────────
+
+    @classmethod
+    def read_timeline(cls, airteach_path: Path) -> dict[str, Any]:
+        """Read and return replay/timeline.json from .airteach file, or empty dict if absent."""
+        p = Path(airteach_path)
+        if not p.exists():
+            return {}
+        try:
+            with zipfile.ZipFile(str(p), "r") as zf:
+                if cls.TIMELINE_PATH in zf.namelist():
+                    return json.loads(zf.read(cls.TIMELINE_PATH).decode("utf-8"))
+        except Exception as exc:
+            logger.warning("Could not read timeline from %s: %s", airteach_path, exc)
+        return {}
+
+    @classmethod
+    def read_stem_items(cls, airteach_path: Path) -> list[dict[str, Any]]:
+        """Read and return stem/items.json from .airteach file, or empty list if absent."""
+        p = Path(airteach_path)
+        if not p.exists():
+            return []
+        try:
+            with zipfile.ZipFile(str(p), "r") as zf:
+                if cls.STEM_ITEMS_PATH in zf.namelist():
+                    data = json.loads(zf.read(cls.STEM_ITEMS_PATH).decode("utf-8"))
+                    if isinstance(data, list):
+                        return data
+        except Exception as exc:
+            logger.warning("Could not read stem items from %s: %s", airteach_path, exc)
+        return []
+
+    @classmethod
+    def load_extended(
+        cls,
+        airteach_path: Path,
+        extract_dir: Path,
+    ) -> tuple[AirTeachManifest, list[Path], list[StrokeRecord], list[RecognizedItem], dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+        """Extract and parse .airteach file including links, timeline, and STEM items."""
+        manifest, page_paths, strokes, recognized = cls.load(airteach_path, extract_dir)
+        links = cls.read_links(airteach_path)
+        timeline = cls.read_timeline(airteach_path)
+        stem_items = cls.read_stem_items(airteach_path)
+        return manifest, page_paths, strokes, recognized, links, timeline, stem_items
 
     # ── Cryptographic Links ────────────────────────────────────────────────────
 
@@ -668,8 +725,10 @@ class DocumentManager:
         strokes: list[StrokeRecord],
         recognized: list[RecognizedItem],
         original_file_path: Optional[Path] = None,
+        timeline_data: Optional[dict] = None,
+        stem_items_data: Optional[list[dict]] = None,
     ) -> None:
-        """Save the current lesson as a .airteach file."""
+        """Save current lesson to .airteach package with strokes, timeline and STEM items."""
         AirTeachPackage.save(
             output_path=output_path,
             manifest=manifest,
@@ -677,7 +736,25 @@ class DocumentManager:
             strokes=strokes,
             recognized=recognized,
             original_file_path=original_file_path,
+            timeline_data=timeline_data,
+            stem_items_data=stem_items_data,
         )
+
+    def read_lesson_timeline(self, airteach_path: Path) -> dict[str, Any]:
+        """Read replay timeline metadata from an .airteach file."""
+        return AirTeachPackage.read_timeline(airteach_path)
+
+    def read_lesson_stem_items(self, airteach_path: Path) -> list[dict[str, Any]]:
+        """Read stamped STEM items metadata from an .airteach file."""
+        return AirTeachPackage.read_stem_items(airteach_path)
+
+    def open_lesson_extended(
+        self,
+        airteach_path: Path,
+    ) -> tuple[AirTeachManifest, list[Path], list[StrokeRecord], list[RecognizedItem], dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+        """Open lesson package returning full manifest, pages, strokes, OCR, links, timeline, and STEM items."""
+        extract_dir = self.work_root / f"open_{airteach_path.stem}"
+        return AirTeachPackage.load_extended(airteach_path, extract_dir)
 
     def open_lesson(
         self,

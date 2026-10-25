@@ -917,6 +917,81 @@ class TestAirTeachPackage:
         tmp_files = list(tmp_dir.glob("*.tmp"))
         assert len(tmp_files) == 0, f"No leftover tmp files should remain, found: {tmp_files}"
 
+    def test_airteach_save_and_load_with_timeline_and_stem_items(self, tmp_path):
+        """Verify .airteach packages cleanly serialize, preserve, and unpack timeline & STEM items."""
+        output = tmp_path / "lesson_with_stem.airteach"
+        page_paths, strokes, recognized = self._make_test_package(tmp_path)
+        timeline = {
+            "total_duration_ms": 8500.0,
+            "chapters": [{"time_ms": 1000.0, "title": "Mở đầu"}, {"time_ms": 4500.0, "title": "Thí nghiệm"}],
+            "events": [{"time_ms": 2000.0, "event_type": "stem_action", "payload": {"angle_deg": 45.0}}],
+        }
+        stem_items = [
+            {"item_type": "trigonometric_circle", "page_index": 0, "pos": [150.0, 250.0], "angle_rad": 0.785},
+            {"item_type": "chemical_equilibrium", "page_index": 1, "pos": [300.0, 400.0]},
+        ]
+
+        # Save package with timeline and stem items
+        manifest = AirTeachManifest(title="STEM Lecture", teacher_id="Teacher A")
+        AirTeachPackage.save(
+            output_path=output,
+            manifest=manifest,
+            page_image_paths=page_paths,
+            strokes=strokes,
+            recognized=recognized,
+            timeline_data=timeline,
+            stem_items_data=stem_items,
+        )
+        assert output.exists()
+
+        # 1. Read timeline metadata alone
+        loaded_timeline = AirTeachPackage.read_timeline(output)
+        assert loaded_timeline["total_duration_ms"] == 8500.0
+        assert len(loaded_timeline["chapters"]) == 2
+        assert loaded_timeline["chapters"][0]["title"] == "Mở đầu"
+
+        # 2. Read STEM items alone
+        loaded_stem = AirTeachPackage.read_stem_items(output)
+        assert len(loaded_stem) == 2
+        assert loaded_stem[0]["item_type"] == "trigonometric_circle"
+        assert loaded_stem[1]["item_type"] == "chemical_equilibrium"
+
+        # 3. Standard load returns backward-compatible 4-tuple
+        extract_dir = tmp_path / "ext_std"
+        m, p, s, r = AirTeachPackage.load(output, extract_dir)
+        assert len(p) == len(page_paths)
+        assert len(s) == len(strokes)
+
+        # 4. Extended load returns complete 7-tuple
+        ext_dir2 = tmp_path / "ext_full"
+        m_ext, p_ext, s_ext, r_ext, links_ext, tl_ext, stem_ext = AirTeachPackage.load_extended(output, ext_dir2)
+        assert tl_ext["total_duration_ms"] == 8500.0
+        assert len(stem_ext) == 2
+
+    def test_document_manager_extended_lesson_io(self, tmp_path):
+        """Verify DocumentManager facade correctly forwards timeline & STEM items."""
+        doc_mgr = DocumentManager(work_root=tmp_path)
+        output = tmp_path / "dm_lesson.airteach"
+        page_paths, strokes, recognized = self._make_test_package(tmp_path)
+        timeline = {"total_duration_ms": 3000.0, "chapters": [], "events": []}
+        stem_items = [{"item_type": "cartesian_hud", "page_index": 0}]
+
+        doc_mgr.save_lesson(
+            output_path=output,
+            manifest=AirTeachManifest(title="DM Test"),
+            page_image_paths=page_paths,
+            strokes=strokes,
+            recognized=recognized,
+            timeline_data=timeline,
+            stem_items_data=stem_items,
+        )
+
+        assert doc_mgr.read_lesson_timeline(output)["total_duration_ms"] == 3000.0
+        assert len(doc_mgr.read_lesson_stem_items(output)) == 1
+        m, p, s, r, l, tl, st = doc_mgr.open_lesson_extended(output)
+        assert tl["total_duration_ms"] == 3000.0
+        assert st[0]["item_type"] == "cartesian_hud"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. StrokeRecord Serialization Tests

@@ -5,7 +5,7 @@
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20Qt6-brightgreen.svg)](https://www.qt.io/)
 [![Computer Vision](https://img.shields.io/badge/CV-OpenCV%20%2B%20MediaPipe-orange.svg)](https://opencv.org/)
 [![AI Assistant](https://img.shields.io/badge/AI-Google%20Gemini%20API-4285F4.svg)](https://aistudio.google.com/)
-[![Tests](https://img.shields.io/badge/Tests-1%2C563%20passed%20(110%20suites)-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-1%2C565%20passed%20(110%20suites)-success.svg)](tests/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue.svg)](https://github.com/ducnt2104/AirTeach-AI)
 [![License](https://img.shields.io/badge/License-Apache%202.0%20%2F%20LGPLv3-lightgrey.svg)](LICENSE)
 
@@ -240,7 +240,7 @@ python3 main.py --check
 ```
 
 ```text
-======================= 1563 passed, 1 warning in 384.20s =======================
+======================= 1565 passed, 1 warning in 385.40s =======================
 [CHECK] Open-source AI models verified.
 [CHECK] SQLite profile store and facial recognition pipeline verified.
 [CHECK] All systems operational. Ready to launch.

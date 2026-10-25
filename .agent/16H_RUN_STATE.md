@@ -9,7 +9,7 @@
 - **Global Architectural Policy Compliance**:
   - `RULE[AGENTS.md]` Zero Mock Data Policy: **100% COMPLIANT** (0 mock coordinates, 0 dummy users, 0 static dummy strings, 100% authentic mathematical, physical, chemical, biological, astronomical, and algorithmic implementations).
   - Zero UI Thread Blocking Policy: **100% COMPLIANT** (All heavy processing separated into QThreads, QRunnables, and QThreadPool with Qt Signals/Slots).
-  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,563 automated tests passing 100% across 110 test suites; zero test failures).
+  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,565 automated tests passing 100% across 110 test suites; zero test failures).
 
 ---
 
@@ -636,9 +636,28 @@ ormalize_vietnamese_ocr_text)**:
 
 ---
 
+### Milestone 195: `.airteach` Lesson Packaging Standards & Replay / STEM Telemetry Bundling
+- **Native `.airteach` ZIP Archive Extensions (`src/services/document_manager.py`)**:
+  - Added native member paths to `AirTeachPackage`:
+    - `TIMELINE_PATH = "replay/timeline.json"`
+    - `STEM_ITEMS_PATH = "stem/items.json"`
+  - Extended `AirTeachPackage.save()` with optional `timeline_data: Optional[dict]` and `stem_items_data: Optional[list[dict]]`.
+  - Added standalone readers:
+    - `AirTeachPackage.read_timeline(airteach_path) -> dict[str, Any]`
+    - `AirTeachPackage.read_stem_items(airteach_path) -> list[dict[str, Any]]`
+  - Implemented `AirTeachPackage.load_extended(airteach_path, extract_dir)` returning complete 7-tuple `(manifest, page_paths, strokes, recognized, links, timeline, stem_items)` while preserving 100% backward compatibility of standard 4-tuple `load()`.
+  - Updated `DocumentManager` facade with `save_lesson(..., timeline_data, stem_items_data)`, `read_lesson_timeline()`, `read_lesson_stem_items()`, and `open_lesson_extended()`.
+- **Test Suite Verification**:
+  - Added 2 comprehensive unit tests in `tests/test_services_and_storage.py`:
+    - `test_airteach_save_and_load_with_timeline_and_stem_items`
+    - `test_document_manager_extended_lesson_io`
+  - Total passing tests raised from 1,563 to **1,565 passed tests (100% pass rate across 110 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **110 Test Suites**
-- **Total Passing Tests**: **1,563 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Passing Tests**: **1,565 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
