@@ -713,9 +713,38 @@ ormalize_vietnamese_ocr_text)**:
 
 ---
 
+### Milestone 198: Interactive Multi-Curve Function Plotter & Calculus Engine
+- **Interactive Multi-Curve & Calculus Suite (src/ui/interactive_function_plotter.py)**:
+  - Multi-curve comparison:
+    - Added secondary function (x)$ support (set_secondary_expression, evaluate_g), pink neon rendering (#ec4899), and curve intersection analysis.
+  - Derivative curve visualization:
+    - Added '(x)$ derivative path sampling (	oggle_derivative_curve), rendered as dashed emerald curve with live calculus slope synchronization.
+  - Definite integral area & Riemann sums:
+    - Added shaded area under curve between  = a$ and  = b$ (set_integral_range, 	oggle_integral_area).
+    - Integrated Riemann sum approximations (left, 
+ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom visualization of numerical integration.
+  - Critical points detection:
+    - Automatic detection and visualization of roots ($-intercepts), $-intercept, and local extrema (minima, maxima where '(x) = 0$).
+  - Symbolic LaTeX integration:
+    - Added set_symbolic_expression(latex_or_expr) bridging directly with SymbolicMathEngine for authentic math parsing.
+  - Serialization:
+    - Complete JSON serialization (	o_dict / rom_dict) for .airteach lesson packaging.
+- **Test Suite Verification**:
+  - Expanded 	ests/test_interactive_function_plotter.py with 6 new comprehensive unit tests (14 tests total, all passed in 10.4s):
+    - 	est_secondary_curve_comparison
+    - 	est_derivative_curve_toggle
+    - 	est_integral_area_and_riemann_modes
+    - 	est_critical_points_detection
+    - 	est_symbolic_expression_setting
+    - 	est_plotter_serialization
+  - Total test suites maintained at **112 test suites**.
+  - Total passing tests raised from 1,592 to **1,598 passed tests (100% pass rate across 112 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **112 Test Suites**
-- **Total Passing Tests**: **1,592 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Passing Tests**: **1,598 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

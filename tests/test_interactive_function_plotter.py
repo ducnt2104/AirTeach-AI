@@ -183,3 +183,122 @@ def test_main_window_function_plotter_integration(qapp):
     win._on_toggle_function_plotter()
     assert win._scene.is_function_plotter_visible() is False
     win.close()
+
+
+def test_secondary_curve_comparison(qapp):
+    """Test multi-curve comparison with secondary function g(x)."""
+    plotter = InteractiveFunctionPlotterItem(expr="x**2")
+    signals = []
+    plotter.secondary_expression_changed.connect(lambda e: signals.append(e))
+
+    assert plotter.secondary_expression() is None
+    res = plotter.set_secondary_expression("2*x + 3")
+    assert res is True
+    assert plotter.secondary_expression() == "2*x + 3"
+    assert len(signals) == 1
+    assert abs(plotter.evaluate_g(1.0) - 5.0) < 1e-4
+
+    # Clear secondary curve
+    plotter.set_secondary_expression(None)
+    assert plotter.secondary_expression() is None
+
+
+def test_derivative_curve_toggle(qapp):
+    """Test toggling derivative f'(x) curve."""
+    plotter = InteractiveFunctionPlotterItem(expr="x**3 - 3*x")
+    assert plotter._show_derivative_curve is False
+    toggled = plotter.toggle_derivative_curve()
+    assert toggled is True
+    assert plotter._show_derivative_curve is True
+    assert not plotter._cached_path_deriv.isEmpty()
+
+
+def test_integral_area_and_riemann_modes(qapp):
+    """Test integral area shading and Riemann sums calculation/rendering."""
+    plotter = InteractiveFunctionPlotterItem(expr="x**2")
+    assert plotter._show_integral_area is False
+    plotter.toggle_integral_area()
+    assert plotter._show_integral_area is True
+
+    plotter.set_integral_range(0.0, 2.0)
+    assert plotter._integral_a == 0.0
+    assert plotter._integral_b == 2.0
+
+    # Test Riemann modes
+    for mode in ("left", "right", "midpoint", "none"):
+        plotter.set_riemann_mode(mode, n=10)
+        assert plotter._riemann_mode == mode
+        assert plotter._riemann_n == 10
+
+    # Render on QImage
+    img = QImage(800, 600, QImage.Format.Format_ARGB32_Premultiplied)
+    painter = QPainter(img)
+    plotter.paint(painter, None, None)
+    painter.end()
+
+
+def test_critical_points_detection(qapp):
+    """Test automatic detection of roots, y-intercept, and local extrema."""
+    plotter = InteractiveFunctionPlotterItem(expr="x**2 - 4", x_min=-5.0, x_max=5.0)
+    crit = plotter.find_critical_points()
+
+    # Roots check: x ≈ -2.0, 2.0
+    root_xs = [r[0] for r in crit["roots"]]
+    assert any(abs(rx - 2.0) < 0.1 for rx in root_xs)
+    assert any(abs(rx - (-2.0)) < 0.1 for rx in root_xs)
+
+    # Y-intercept check: (0, -4)
+    assert len(crit["y_intercept"]) == 1
+    assert abs(crit["y_intercept"][0][1] - (-4.0)) < 1e-4
+
+    # Extrema check: vertex at x=0, y=-4
+    assert len(crit["extrema"]) >= 1
+    assert any(abs(ex[0] - 0.0) < 0.1 and abs(ex[1] - (-4.0)) < 0.1 for ex in crit["extrema"])
+
+
+def test_symbolic_expression_setting(qapp):
+    """Test setting expression from LaTeX string with automatic normalization."""
+    plotter = InteractiveFunctionPlotterItem()
+    res = plotter.set_symbolic_expression(r"\frac{1}{2}x^2 - 2")
+    assert res is True
+    assert abs(plotter.evaluate_f(2.0) - 0.0) < 1e-4
+    assert abs(plotter.evaluate_f(0.0) - (-2.0)) < 1e-4
+
+
+def test_plotter_serialization(qapp):
+    """Test complete JSON serialization and deserialization for .airteach packages."""
+    plotter = InteractiveFunctionPlotterItem(
+        expr="x**3 - 3*x",
+        origin=(800.0, 450.0),
+        grid_step=55.0,
+        x_min=-5.0,
+        x_max=5.0,
+        probe_x=1.5,
+    )
+    plotter.set_secondary_expression("x + 1")
+    plotter.set_show_derivative_curve(True)
+    plotter.toggle_integral_area()
+    plotter.set_integral_range(0.0, 2.5)
+    plotter.set_riemann_mode("midpoint", 12)
+
+    data = plotter.to_dict()
+    assert data["type"] == "interactive_function_plotter"
+    assert data["expr"] == "x**3 - 3*x"
+    assert data["expr_g"] == "x + 1"
+    assert data["show_derivative"] is True
+    assert data["show_integral"] is True
+    assert data["integral_range"] == [0.0, 2.5]
+    assert data["riemann_mode"] == "midpoint"
+    assert data["riemann_n"] == 12
+
+    # Reconstruct
+    restored = InteractiveFunctionPlotterItem.from_dict(data)
+    assert restored.expression() == "x**3 - 3*x"
+    assert restored.secondary_expression() == "x + 1"
+    assert restored._show_derivative_curve is True
+    assert restored._show_integral_area is True
+    assert restored._integral_a == 0.0
+    assert restored._integral_b == 2.5
+    assert restored._riemann_mode == "midpoint"
+    assert restored._riemann_n == 12
+
