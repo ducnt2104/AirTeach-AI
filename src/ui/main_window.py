@@ -1023,6 +1023,11 @@ class MainWindow(QMainWindow):
         orbital_act.triggered.connect(self._on_toggle_orbital_mechanics)
         view_menu.addAction(orbital_act)
 
+        heat_transfer_act = QAction("🔥 Nhiệt động lực học: Truyền nhiệt 2D Fourier & Đối lưu Newton", self)
+        heat_transfer_act.setShortcut(QKeySequence("Ctrl+Shift+Z"))
+        heat_transfer_act.triggered.connect(self._on_toggle_heat_transfer)
+        view_menu.addAction(heat_transfer_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5332,6 +5337,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_orbital_mechanics()
         self._status.showMessage(
             f"Cơ học Quỹ đạo & Hohmann: {'Hiển thị (Ctrl+Shift+L)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_heat_transfer(self) -> bool:
+        """Toggle interactive 2D Heat Transfer & Convection simulator on LessonBoard."""
+        is_visible = self._scene.toggle_heat_transfer()
+        self._status.showMessage(
+            f"Truyền nhiệt Fourier 2D: {'Hiển thị (Ctrl+Shift+Z)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

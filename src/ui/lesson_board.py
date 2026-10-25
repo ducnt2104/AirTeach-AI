@@ -299,6 +299,7 @@ class LessonBoard(QGraphicsScene):
         self._acoustic_sonar_item: Optional[QGraphicsItem] = None
         self._cloud_chamber_item: Optional[QGraphicsItem] = None
         self._orbital_mechanics_item: Optional[QGraphicsItem] = None
+        self._heat_transfer_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1382,6 +1383,43 @@ class LessonBoard(QGraphicsScene):
     def get_orbital_mechanics_item(self) -> Optional[QGraphicsItem]:
         """Return interactive Hohmann Transfer instance if created."""
         return getattr(self, "_orbital_mechanics_item", None)
+
+    # ── Interactive Thermodynamics & Heat Transfer Simulator ────────────
+    def show_heat_transfer(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive 2D Heat Diffusion & Convection simulator."""
+        if getattr(self, "_heat_transfer_item", None) is None:
+            from src.ui.interactive_heat_transfer import InteractiveHeatTransferItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 900.0 / 2.0, 110.0)
+            self._heat_transfer_item = InteractiveHeatTransferItem(board=self)
+            self._heat_transfer_item.setPos(spawn_pos[0], spawn_pos[1])
+            self.addItem(self._heat_transfer_item)
+
+        self._heat_transfer_item.setVisible(visible)
+        if visible and pos is not None:
+            self._heat_transfer_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._heat_transfer_item if visible else None
+
+    def toggle_heat_transfer(self) -> bool:
+        """Toggle interactive 2D Heat Diffusion & Convection simulator visibility."""
+        if getattr(self, "_heat_transfer_item", None) is None or not self._heat_transfer_item.isVisible():
+            self.show_heat_transfer(True)
+            return True
+        else:
+            self.show_heat_transfer(False)
+            return False
+
+    def is_heat_transfer_visible(self) -> bool:
+        """Return True if interactive 2D Heat Transfer simulator is active on board."""
+        return getattr(self, "_heat_transfer_item", None) is not None and self._heat_transfer_item.isVisible()
+
+    def get_heat_transfer_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive 2D Heat Transfer instance if created."""
+        return getattr(self, "_heat_transfer_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6415,6 +6453,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_acoustic_sonar_item", None),
             getattr(self, "_cloud_chamber_item", None),
             getattr(self, "_orbital_mechanics_item", None),
+            getattr(self, "_heat_transfer_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),
