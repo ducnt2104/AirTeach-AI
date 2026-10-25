@@ -1083,6 +1083,11 @@ class MainWindow(QMainWindow):
         qc_act.triggered.connect(self._on_toggle_quantum_circuit)
         view_menu.addAction(qc_act)
 
+        ftir_act = QAction("🧪 Hóa lý & Quang phổ: Quang phổ kế FTIR & Giao thoa Michelson", self)
+        ftir_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+D"))
+        ftir_act.triggered.connect(self._on_toggle_ftir_spectroscopy)
+        view_menu.addAction(ftir_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5512,6 +5517,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_quantum_circuit()
         self._status.showMessage(
             f"Mạch Qubit & Quả cầu Bloch: {'Hiển thị (Ctrl+Alt+Shift+A)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_ftir_spectroscopy(self) -> bool:
+        """Toggle interactive FTIR Spectroscopy on LessonBoard."""
+        is_visible = self._scene.toggle_ftir_spectroscopy()
+        self._status.showMessage(
+            f"Quang phổ kế FTIR & Michelson: {'Hiển thị (Ctrl+Alt+Shift+D)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

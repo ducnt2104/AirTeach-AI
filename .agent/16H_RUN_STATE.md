@@ -1463,9 +1463,45 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+---
+
+### Milestone 220: Physical Chemistry & Spectroscopy: FTIR Spectroscopy, Molecular Vibrational Modes & Michelson Inversion
+- **FTIR Spectroscopy Simulator (`src/ui/interactive_ftir_spectroscopy.py`)**:
+  - Implemented `InteractiveFTIRSpectroscopyItem(QGraphicsObject)`, `FTIRPreset`, and authentic molecular vibration & optical Fourier inversion engine.
+  - Authentic Physical Chemistry & Molecular Spectroscopy Foundations:
+    - Molecular vibrational normal modes:
+      $$\tilde{\nu} = \frac{1}{2\pi c} \sqrt{\frac{k}{\mu}}$$
+      with harmonic oscillator selection rules $\Delta v = \pm 1$ and dynamic dipole moment variation $\frac{d\vec{\mu}}{dQ} \neq 0$.
+    - Michelson interferometer optical path difference (OPD $\delta = 2x$):
+      $$I_{\text{AC}}(\delta) = \int_0^\infty B(\tilde{\nu}) \cos(2\pi \tilde{\nu} \delta) d\tilde{\nu}$$
+      Massive centerburst at Zero Path Difference (ZPD, $\delta = 0$).
+    - Spectral Fourier inversion with Boxcar / Hamming window apodization:
+      $$B(\tilde{\nu}) = 2 \int_0^\infty I_{\text{AC}}(\delta) A_{\text{pod}}(\delta) \cos(2\pi \tilde{\nu} \delta) d\delta$$
+    - Beer-Lambert law: $A(\tilde{\nu}) = c \cdot \epsilon(\tilde{\nu}) \cdot \ell$, $\%T(\tilde{\nu}) = 100 \times 10^{-A}$.
+  - 5 Authentic Chemical Presets:
+    1. Ethanol ($CH_3CH_2OH$): Hydrogen-bonded O-H stretch ($3350\text{ cm}^{-1}$), C-H $sp^3$ stretch ($2970, 2890\text{ cm}^{-1}$), C-O primary alcohol stretch ($1050\text{ cm}^{-1}$).
+    2. Acetone ($CH_3COCH_3$): Dominant carbonyl C=O stretch ($1715\text{ cm}^{-1}$), C-H ($2960\text{ cm}^{-1}$), C-C-C skeleton ($1220\text{ cm}^{-1}$).
+    3. Benzene ($C_6H_6$): Aromatic =C-H stretch ($3030\text{ cm}^{-1}$), C=C ring stretches ($1480, 1600\text{ cm}^{-1}$), =C-H out-of-plane bend ($675\text{ cm}^{-1}$).
+    4. Carbon Dioxide ($CO_2$): Linear $D_{\infty h}$, asymmetric stretch $\nu_3$ ($2349\text{ cm}^{-1}$, major greenhouse band), bending $\nu_2$ ($667\text{ cm}^{-1}$), symmetric $\nu_1$ ($1388\text{ cm}^{-1}$, IR inactive).
+    5. Water Vapor ($H_2O$): $C_{2v}$ symmetric stretch $\nu_1$ ($3657\text{ cm}^{-1}$), bending $\nu_2$ ($1595\text{ cm}^{-1}$), asymmetric stretch $\nu_3$ ($3756\text{ cm}^{-1}$).
+  - Tri-panel interactive visualization:
+    - Left: Michelson optical bench showing Globar IR emitter, beam splitter, fixed mirror, moving mirror, sample cell, and detector.
+    - Center: Raw time-domain interferogram $I(\delta)$ showing ZPD centerburst and optical fringes.
+    - Right: High-resolution FTIR spectrum ($400 - 4000\text{ cm}^{-1}$) with standard high-to-low reverse wavenumber axis and functional group peak callouts.
+  - Dual modes (Absorbance $A$ vs %Transmittance $\%T$), Hamming/Boxcar apodization, sample concentration slider, 30 FPS self-animating `QTimer`, air gestures, and serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._ftir_spectroscopy_item`, `show_ftir_spectroscopy`, `toggle_ftir_spectroscopy`, `is_ftir_spectroscopy_visible`, `get_ftir_spectroscopy_item`.
+  - `MainWindow`: Added View menu action `Ctrl+Alt+Shift+D` ("Hóa lý & Quang phổ: Quang phổ kế FTIR & Giao thoa Michelson"), `@Slot() def _on_toggle_ftir_spectroscopy`.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_ftir_spectroscopy.py` (11 unit tests, all passed in 0.91s).
+  - Total test suites raised from 154 to **155 test suites**.
+  - Total passing tests raised from 1,863 to **1,874 passed tests (100% pass rate across 155 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **154 Test Suites**
-- **Total Passing Tests**: **1,863 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **155 Test Suites**
+- **Total Passing Tests**: **1,874 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

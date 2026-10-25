@@ -311,6 +311,7 @@ class LessonBoard(QGraphicsScene):
         self._cryo_em_item: Optional[QGraphicsItem] = None
         self._gravitational_waves_item: Optional[QGraphicsItem] = None
         self._quantum_circuit_item: Optional[QGraphicsItem] = None
+        self._ftir_spectroscopy_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1838,6 +1839,43 @@ class LessonBoard(QGraphicsScene):
     def get_quantum_circuit_item(self) -> Optional[QGraphicsItem]:
         """Return interactive Quantum Circuit instance if created."""
         return getattr(self, "_quantum_circuit_item", None)
+
+    # ── Interactive FTIR Spectroscopy & Michelson Optical Physics ─────
+    def show_ftir_spectroscopy(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive FTIR Spectroscopy visualizer."""
+        if getattr(self, "_ftir_spectroscopy_item", None) is None:
+            from src.ui.interactive_ftir_spectroscopy import InteractiveFTIRSpectroscopyItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 940.0 / 2.0, 110.0)
+            self._ftir_spectroscopy_item = InteractiveFTIRSpectroscopyItem(board=self)
+            self._ftir_spectroscopy_item.setPos(spawn_pos[0], spawn_pos[1])
+            self.addItem(self._ftir_spectroscopy_item)
+
+        self._ftir_spectroscopy_item.setVisible(visible)
+        if visible and pos is not None:
+            self._ftir_spectroscopy_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._ftir_spectroscopy_item if visible else None
+
+    def toggle_ftir_spectroscopy(self) -> bool:
+        """Toggle interactive FTIR Spectroscopy simulator visibility."""
+        if getattr(self, "_ftir_spectroscopy_item", None) is None or not self._ftir_spectroscopy_item.isVisible():
+            self.show_ftir_spectroscopy(True)
+            return True
+        else:
+            self.show_ftir_spectroscopy(False)
+            return False
+
+    def is_ftir_spectroscopy_visible(self) -> bool:
+        """Return True if interactive FTIR Spectroscopy visualizer is active on board."""
+        return getattr(self, "_ftir_spectroscopy_item", None) is not None and self._ftir_spectroscopy_item.isVisible()
+
+    def get_ftir_spectroscopy_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive FTIR Spectroscopy instance if created."""
+        return getattr(self, "_ftir_spectroscopy_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6883,6 +6921,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_cryo_em_item", None),
             getattr(self, "_gravitational_waves_item", None),
             getattr(self, "_quantum_circuit_item", None),
+            getattr(self, "_ftir_spectroscopy_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),
