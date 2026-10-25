@@ -1088,9 +1088,48 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 210: Aerodynamics & Compressible Flow: de Laval Nozzle, Supersonic Shock Diamonds & Isentropic Expansion
+- **de Laval Nozzle & Compressible Aerodynamics Simulator (`src/ui/interactive_laval_nozzle.py`)**:
+  - Implemented `InteractiveLavalNozzleItem(QGraphicsObject)`, `LavalPreset`, and Newton-Raphson compressible Mach-Area solver.
+  - Authentic Compressible Aerodynamics & Gas Dynamics:
+    - Area-Velocity Relation (Hugoniot Equation):
+      $$\frac{dA}{A} = (M^2 - 1) \frac{du}{u}$$
+      - Subsonic ($M < 1$): Converging duct accelerates flow ($dA < 0 \implies du > 0$).
+      - Sonic throat ($M = 1$): $dA = 0$ (minimum throat area $A^*$, choked flow).
+      - Supersonic ($M > 1$): Diverging duct accelerates flow ($dA > 0 \implies du > 0$).
+    - Isentropic Stagnation Relations ($\gamma = 1.4$ for air/gas):
+      $$\frac{T_0}{T} = 1 + \frac{\gamma - 1}{2} M^2, \quad \frac{P_0}{P} = \left(1 + \frac{\gamma - 1}{2} M^2\right)^{\frac{\gamma}{\gamma - 1}}$$
+      $$\frac{A}{A^*} = \frac{1}{M} \left[\frac{2}{\gamma + 1}\left(1 + \frac{\gamma - 1}{2} M^2\right)\right]^{\frac{\gamma + 1}{2(\gamma - 1)}}$$
+    - Normal Shock Wave & Rankine-Hugoniot Jump Conditions:
+      $$M_2^2 = \frac{(\gamma - 1)M_1^2 + 2}{2\gamma M_1^2 - (\gamma - 1)}, \quad \frac{P_2}{P_1} = 1 + \frac{2\gamma}{\gamma + 1}(M_1^2 - 1)$$
+      Predicts standing normal shock location inside diverging section when ambient back pressure exceeds isentropic exit shock pressure.
+    - Exhaust Plume Regimes & Supersonic Shock Diamonds:
+      - Overexpanded ($P_e < P_a$): Oblique shock reflections form periodic rhomboid Mach shock diamonds with luminous white-hot cores.
+      - Ideally Expanded ($P_e = P_a$): Parallel supersonic exhaust cylinder maximizing momentum thrust.
+      - Underexpanded ($P_e > P_a$): Billowing Prandtl-Meyer expansion fan blooming wide.
+      - Subsonic Venturi: Choked condition not met, classical Bernoulli depression at throat.
+    - Rocket Thrust & Specific Impulse:
+      $$F = \dot{m} v_e + (P_e - P_a) A_e, \quad I_{sp} = \frac{F}{\dot{m} g_0}$$
+  - 5 Curriculum Presets:
+    1. Ideally Expanded Rocket Engine ($P_e = P_a$, $M_e = 3.0$, perfectly parallel exhaust cylinder).
+    2. Overexpanded Shock Diamonds ($P_e = 0.40 P_a$, static test stand with periodic Mach shock diamonds).
+    3. Normal Shock Inside Nozzle ($P_0 = 2.1\text{ bar}$, $P_b = 1.0\text{ bar}$, standing shock wave in diverging section).
+    4. Underexpanded High Altitude Plume ($P_e = 4.5 P_a$, wide billowing expansion plume).
+    5. Subsonic Venturi Tube ($M < 0.6$ everywhere, classical Bernoulli depression).
+  - Touchless webcam air gestures (air-tap on buttons, sliders for $P_0, P_b, A_e/A^*, T_0$), bimanual manipulation, canvas stamping, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._laval_nozzle_item`, `show_laval_nozzle`, `toggle_laval_nozzle`, `is_laval_nozzle_visible`, `get_laval_nozzle_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+2` ("Khí động học: Ống phun de Laval & Kim cương Mach"), `@Slot() def _on_toggle_laval_nozzle`, and air-tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_laval_nozzle.py` (12 unit tests, all passed in 1.57s).
+  - Total test suites raised from 144 to **145 test suites**.
+  - Total passing tests raised from 1,746 to **1,758 passed tests (100% pass rate across 145 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **144 Test Suites**
-- **Total Passing Tests**: **1,746 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **145 Test Suites**
+- **Total Passing Tests**: **1,758 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

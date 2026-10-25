@@ -301,6 +301,7 @@ class LessonBoard(QGraphicsScene):
         self._orbital_mechanics_item: Optional[QGraphicsItem] = None
         self._heat_transfer_item: Optional[QGraphicsItem] = None
         self._quantum_diffraction_item: Optional[QGraphicsItem] = None
+        self._laval_nozzle_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1458,6 +1459,43 @@ class LessonBoard(QGraphicsScene):
     def get_quantum_diffraction_item(self) -> Optional[QGraphicsItem]:
         """Return interactive Quantum Double-Slit instance if created."""
         return getattr(self, "_quantum_diffraction_item", None)
+
+    # ── Interactive Aerodynamics & de Laval Nozzle Simulator ────────────
+    def show_laval_nozzle(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive de Laval Nozzle & Supersonic shock diamonds visualizer."""
+        if getattr(self, "_laval_nozzle_item", None) is None:
+            from src.ui.interactive_laval_nozzle import InteractiveLavalNozzleItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 920.0 / 2.0, 110.0)
+            self._laval_nozzle_item = InteractiveLavalNozzleItem(board=self)
+            self._laval_nozzle_item.setPos(spawn_pos[0], spawn_pos[1])
+            self.addItem(self._laval_nozzle_item)
+
+        self._laval_nozzle_item.setVisible(visible)
+        if visible and pos is not None:
+            self._laval_nozzle_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._laval_nozzle_item if visible else None
+
+    def toggle_laval_nozzle(self) -> bool:
+        """Toggle interactive de Laval Nozzle simulator visibility."""
+        if getattr(self, "_laval_nozzle_item", None) is None or not self._laval_nozzle_item.isVisible():
+            self.show_laval_nozzle(True)
+            return True
+        else:
+            self.show_laval_nozzle(False)
+            return False
+
+    def is_laval_nozzle_visible(self) -> bool:
+        """Return True if interactive de Laval Nozzle simulator is active on board."""
+        return getattr(self, "_laval_nozzle_item", None) is not None and self._laval_nozzle_item.isVisible()
+
+    def get_laval_nozzle_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive de Laval Nozzle instance if created."""
+        return getattr(self, "_laval_nozzle_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6493,6 +6531,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_orbital_mechanics_item", None),
             getattr(self, "_heat_transfer_item", None),
             getattr(self, "_quantum_diffraction_item", None),
+            getattr(self, "_laval_nozzle_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),

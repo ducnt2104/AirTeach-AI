@@ -1033,6 +1033,11 @@ class MainWindow(QMainWindow):
         quantum_diffraction_act.triggered.connect(self._on_toggle_quantum_diffraction)
         view_menu.addAction(quantum_diffraction_act)
 
+        laval_nozzle_act = QAction("🚀 Khí động học: Ống phun de Laval & Kim cương Mach", self)
+        laval_nozzle_act.setShortcut(QKeySequence("Ctrl+Shift+2"))
+        laval_nozzle_act.triggered.connect(self._on_toggle_laval_nozzle)
+        view_menu.addAction(laval_nozzle_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5362,6 +5367,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_quantum_diffraction()
         self._status.showMessage(
             f"Giao thoa Lượng tử Khe kép: {'Hiển thị (Ctrl+Shift+1)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_laval_nozzle(self) -> bool:
+        """Toggle interactive de Laval Nozzle & Supersonic shock diamonds on LessonBoard."""
+        is_visible = self._scene.toggle_laval_nozzle()
+        self._status.showMessage(
+            f"Ống phun de Laval: {'Hiển thị (Ctrl+Shift+2)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible
