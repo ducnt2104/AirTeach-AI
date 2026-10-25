@@ -1063,6 +1063,11 @@ class MainWindow(QMainWindow):
         synchrotron_act.triggered.connect(self._on_toggle_synchrotron_radiation)
         view_menu.addAction(synchrotron_act)
 
+        ising_model_act = QAction("⚡ Vật lý thống kê: Mô hình Ising 2D & Chuyển pha Lars Onsager", self)
+        ising_model_act.setShortcut(QKeySequence("Ctrl+Shift+8"))
+        ising_model_act.triggered.connect(self._on_toggle_ising_model)
+        view_menu.addAction(ising_model_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5452,6 +5457,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_synchrotron_radiation()
         self._status.showMessage(
             f"Bức xạ Synchrotron & Undulator: {'Hiển thị (Ctrl+Shift+7)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_ising_model(self) -> bool:
+        """Toggle interactive 2D Ising Model on LessonBoard."""
+        is_visible = self._scene.toggle_ising_model()
+        self._status.showMessage(
+            f"Mô hình Ising 2D & Onsager: {'Hiển thị (Ctrl+Shift+8)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

@@ -1323,9 +1323,46 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 216: Statistical Mechanics: 2D Ising Model, Ferromagnetic Phase Transition & Lars Onsager Exact Solution
+- **2D Ising Model & Phase Transition Simulator (`src/ui/interactive_ising_model.py`)**:
+  - Implemented `InteractiveIsingModelItem(QGraphicsObject)`, `IsingPreset`, and authentic Metropolis Monte Carlo vectorized lattice solver.
+  - Authentic Statistical Mechanics & Critical Phenomena:
+    - 2D Square Lattice Hamiltonian:
+      $$\mathcal{H} = -J \sum_{\langle i, j \rangle} s_i s_j - h \sum_i s_i$$
+      where $s_{i,j} \in \{-1, +1\}$, $J > 0$ (ferromagnetism) or $J < 0$ (antiferromagnetism).
+    - Vectorized Checkerboard Metropolis Monte Carlo Algorithm:
+      - Energy cost to flip a spin: $\Delta E = 2 s_i (J \sum_{n.n.} s_j + h)$.
+      - Transition probability: $P_{\text{acc}} = \min(1, \exp(-\Delta E / k_B T))$.
+      - Executes 3 complete $50 \times 50 = 2,500$ spin sweeps per frame with periodic boundary conditions.
+    - Lars Onsager's Exact Analytical Solution (1944):
+      - Critical temperature:
+        $$\frac{k_B T_c}{J} = \frac{2}{\ln(1 + \sqrt{2})} \approx 2.269185$$
+      - Spontaneous magnetization for $T < T_c$:
+        $$M(T) = \left[ 1 - \sinh^{-4}\left(\frac{2J}{k_B T}\right) \right]^{1/8}$$
+        Identically zero for $T \ge T_c$.
+    - Dual Visualization Panels:
+      - Left: Live $50 \times 50$ spin lattice rendering (Spin up = Cyan, Spin down = Magenta) showing domain formation, critical opalescence clustering, and paramagnetic disorder.
+      - Right: Analytical Onsager curve $M(T)$ with current dynamic state point $(T, \langle M \rangle)$, alongside live time-history plots of magnetization $\langle M \rangle(t)$ and energy $\langle E \rangle(t)$.
+  - 5 Curriculum Presets:
+    1. Ferromagnetic Ordered ($T = 1.2 < T_c$, spontaneous symmetry breaking, uniform magnetized domain).
+    2. Critical Point ($T = T_c \approx 2.269$, scale-invariant fractal fluctuations, divergent susceptibility).
+    3. Paramagnetic Gas ($T = 4.2 > T_c$, entropy-dominated thermal noise, vanishing magnetization).
+    4. Magnetic Hysteresis ($T = 1.8$, external field sweeping $h \in [-1.5, +1.5]$, hysteresis loop).
+    5. Antiferromagnetic Néel Order ($J = -1.0$, alternating checkerboard antiparallel ground state).
+  - Continuous 30 FPS self-animating `QTimer`, touchless air gestures, temperature/coupling/field sliders, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._ising_model_item`, `show_ising_model`, `toggle_ising_model`, `is_ising_model_visible`, `get_ising_model_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+8` ("Vật lý thống kê: Mô hình Ising 2D & Chuyển pha Lars Onsager"), `@Slot() def _on_toggle_ising_model`, and air-tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_ising_model.py` (11 unit tests, all passed in 0.85s).
+  - Total test suites raised from 150 to **151 test suites**.
+  - Total passing tests raised from 1,817 to **1,828 passed tests (100% pass rate across 151 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **150 Test Suites**
-- **Total Passing Tests**: **1,817 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **151 Test Suites**
+- **Total Passing Tests**: **1,828 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
