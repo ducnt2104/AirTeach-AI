@@ -1127,9 +1127,48 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 211: Structural Biochemistry & Protein Folding: Ramachandran Plot, Peptide Backbones & Steric Clashing
+- **Ramachandran Plot & Protein Conformation Simulator (`src/ui/interactive_ramachandran_plot.py`)**:
+  - Implemented `InteractiveRamachandranPlotItem(QGraphicsObject)`, `RamachandranPreset`, and 3D projected dipeptide backbone atomic renderer.
+  - Authentic Structural Biochemistry & Conformational Energetics:
+    - Dihedral (Torsion) Angles (G. N. Ramachandran, 1963):
+      - $\phi$ (phi): Rotation around the $N_i - C_{\alpha,i}$ bond.
+      - $\psi$ (psi): Rotation around the $C_{\alpha,i} - C'_i$ bond.
+      - $\omega$ (omega): Peptide bond $C' - N$, planar resonance ($\omega \approx 180^\circ$ for trans).
+    - Hard-Sphere Steric Clashing (van der Waals Contact Radii):
+      - Non-bonded contact distance $d(A, B) \ge r_{\text{vdW}}(A) + r_{\text{vdW}}(B) - \Delta$ ($r_{\text{vdW}}$: $H \approx 1.20\text{ \AA}$, $C \approx 1.70\text{ \AA}$, $N \approx 1.55\text{ \AA}$, $O \approx 1.52\text{ \AA}$, $C_\beta \approx 1.80\text{ \AA}$).
+      - Detects and visually flashes steric overlaps ($O_i \cdots H_{i+1}$, $C'_{i-1} \cdots N_{i+1}$) in real time.
+    - Secondary Structure Energy Basins:
+      - Right-handed $\alpha$-helix ($\alpha_R$): $\phi \approx -57^\circ$, $\psi \approx -47^\circ$, optimum $i \to i+4$ backbone hydrogen bonding.
+      - Antiparallel $\beta$-pleated sheet: $\phi \approx -139^\circ$, $\psi \approx +135^\circ$, extended polypeptide strand.
+      - Collagen / Polyproline II ($P_{II}$): $\phi \approx -75^\circ$, $\psi \approx +145^\circ$, left-handed extended helix.
+      - Left-handed $\alpha$-helix ($\alpha_L$): $\phi \approx +57^\circ$, $\psi \approx +47^\circ$, allowed predominantly for Glycine.
+    - Residue-Specific Conformational Maps:
+      - General amino acids (Ala, Leu, Val, Met, Phe, etc.).
+      - Glycine: Lacks $C_\beta$ sidechain, allowing symmetric access across all 4 quadrants ($\sim 61\%$ allowed area).
+      - Proline: Cyclic pyrrolidine ring locks $\phi \approx -65^\circ \pm 15^\circ$ ($C_\delta - N$ covalent bond).
+    - 3D Projected Dipeptide Backbone Model:
+      - Real-time rotating atoms ($C'_{i-1}, N_i, H_i, C_{\alpha,i}, C_{\beta,i}, C'_i, O_i, N_{i+1}$) with dynamic bond links, hydrogen bond formation indicators, and red pulsing steric collision warning rings.
+  - 5 Curriculum Presets:
+    1. Alpha Helix ($\alpha_R$, $\phi = -57^\circ$, $\psi = -47^\circ$, optimum hydrogen bond network).
+    2. Antiparallel Beta Sheet ($\beta_A$, $\phi = -139^\circ$, $\psi = +135^\circ$, extended planar strand).
+    3. Collagen Triple Helix ($P_{II}$, $\phi = -75^\circ$, $\psi = +145^\circ$, polyproline II motif).
+    4. Glycine Flexibility (Symmetric four-quadrant allowed basin for non-chiral Glycine).
+    5. Steric Clash Eclipsed ($\phi = 0^\circ$, $\psi = 0^\circ$, severe carbonyl-amide atomic collision).
+  - Touchless webcam air gestures (air-tap on buttons, 2D dragging on the Ramachandran contour map, sliders for $\phi, \psi$), bimanual manipulation, canvas stamping, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._ramachandran_plot_item`, `show_ramachandran_plot`, `toggle_ramachandran_plot`, `is_ramachandran_plot_visible`, `get_ramachandran_plot_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+3` ("Hóa sinh cấu trúc: Giản đồ Ramachandran & Gấp cuộn Protein"), `@Slot() def _on_toggle_ramachandran_plot`, and air-tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_ramachandran_plot.py` (12 unit tests, all passed in 1.59s).
+  - Total test suites raised from 145 to **146 test suites**.
+  - Total passing tests raised from 1,758 to **1,770 passed tests (100% pass rate across 146 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **145 Test Suites**
-- **Total Passing Tests**: **1,758 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **146 Test Suites**
+- **Total Passing Tests**: **1,770 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

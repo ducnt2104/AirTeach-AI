@@ -1038,6 +1038,11 @@ class MainWindow(QMainWindow):
         laval_nozzle_act.triggered.connect(self._on_toggle_laval_nozzle)
         view_menu.addAction(laval_nozzle_act)
 
+        ramachandran_plot_act = QAction("🧬 Hóa sinh cấu trúc: Giản đồ Ramachandran & Gấp cuộn Protein", self)
+        ramachandran_plot_act.setShortcut(QKeySequence("Ctrl+Shift+3"))
+        ramachandran_plot_act.triggered.connect(self._on_toggle_ramachandran_plot)
+        view_menu.addAction(ramachandran_plot_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5377,6 +5382,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_laval_nozzle()
         self._status.showMessage(
             f"Ống phun de Laval: {'Hiển thị (Ctrl+Shift+2)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_ramachandran_plot(self) -> bool:
+        """Toggle interactive Ramachandran Plot & Protein Folding on LessonBoard."""
+        is_visible = self._scene.toggle_ramachandran_plot()
+        self._status.showMessage(
+            f"Giản đồ Ramachandran: {'Hiển thị (Ctrl+Shift+3)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

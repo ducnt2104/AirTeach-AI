@@ -302,6 +302,7 @@ class LessonBoard(QGraphicsScene):
         self._heat_transfer_item: Optional[QGraphicsItem] = None
         self._quantum_diffraction_item: Optional[QGraphicsItem] = None
         self._laval_nozzle_item: Optional[QGraphicsItem] = None
+        self._ramachandran_plot_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1496,6 +1497,43 @@ class LessonBoard(QGraphicsScene):
     def get_laval_nozzle_item(self) -> Optional[QGraphicsItem]:
         """Return interactive de Laval Nozzle instance if created."""
         return getattr(self, "_laval_nozzle_item", None)
+
+    # ── Interactive Structural Biochemistry & Ramachandran Plot Simulator ──
+    def show_ramachandran_plot(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive Ramachandran Plot & Protein Folding visualizer."""
+        if getattr(self, "_ramachandran_plot_item", None) is None:
+            from src.ui.interactive_ramachandran_plot import InteractiveRamachandranPlotItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 920.0 / 2.0, 110.0)
+            self._ramachandran_plot_item = InteractiveRamachandranPlotItem(board=self)
+            self._ramachandran_plot_item.setPos(spawn_pos[0], spawn_pos[1])
+            self.addItem(self._ramachandran_plot_item)
+
+        self._ramachandran_plot_item.setVisible(visible)
+        if visible and pos is not None:
+            self._ramachandran_plot_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._ramachandran_plot_item if visible else None
+
+    def toggle_ramachandran_plot(self) -> bool:
+        """Toggle interactive Ramachandran Plot simulator visibility."""
+        if getattr(self, "_ramachandran_plot_item", None) is None or not self._ramachandran_plot_item.isVisible():
+            self.show_ramachandran_plot(True)
+            return True
+        else:
+            self.show_ramachandran_plot(False)
+            return False
+
+    def is_ramachandran_plot_visible(self) -> bool:
+        """Return True if interactive Ramachandran Plot simulator is active on board."""
+        return getattr(self, "_ramachandran_plot_item", None) is not None and self._ramachandran_plot_item.isVisible()
+
+    def get_ramachandran_plot_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive Ramachandran Plot instance if created."""
+        return getattr(self, "_ramachandran_plot_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6532,6 +6570,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_heat_transfer_item", None),
             getattr(self, "_quantum_diffraction_item", None),
             getattr(self, "_laval_nozzle_item", None),
+            getattr(self, "_ramachandran_plot_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),
