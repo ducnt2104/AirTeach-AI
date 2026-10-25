@@ -847,6 +847,29 @@ class MathTools:
 
         return items
 
+    @staticmethod
+    def create_trigonometric_circle_diagram(
+        center: tuple[float, float] = (500.0, 400.0),
+        radius: float = 180.0,
+        angle_deg: float = 45.0,
+        show_tangent: bool = True,
+        show_cotangent: bool = True,
+        show_projections: bool = True,
+    ) -> QGraphicsItem:
+        """
+        Create an interactive trigonometric unit circle item (Đường tròn lượng giác)
+        with real-time sin/cos/tan/cot projections, cardinal angle snapping, and HUD.
+        """
+        from src.ui.interactive_trigonometric_circle import InteractiveTrigonometricUnitCircleItem
+        return InteractiveTrigonometricUnitCircleItem(
+            center=center,
+            radius=radius,
+            angle_deg=angle_deg,
+            show_tangent=show_tangent,
+            show_cotangent=show_cotangent,
+            show_projections=show_projections,
+        )
+
 
 class PhysicsTools:
     """Physics vector mechanics, force decomposition, and circuit symbols."""
