@@ -1053,6 +1053,11 @@ class MainWindow(QMainWindow):
         superconductivity_act.triggered.connect(self._on_toggle_superconductivity)
         view_menu.addAction(superconductivity_act)
 
+        band_theory_act = QAction("⚡ Vật lý chất rắn: Lý thuyết vùng & Mô hình Kronig-Penney (Band Theory)", self)
+        band_theory_act.setShortcut(QKeySequence("Ctrl+Shift+6"))
+        band_theory_act.triggered.connect(self._on_toggle_band_theory)
+        view_menu.addAction(band_theory_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5422,6 +5427,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_superconductivity()
         self._status.showMessage(
             f"Siêu dẫn & Bay lượng tử: {'Hiển thị (Ctrl+Shift+5)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_band_theory(self) -> bool:
+        """Toggle interactive Solid-State Band Theory on LessonBoard."""
+        is_visible = self._scene.toggle_band_theory()
+        self._status.showMessage(
+            f"Lý thuyết vùng & Kronig-Penney: {'Hiển thị (Ctrl+Shift+6)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

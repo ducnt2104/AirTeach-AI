@@ -1243,9 +1243,50 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 214: Solid-State Physics: Band Theory, Kronig-Penney Dispersion & Fermi-Dirac Statistics
+- **Band Theory & Semiconductor Simulator (`src/ui/interactive_band_theory.py`)**:
+  - Implemented `InteractiveBandTheoryItem(QGraphicsObject)`, `BandTheoryPreset`, and authentic 1D periodic potential dispersion solver.
+  - Authentic Condensed Matter Physics & Quantum Statistical Mechanics:
+    - 1D Periodic Potential & Kronig-Penney Model:
+      $$P \frac{\sin(\alpha a)}{\alpha a} + \cos(\alpha a) = \cos(k a)$$
+      where $\alpha = \sqrt{2mE / \hbar^2}$, barrier parameter $P = \frac{m V_0 a b}{\hbar^2}$.
+      Allowed energy bands: $|f(\alpha a)| \le 1 \implies ka = \arccos(f(\alpha a))$.
+      Forbidden bandgaps $E_g$: $|f(\alpha a)| > 1$.
+    - Energy Band Diagram & Effective Mass:
+      Direct vs indirect bandgaps, curvature effective mass $m^* = \hbar^2 / (d^2E/dk^2)$, Valence Band Maximum ($E_v$) and Conduction Band Minimum ($E_c$).
+    - Fermi-Dirac Probability Distribution:
+      $$f(E) = \frac{1}{1 + \exp\left(\frac{E - E_F}{k_B T}\right)}$$
+      $f(E_F) \equiv 0.5$, thermal tail broadening with increasing temperature.
+    - Thermal Generation & Law of Mass Action:
+      $$n_i = \sqrt{N_c N_v} \exp\left(-\frac{E_g}{2 k_B T}\right)$$
+      $$n \cdot p = n_i^2$$
+    - Extrinsic Doping & Fermi Level Movement:
+      - n-type: Donor density $N_d$, $E_F = E_c - k_B T \ln(N_c / N_d)$ pinned near conduction band.
+      - p-type: Acceptor density $N_a$, $E_F = E_v + k_B T \ln(N_v / N_a)$ pinned near valence band.
+    - Tri-Panel Visualization Architecture:
+      - Left: $E(k)$ dispersion relations in 1st Brillouin zone ($k \in [-\pi/a, +\pi/a]$).
+      - Center: Real-space energy bands with animated thermal electrons (cyan) in CB and holes (pink) in VB.
+      - Right: $f(E)$ Fermi-Dirac distribution curve with interactive temperature modulation.
+  - 5 Curriculum Presets:
+    1. Intrinsic Silicon ($E_g = 1.12\text{ eV}$, $E_F$ in midgap, thermal e-h pairs).
+    2. n-type Silicon (Phosphorus-doped $N_d = 10^{16}\text{ cm}^{-3}$, high electron density).
+    3. p-type Silicon (Boron-doped $N_a = 10^{16}\text{ cm}^{-3}$, high hole density).
+    4. Direct-Gap GaAs ($E_g = 1.42\text{ eV}$, direct bandgap for optoelectronic LED/laser recombination).
+    5. Wide-Gap Insulator (Diamond, $E_g = 5.47\text{ eV}$, zero conduction carriers at room temp).
+  - Continuous 30 FPS self-animating `QTimer`, touchless air gestures, temperature/bandgap/barrier sliders, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._band_theory_item`, `show_band_theory`, `toggle_band_theory`, `is_band_theory_visible`, `get_band_theory_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+6` ("Vật lý chất rắn: Lý thuyết vùng & Mô hình Kronig-Penney (Band Theory)"), `@Slot() def _on_toggle_band_theory`, and air-tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_band_theory.py` (10 unit tests, all passed in 1.07s).
+  - Total test suites raised from 148 to **149 test suites**.
+  - Total passing tests raised from 1,796 to **1,806 passed tests (100% pass rate across 149 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **148 Test Suites**
-- **Total Passing Tests**: **1,796 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **149 Test Suites**
+- **Total Passing Tests**: **1,806 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
