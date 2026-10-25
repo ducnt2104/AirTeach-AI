@@ -312,6 +312,7 @@ class LessonBoard(QGraphicsScene):
         self._gravitational_waves_item: Optional[QGraphicsItem] = None
         self._quantum_circuit_item: Optional[QGraphicsItem] = None
         self._ftir_spectroscopy_item: Optional[QGraphicsItem] = None
+        self._higgs_mechanism_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1876,6 +1877,43 @@ class LessonBoard(QGraphicsScene):
     def get_ftir_spectroscopy_item(self) -> Optional[QGraphicsItem]:
         """Return interactive FTIR Spectroscopy instance if created."""
         return getattr(self, "_ftir_spectroscopy_item", None)
+
+    # ── Interactive Higgs Boson Mechanism & Electroweak Symmetry ───────
+    def show_higgs_mechanism(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive Higgs Mechanism visualizer."""
+        if getattr(self, "_higgs_mechanism_item", None) is None:
+            from src.ui.interactive_higgs_mechanism import InteractiveHiggsMechanismItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 940.0 / 2.0, 110.0)
+            self._higgs_mechanism_item = InteractiveHiggsMechanismItem(board=self)
+            self._higgs_mechanism_item.setPos(spawn_pos[0], spawn_pos[1])
+            self.addItem(self._higgs_mechanism_item)
+
+        self._higgs_mechanism_item.setVisible(visible)
+        if visible and pos is not None:
+            self._higgs_mechanism_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._higgs_mechanism_item if visible else None
+
+    def toggle_higgs_mechanism(self) -> bool:
+        """Toggle interactive Higgs Mechanism simulator visibility."""
+        if getattr(self, "_higgs_mechanism_item", None) is None or not self._higgs_mechanism_item.isVisible():
+            self.show_higgs_mechanism(True)
+            return True
+        else:
+            self.show_higgs_mechanism(False)
+            return False
+
+    def is_higgs_mechanism_visible(self) -> bool:
+        """Return True if interactive Higgs Mechanism visualizer is active on board."""
+        return getattr(self, "_higgs_mechanism_item", None) is not None and self._higgs_mechanism_item.isVisible()
+
+    def get_higgs_mechanism_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive Higgs Mechanism instance if created."""
+        return getattr(self, "_higgs_mechanism_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6922,6 +6960,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_gravitational_waves_item", None),
             getattr(self, "_quantum_circuit_item", None),
             getattr(self, "_ftir_spectroscopy_item", None),
+            getattr(self, "_higgs_mechanism_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),

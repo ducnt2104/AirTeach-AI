@@ -1088,6 +1088,11 @@ class MainWindow(QMainWindow):
         ftir_act.triggered.connect(self._on_toggle_ftir_spectroscopy)
         view_menu.addAction(ftir_act)
 
+        higgs_act = QAction("⚛ Vật lý hạt & Mô hình Chuẩn: Hạt Higgs, Phá vỡ đối xứng & Đỉnh cộng hưởng 125 GeV", self)
+        higgs_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+I"))
+        higgs_act.triggered.connect(self._on_toggle_higgs_mechanism)
+        view_menu.addAction(higgs_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5527,6 +5532,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_ftir_spectroscopy()
         self._status.showMessage(
             f"Quang phổ kế FTIR & Michelson: {'Hiển thị (Ctrl+Alt+Shift+D)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_higgs_mechanism(self) -> bool:
+        """Toggle interactive Higgs Mechanism & Resonance on LessonBoard."""
+        is_visible = self._scene.toggle_higgs_mechanism()
+        self._status.showMessage(
+            f"Hạt Higgs & Phá vỡ đối xứng: {'Hiển thị (Ctrl+Alt+Shift+I)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible
