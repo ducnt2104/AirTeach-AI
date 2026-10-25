@@ -179,6 +179,44 @@ class VirtualRulerItem(QGraphicsObject):
         self.setRotation(angle_deg % 360.0)
         self.update()
 
+    def rotate_by(self, delta_deg: float) -> float:
+        """Incrementally rotate ruler by delta degrees."""
+        new_angle = (self.rotation() + delta_deg) % 360.0
+        self.setRotation(new_angle)
+        self.update()
+        return new_angle
+
+    def snap_to_cardinal_angle(self, tolerance_deg: float = 7.5) -> float:
+        """Snap current ruler angle to nearest cardinal angle (0°, 30°, 45°, 60°, 90°, etc.)."""
+        cardinals = [0.0, 30.0, 45.0, 60.0, 90.0, 120.0, 135.0, 150.0, 180.0, 210.0, 225.0, 240.0, 270.0, 300.0, 315.0, 330.0, 360.0]
+        curr = self.rotation() % 360.0
+        for c in cardinals:
+            if abs(curr - c) <= tolerance_deg or abs(curr - c + 360.0) <= tolerance_deg:
+                target = 0.0 if c == 360.0 else c
+                self.setRotation(target)
+                self.update()
+                return target
+        return curr
+
+    def set_length_cm(self, length_cm: float) -> None:
+        """Dynamically change ruler measurement length (5cm to 50cm)."""
+        self.prepareGeometryChange()
+        self.length_cm = max(5.0, min(50.0, float(length_cm)))
+        self.length_px = self.length_cm * self.pixels_per_cm
+        self.update()
+
+    def air_click_at(self, canvas_x: float, canvas_y: float) -> bool:
+        """Touchless air tap on ruler controls (e.g. rotation handle)."""
+        local_pos = self.mapFromScene(QPointF(canvas_x, canvas_y))
+        rot_cx = self.length_px - 20.0
+        rot_cy = self.height_px / 2.0
+        dist = math.hypot(local_pos.x() - rot_cx, local_pos.y() - rot_cy)
+        if dist <= 24.0:
+            # Air click on rotation handle rotates by 45°
+            self.rotate_by(45.0)
+            return True
+        return False
+
 
 class VirtualProtractorItem(QGraphicsObject):
     """
@@ -345,6 +383,31 @@ class VirtualProtractorItem(QGraphicsObject):
         """Programmatically set needle measurement angle."""
         self.needle_angle = max(0.0, min(180.0, float(angle_deg)))
         self.update()
+
+    def adjust_needle_delta(self, delta_deg: float) -> float:
+        """Adjust needle angle incrementally within [0°, 180°]."""
+        self.needle_angle = max(0.0, min(180.0, self.needle_angle + delta_deg))
+        self.update()
+        return self.needle_angle
+
+    def snap_needle_to_cardinal_angle(self, tolerance_deg: float = 3.0) -> float:
+        """Snap needle to nearest cardinal angle (0°, 30°, 45°, 60°, 90°, 120°, 135°, 150°, 180°)."""
+        cardinals = [0.0, 30.0, 45.0, 60.0, 90.0, 120.0, 135.0, 150.0, 180.0]
+        for c in cardinals:
+            if abs(self.needle_angle - c) <= tolerance_deg:
+                self.needle_angle = c
+                self.update()
+                return c
+        return self.needle_angle
+
+    def air_click_at(self, canvas_x: float, canvas_y: float) -> bool:
+        """Touchless air tap on protractor measurement disk to set needle angle directly."""
+        local_pos = self.mapFromScene(QPointF(canvas_x, canvas_y))
+        dist = math.hypot(local_pos.x(), local_pos.y())
+        if 20.0 <= dist <= self.radius + 20.0 and local_pos.y() <= 10.0:
+            self._update_needle_from_pos(local_pos)
+            return True
+        return False
 
 
 class VirtualCompassItem(QGraphicsObject):

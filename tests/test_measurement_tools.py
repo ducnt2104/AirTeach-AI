@@ -479,3 +479,68 @@ def test_main_window_timer_integration(qapp):
     assert win._scene.is_timer_visible()
 
     win.close()
+
+
+def test_virtual_ruler_rotation_snapping_and_air_clicks(qapp):
+    """Verify VirtualRulerItem rotate_by, snap_to_cardinal_angle, length resizing, and air_click_at."""
+    ruler = VirtualRulerItem(length_cm=10.0, pixels_per_cm=40.0, height_px=60.0)
+    ruler.setPos(100.0, 100.0)
+
+    # 1. Rotate by
+    new_ang = ruler.rotate_by(30.0)
+    assert new_ang == 30.0
+    assert ruler.rotation() == 30.0
+
+    # 2. Snap to cardinal angle (within tolerance 7.5°)
+    ruler.set_angle(43.5)
+    snapped = ruler.snap_to_cardinal_angle(tolerance_deg=7.5)
+    assert snapped == 45.0
+    assert ruler.rotation() == 45.0
+
+    # No snap outside tolerance
+    ruler.set_angle(50.0)
+    not_snapped = ruler.snap_to_cardinal_angle(tolerance_deg=2.0)
+    assert not_snapped == 50.0
+
+    # 3. Dynamic length resizing
+    ruler.set_length_cm(20.0)
+    assert ruler.length_cm == 20.0
+    assert ruler.length_px == 800.0
+
+    # 4. Air click on rotation handle (computed via mapToScene)
+    old_rot = ruler.rotation()
+    from PySide6.QtCore import QPointF
+    handle_scene = ruler.mapToScene(QPointF(ruler.length_px - 20.0, ruler.height_px / 2.0))
+    handled = ruler.air_click_at(handle_scene.x(), handle_scene.y())
+    assert handled is True
+    assert ruler.rotation() == (old_rot + 45.0) % 360.0
+
+    # Miss outside handle
+    assert ruler.air_click_at(handle_scene.x() + 100.0, handle_scene.y() + 100.0) is False
+def test_virtual_protractor_needle_adjust_and_air_clicks(qapp):
+    """Verify VirtualProtractorItem adjust_needle_delta, snap_needle_to_cardinal_angle, and air_click_at."""
+    prot = VirtualProtractorItem(radius=150.0)
+    prot.setPos(300.0, 300.0)
+
+    # 1. Incremental needle adjustment
+    prot.set_angle(60.0)
+    prot.adjust_needle_delta(15.0)
+    assert prot.needle_angle == 75.0
+
+    prot.adjust_needle_delta(-100.0)  # clamped min 0°
+    assert prot.needle_angle == 0.0
+
+    prot.adjust_needle_delta(250.0)  # clamped max 180°
+    assert prot.needle_angle == 180.0
+
+    # 2. Snap needle to cardinal angle
+    prot.set_angle(88.5)
+    snapped = prot.snap_needle_to_cardinal_angle(tolerance_deg=3.0)
+    assert snapped == 90.0
+    assert prot.needle_angle == 90.0
+
+    # 3. Air click to tap needle position
+    # Point at local (0, -100) -> 90 degrees up -> scene (300, 200)
+    handled = prot.air_click_at(300.0, 200.0)
+    assert handled is True
+    assert prot.needle_angle == pytest.approx(90.0, abs=1.0)
