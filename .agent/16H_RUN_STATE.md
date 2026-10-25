@@ -1051,9 +1051,46 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 209: Quantum Mechanics & Matter Waves: Double-Slit Diffraction, Wavepacket Collapse & de Broglie Wavelength
+- **Quantum Double-Slit & de Broglie Matter Wave Simulator (`src/ui/interactive_quantum_diffraction.py`)**:
+  - Implemented `InteractiveQuantumDiffractionItem(QGraphicsObject)`, `QuantumPreset`, and stochastic Born rule rejection sampling.
+  - Authentic Quantum Mechanics & Matter Wave Physics:
+    - de Broglie Matter Wavelength:
+      - Non-relativistic: $\lambda = \frac{h}{p} = \frac{h}{\sqrt{2 m E_k}}$.
+      - Relativistic electron: $p = \frac{\sqrt{E_k(E_k + 2 m_0 c^2)}}{c} \implies \lambda = \frac{h c}{\sqrt{E_k(E_k + 2 m_0 c^2)}}$.
+      - Photons: $p = \frac{E}{c} \implies \lambda = \frac{h c}{E}$.
+    - Double-Slit Quantum Superposition & Born Rule:
+      - Phase difference at screen coordinate $y$: $\Delta\phi = \frac{2\pi d y}{\lambda D}$.
+      - Single-slit diffraction parameter: $\beta = \frac{\pi a y}{\lambda D}$.
+      - Coherent intensity: $I_{\text{coherent}}(y) = I_0 \cos^2(\Delta\phi / 2) \text{sinc}^2(\beta)$.
+      - Fringe spacing: $\Delta y = \frac{\lambda D}{d}$.
+    - Which-Way (Welcher-Weg) Detector & Wavepacket Collapse:
+      - When detector tags path at slit 1 or 2 with fidelity $\eta \in [0, 1]$, phase coherence is destroyed:
+        $$I_{\text{incoherent}}(y) = \frac{1}{2} I_0 \left[ \text{sinc}^2\left(\frac{\pi a (y - d/2)}{\lambda D}\right) + \text{sinc}^2\left(\frac{\pi a (y + d/2)}{\lambda D}\right) \right]$$
+      - Observed intensity: $I(y) = (1 - \eta) I_{\text{coherent}}(y) + \eta I_{\text{incoherent}}(y)$.
+      - Fringe visibility (Michelson contrast): $V = \frac{I_{\text{max}} - I_{\text{min}}}{I_{\text{max}} + I_{\text{min}}} = 1 - \eta$.
+    - Single-Particle Stochastic Accumulation (Hitachi Tonomura 1989):
+      - Rejection sampling generates individual quantum impacts on phosphor screen from Born probability density $P(y) = I(y) / \int I(u) du$, demonstrating stochastic build-up into deterministic quantum interference fringes.
+  - 5 Curriculum Presets:
+    1. Hitachi Electron Tonomura 1989 ($50\text{ keV}$, $\lambda = 5.36\text{ pm}$, single-electron stochastic build-up).
+    2. Optical Young Laser ($532\text{ nm}$ green laser, macroscopic double-slit interference).
+    3. Which-Way Wavepacket Collapse (Slit detector active, demonstrating decoherence and disappearance of interference fringes).
+    4. Thermal Neutrons ($0.025\text{ eV}$, $\lambda = 0.181\text{ nm}$, nuclear matter-wave interferometry).
+    5. Fullerene C60 Buckyball ($m = 720\text{ u}$, $v = 220\text{ m/s}$, $\lambda = 2.5\text{ pm}$, Zeilinger 1999 macroscopic quantum diffraction).
+  - Touchless webcam air gestures (air-tap on buttons, sliders for slit separation $d$, slit width $a$, decoherence $\eta$, flux rate), bimanual manipulation, canvas stamping, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._quantum_diffraction_item`, `show_quantum_diffraction`, `toggle_quantum_diffraction`, `is_quantum_diffraction_visible`, `get_quantum_diffraction_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+1` ("Cơ học Lượng tử: Giao thoa Khe kép & Sóng de Broglie"), `@Slot() def _on_toggle_quantum_diffraction`, and air-tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_quantum_diffraction.py` (14 unit tests, all passed in 1.58s).
+  - Total test suites raised from 143 to **144 test suites**.
+  - Total passing tests raised from 1,732 to **1,746 passed tests (100% pass rate across 144 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **143 Test Suites**
-- **Total Passing Tests**: **1,732 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **144 Test Suites**
+- **Total Passing Tests**: **1,746 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

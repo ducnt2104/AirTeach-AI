@@ -1028,6 +1028,11 @@ class MainWindow(QMainWindow):
         heat_transfer_act.triggered.connect(self._on_toggle_heat_transfer)
         view_menu.addAction(heat_transfer_act)
 
+        quantum_diffraction_act = QAction("⚛️ Cơ học Lượng tử: Giao thoa Khe kép & Sóng de Broglie", self)
+        quantum_diffraction_act.setShortcut(QKeySequence("Ctrl+Shift+1"))
+        quantum_diffraction_act.triggered.connect(self._on_toggle_quantum_diffraction)
+        view_menu.addAction(quantum_diffraction_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5347,6 +5352,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_heat_transfer()
         self._status.showMessage(
             f"Truyền nhiệt Fourier 2D: {'Hiển thị (Ctrl+Shift+Z)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_quantum_diffraction(self) -> bool:
+        """Toggle interactive Quantum Double-Slit & de Broglie matter wave visualizer on LessonBoard."""
+        is_visible = self._scene.toggle_quantum_diffraction()
+        self._status.showMessage(
+            f"Giao thoa Lượng tử Khe kép: {'Hiển thị (Ctrl+Shift+1)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

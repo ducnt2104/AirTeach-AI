@@ -300,6 +300,7 @@ class LessonBoard(QGraphicsScene):
         self._cloud_chamber_item: Optional[QGraphicsItem] = None
         self._orbital_mechanics_item: Optional[QGraphicsItem] = None
         self._heat_transfer_item: Optional[QGraphicsItem] = None
+        self._quantum_diffraction_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1420,6 +1421,43 @@ class LessonBoard(QGraphicsScene):
     def get_heat_transfer_item(self) -> Optional[QGraphicsItem]:
         """Return interactive 2D Heat Transfer instance if created."""
         return getattr(self, "_heat_transfer_item", None)
+
+    # ── Interactive Quantum Double-Slit & de Broglie Matter Wave Simulator ──
+    def show_quantum_diffraction(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive Quantum Double-Slit & de Broglie matter wave visualizer."""
+        if getattr(self, "_quantum_diffraction_item", None) is None:
+            from src.ui.interactive_quantum_diffraction import InteractiveQuantumDiffractionItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 920.0 / 2.0, 110.0)
+            self._quantum_diffraction_item = InteractiveQuantumDiffractionItem(board=self)
+            self._quantum_diffraction_item.setPos(spawn_pos[0], spawn_pos[1])
+            self.addItem(self._quantum_diffraction_item)
+
+        self._quantum_diffraction_item.setVisible(visible)
+        if visible and pos is not None:
+            self._quantum_diffraction_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._quantum_diffraction_item if visible else None
+
+    def toggle_quantum_diffraction(self) -> bool:
+        """Toggle interactive Quantum Double-Slit simulator visibility."""
+        if getattr(self, "_quantum_diffraction_item", None) is None or not self._quantum_diffraction_item.isVisible():
+            self.show_quantum_diffraction(True)
+            return True
+        else:
+            self.show_quantum_diffraction(False)
+            return False
+
+    def is_quantum_diffraction_visible(self) -> bool:
+        """Return True if interactive Quantum Double-Slit simulator is active on board."""
+        return getattr(self, "_quantum_diffraction_item", None) is not None and self._quantum_diffraction_item.isVisible()
+
+    def get_quantum_diffraction_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive Quantum Double-Slit instance if created."""
+        return getattr(self, "_quantum_diffraction_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6454,6 +6492,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_cloud_chamber_item", None),
             getattr(self, "_orbital_mechanics_item", None),
             getattr(self, "_heat_transfer_item", None),
+            getattr(self, "_quantum_diffraction_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),
