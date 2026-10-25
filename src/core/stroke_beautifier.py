@@ -92,6 +92,16 @@ class OneEuroFilter:
         self._dx.reset()
         self._last_t = None
 
+    @property
+    def last_value(self) -> float:
+        """Return the most recent filtered scalar value."""
+        return self._x.last_value
+
+    @property
+    def derivative(self) -> float:
+        """Return the most recent filtered derivative dx/dt."""
+        return self._dx.last_value
+
     @staticmethod
     def _alpha(cutoff: float, freq: float) -> float:
         """Compute smoothing factor α from cutoff frequency and sample rate."""
@@ -158,6 +168,25 @@ class OneEuroFilter2D:
         """Reset the filter state (call when starting a new stroke)."""
         self._fx.reset()
         self._fy.reset()
+
+    @property
+    def last_point(self) -> Optional[tuple[float, float]]:
+        """Return the most recent filtered coordinate (last_x, last_y) or None."""
+        if self._fx._x._initialized and self._fy._x._initialized:
+            return (self._fx._x.last_value, self._fy._x.last_value)
+        return None
+
+    def filter_with_speed(self, x: float, y: float, t_ms: float) -> tuple[float, float, float]:
+        """
+        Filter (x, y) at timestamp t_ms and compute instant tangential speed in pixels/sec.
+        Returns (filtered_x, filtered_y, speed_px_per_sec).
+        """
+        fx = self._fx.filter(x, t_ms)
+        fy = self._fy.filter(y, t_ms)
+        vx = self._fx._dx.last_value
+        vy = self._fy._dx.last_value
+        speed = math.hypot(vx, vy)
+        return fx, fy, speed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -481,8 +510,18 @@ class GeometricShapeSnapper:
             SnappedShape with shape_type, params, confidence, and render_points.
         """
         pts = np.asarray(points, dtype=np.float64)
-        if pts.ndim == 2 and pts.shape[1] > 2:
+        if pts.ndim != 2:
+            return SnappedShape(ShapeType.FREEFORM, confidence=0.0)
+        if pts.shape[1] > 2:
             pts = pts[:, :2]
+        elif pts.shape[1] < 2:
+            return SnappedShape(ShapeType.FREEFORM, confidence=0.0)
+
+        # Filter non-finite (NaN / Inf) rows to prevent numerical domain errors
+        finite_mask = np.all(np.isfinite(pts), axis=1)
+        if not np.all(finite_mask):
+            pts = pts[finite_mask]
+
         if len(pts) < 3:
             return SnappedShape(ShapeType.FREEFORM, confidence=0.0)
 

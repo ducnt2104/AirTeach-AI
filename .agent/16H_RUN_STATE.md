@@ -9,7 +9,7 @@
 - **Global Architectural Policy Compliance**:
   - `RULE[AGENTS.md]` Zero Mock Data Policy: **100% COMPLIANT** (0 mock coordinates, 0 dummy users, 0 static dummy strings, 100% authentic mathematical, physical, chemical, biological, astronomical, and algorithmic implementations).
   - Zero UI Thread Blocking Policy: **100% COMPLIANT** (All heavy processing separated into QThreads, QRunnables, and QThreadPool with Qt Signals/Slots).
-  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,530 automated tests passing 100% across all suites; zero test failures).
+  - 100% Passing Test Rate Invariant: **100% COMPLIANT** (1,532 automated tests passing 100% across all suites; zero test failures).
 
 ---
 
@@ -470,10 +470,24 @@
 
 ---
 
+### Milestone 187: 1€ Filter Speed Estimation, State Introspection & Snapper Non-Finite Robustness
+- **OneEuroFilter2D Instantaneous Speed & State Inspection**:
+  - Implemented `@property last_point -> Optional[tuple[float, float]]` on `OneEuroFilter2D` for zero-mutation spatial position queries by pointer HUDs and dwell detectors.
+  - Implemented `filter_with_speed(x, y, t_ms) -> tuple[float, float, float]` returning instant tangential speed $v = \sqrt{v_x^2 + v_y^2}$ in px/sec, harmonizing with velocity-modulated Bézier stroke width rendering.
+  - Added `@property last_value` and `@property derivative` on `OneEuroFilter`.
+- **GeometricShapeSnapper Non-Finite & Malformed Ingestion Hardening**:
+  - Validates point array dimensionality (`ndim == 2`) and column count.
+  - Added non-finite row filtering (`finite_mask = np.all(np.isfinite(pts), axis=1)`) purging camera tracking glitches (`NaN` / `Inf`) before covariance matrices or convex hulls are computed, eliminating domain errors.
+- **Test Suite Verification**:
+  - Added 2 unit tests in `tests/test_core_algorithms.py`.
+  - Total passing tests raised from 1,530 to **1,532 passed tests (100% pass rate across 108 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
 - **Total Automated Test Suites**: **108 Test Suites**
-- **Total Passing Tests**: **1,530 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
-  - `pytest -q`: **1530 passed (100%)**
+- **Total Passing Tests**: **1,532 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+  - `pytest -q`: **1532 passed (100%)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

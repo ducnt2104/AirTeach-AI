@@ -294,6 +294,24 @@ class TestOneEuroFilter2D:
         assert math.isfinite(fx) and math.isfinite(fy)
         assert 150.0 <= fx <= 200.0
 
+    def test_filter_with_speed_and_last_point(self):
+        """Verify OneEuroFilter2D last_point inspection and instantaneous speed estimation."""
+        filt = OneEuroFilter2D()
+        assert filt.last_point is None
+
+        # Initial point
+        fx, fy, speed = filt.filter_with_speed(100.0, 200.0, 0.0)
+        assert fx == 100.0 and fy == 200.0
+        assert speed == 0.0
+        assert filt.last_point == (100.0, 200.0)
+
+        # Move diagonally at constant velocity: (110, 210) after 16.6 ms
+        fx2, fy2, speed2 = filt.filter_with_speed(110.0, 210.0, 16.6)
+        assert filt.last_point == (fx2, fy2)
+        assert speed2 > 0.0
+        assert filt._fx.last_value == fx2
+        assert math.isfinite(filt._fx.derivative)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. Ramer-Douglas-Peucker Tests
@@ -609,6 +627,32 @@ class TestGeometricShapeSnapper:
         assert snapper._snap_angle(-178.5) in (-180.0, 180.0)
         assert snapper._snap_angle(1.5) == 0.0
         assert snapper._snap_angle(88.5) == 90.0
+
+    def test_snap_adversarial_non_finite_and_malformed_inputs(self, snapper):
+        """snap() must gracefully handle NaN, Inf, 1D arrays, and empty sets returning FREEFORM."""
+        # 1. 1D array
+        res_1d = snapper.snap(np.array([10.0, 20.0, 30.0]))
+        assert res_1d.shape_type == ShapeType.FREEFORM
+
+        # 2. Points with NaN and Inf
+        pts_nan = np.array([
+            [10.0, 20.0],
+            [float("nan"), 25.0],
+            [30.0, float("inf")],
+            [40.0, 50.0],
+            [50.0, 60.0],
+        ])
+        res_nan = snapper.snap(pts_nan)
+        assert res_nan.shape_type in (ShapeType.LINE, ShapeType.FREEFORM)
+
+        # 3. All NaN
+        all_nan = np.full((10, 2), float("nan"))
+        res_all_nan = snapper.snap(all_nan)
+        assert res_all_nan.shape_type == ShapeType.FREEFORM
+
+        # 4. Less than 3 points
+        res_two = snapper.snap(np.array([[1.0, 2.0], [3.0, 4.0]]))
+        assert res_two.shape_type == ShapeType.FREEFORM
 
 
 # ─────────────────────────────────────────────────────────────────────────────
