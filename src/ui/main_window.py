@@ -1048,6 +1048,11 @@ class MainWindow(QMainWindow):
         double_pendulum_act.triggered.connect(self._on_toggle_double_pendulum)
         view_menu.addAction(double_pendulum_act)
 
+        superconductivity_act = QAction("⚡ Vật lý chất rắn & Siêu dẫn: Hiệu ứng Meissner & Bay lượng tử (Superconductivity)", self)
+        superconductivity_act.setShortcut(QKeySequence("Ctrl+Shift+5"))
+        superconductivity_act.triggered.connect(self._on_toggle_superconductivity)
+        view_menu.addAction(superconductivity_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5407,6 +5412,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_double_pendulum()
         self._status.showMessage(
             f"Con lắc kép & Hỗn loạn: {'Hiển thị (Ctrl+Shift+4)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_superconductivity(self) -> bool:
+        """Toggle interactive Superconductivity & Quantum Levitation on LessonBoard."""
+        is_visible = self._scene.toggle_superconductivity()
+        self._status.showMessage(
+            f"Siêu dẫn & Bay lượng tử: {'Hiển thị (Ctrl+Shift+5)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible
