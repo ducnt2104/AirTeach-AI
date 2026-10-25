@@ -778,6 +778,123 @@ class TestAirTeachPackage:
         assert links["original_sha256"] == expected_hash
         assert links["original_filename"] == "lecture_slides.pdf"
 
+    def test_read_links_and_verify_original_link_verified(self, tmp_dir: Path):
+        """Original linked file verification succeeds when file exists and SHA-256 matches."""
+        page_paths, strokes, recognized = self._make_test_package(tmp_dir)
+        output = tmp_dir / "lesson_verified.airteach"
+        original = tmp_dir / "physics_lecture.pdf"
+        original.write_bytes(b"%PDF-1.4 authentic content for physics lesson" * 20)
+
+        AirTeachPackage.save(
+            output, AirTeachManifest(title="Physics"), page_paths, strokes, recognized,
+            original_file_path=original,
+        )
+
+        # 1. read_links inspection
+        links_meta = AirTeachPackage.read_links(output)
+        assert links_meta["original_filename"] == "physics_lecture.pdf"
+        assert links_meta["original_sha256"] == _sha256_file(original)
+        assert links_meta["file_size_bytes"] == original.stat().st_size
+
+        # 2. verify_original_link default resolution
+        res = AirTeachPackage.verify_original_link(output)
+        assert res["linked"] is True
+        assert res["found"] is True
+        assert res["verified"] is True
+        assert res["status"] == "VERIFIED"
+        assert res["path"] == original.resolve()
+        assert res["current_sha256"] == links_meta["original_sha256"]
+
+    def test_verify_original_link_file_moved_and_fallback(self, tmp_dir: Path):
+        """Gracefully handle moved or missing source files and verify with explicit candidate_path."""
+        page_paths, strokes, recognized = self._make_test_package(tmp_dir)
+        output = tmp_dir / "lesson_moved.airteach"
+        original = tmp_dir / "biology_lecture.pdf"
+        original.write_bytes(b"%PDF-1.5 biology slide content" * 15)
+
+        AirTeachPackage.save(
+            output, AirTeachManifest(title="Biology"), page_paths, strokes, recognized,
+            original_file_path=original,
+        )
+
+        # Move file to an archive directory
+        archive_dir = tmp_dir / "archive"
+        archive_dir.mkdir()
+        moved_file = archive_dir / "biology_renamed.pdf"
+        original.rename(moved_file)
+
+        # Verification without candidate_path fails gracefully as FILE_MOVED_OR_MISSING
+        res_missing = AirTeachPackage.verify_original_link(output)
+        assert res_missing["linked"] is True
+        assert res_missing["found"] is False
+        assert res_missing["verified"] is False
+        assert res_missing["status"] == "FILE_MOVED_OR_MISSING"
+
+        # Verification with candidate_path successfully verifies moved file
+        res_candidate = AirTeachPackage.verify_original_link(output, candidate_path=moved_file)
+        assert res_candidate["linked"] is True
+        assert res_candidate["found"] is True
+        assert res_candidate["verified"] is True
+        assert res_candidate["status"] == "VERIFIED"
+        assert res_candidate["path"] == moved_file
+
+    def test_verify_original_link_hash_mismatch(self, tmp_dir: Path):
+        """Tampered or modified original file flags HASH_MISMATCH."""
+        page_paths, strokes, recognized = self._make_test_package(tmp_dir)
+        output = tmp_dir / "lesson_tampered.airteach"
+        original = tmp_dir / "math_lecture.pdf"
+        original.write_bytes(b"initial math slides content")
+
+        AirTeachPackage.save(
+            output, AirTeachManifest(title="Math"), page_paths, strokes, recognized,
+            original_file_path=original,
+        )
+
+        # Modify original file on disk
+        original.write_bytes(b"tampered or updated different slides content")
+
+        res = AirTeachPackage.verify_original_link(output)
+        assert res["linked"] is True
+        assert res["found"] is True
+        assert res["verified"] is False
+        assert res["status"] == "HASH_MISMATCH"
+        assert res["current_sha256"] != res["recorded_sha256"]
+
+    def test_verify_original_link_sibling_and_no_link(self, tmp_dir: Path):
+        """Verify sibling directory resolution fallback and unlinked packages."""
+        page_paths, strokes, recognized = self._make_test_package(tmp_dir)
+        bundle_dir = tmp_dir / "classroom_bundle"
+        bundle_dir.mkdir()
+        output = bundle_dir / "lesson.airteach"
+
+        # Create original in external location
+        external = tmp_dir / "history.pdf"
+        external.write_bytes(b"history content slides")
+        AirTeachPackage.save(
+            output, AirTeachManifest(title="History"), page_paths, strokes, recognized,
+            original_file_path=external,
+        )
+
+        # Move external file next to bundle (sibling resolution)
+        sibling = bundle_dir / "history.pdf"
+        external.rename(sibling)
+
+        res = AirTeachPackage.verify_original_link(output)
+        assert res["linked"] is True
+        assert res["found"] is True
+        assert res["verified"] is True
+        assert res["status"] == "VERIFIED"
+        assert res["path"] == sibling
+
+        # Unlinked package check
+        unlinked_output = tmp_dir / "unlinked.airteach"
+        AirTeachPackage.save(unlinked_output, AirTeachManifest(title="None"), page_paths, strokes, recognized)
+        res_none = AirTeachPackage.verify_original_link(unlinked_output)
+        assert res_none["linked"] is False
+        assert res_none["found"] is False
+        assert res_none["verified"] is False
+        assert res_none["status"] == "NO_LINK"
+
     def test_atomic_save_cleans_up_on_failure(self, tmp_dir: Path, monkeypatch):
         """If packaging fails midway, no corrupted output file remains and temp files are purged."""
         page_paths, strokes, recognized = self._make_test_package(tmp_dir)
@@ -1517,6 +1634,28 @@ class TestDocumentManager:
         assert out_pages[0].exists()
         rendered = cv2.imread(str(out_pages[0]))
         assert rendered.shape == (800, 1000, 3)
+
+    def test_document_manager_verify_lesson_source_link(self, tmp_dir: Path):
+        """DocumentManager.verify_lesson_source_link delegates to AirTeachPackage and verifies SHA-256."""
+        dm = DocumentManager(work_root=tmp_dir / "work")
+        p1 = tmp_dir / "slide.png"
+        img = np.full((600, 800, 3), 255, dtype=np.uint8)
+        cv2.imwrite(str(p1), img)
+
+        source_doc = tmp_dir / "quantum_mechanics.pdf"
+        source_doc.write_bytes(b"%PDF-1.4 quantum mechanics lecture slides" * 30)
+
+        bundle = tmp_dir / "quantum.airteach"
+        manifest = AirTeachManifest(title="Quantum Mechanics")
+        dm.save_lesson(bundle, manifest, [p1], [], [], original_file_path=source_doc)
+
+        # Verification through DocumentManager facade
+        res = dm.verify_lesson_source_link(bundle)
+        assert res["linked"] is True
+        assert res["verified"] is True
+        assert res["status"] == "VERIFIED"
+        assert res["original_filename"] == "quantum_mechanics.pdf"
+        assert res["path"] == source_doc.resolve()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

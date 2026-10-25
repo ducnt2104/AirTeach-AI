@@ -72,8 +72,8 @@ class ClassroomMetronomeItem(QGraphicsObject):
         self._current_beat: int = 0
         self._is_running: bool = False
 
-        # Internal precision interval timer
-        self._timer = QTimer()
+        # Internal precision interval timer (parented for deterministic lifecycle)
+        self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_tick)
 
         # Flags: movable and selectable on scene
@@ -120,6 +120,20 @@ class ClassroomMetronomeItem(QGraphicsObject):
             self._current_beat = 0
             self.running_changed.emit(False)
             self.update()
+
+    def reset(self) -> None:
+        """Reset beat counter and stop playback."""
+        self.stop()
+        self._current_beat = 0
+        self.update()
+
+    def cleanup(self) -> None:
+        """Safely stop tick timer and disconnect callbacks to prevent resource leaks."""
+        self.stop()
+        try:
+            self._timer.timeout.disconnect()
+        except Exception:
+            pass
 
     def toggle(self) -> bool:
         if self._is_running:

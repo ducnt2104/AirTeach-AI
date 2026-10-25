@@ -310,3 +310,51 @@ class PresentationTimerItem(QGraphicsObject):
 
     def is_stopwatch(self) -> bool:
         return self._is_stopwatch
+
+    def stop(self) -> None:
+        """Stop timer and reset to initial duration."""
+        self.pause()
+        self.reset()
+
+    def air_click_at(self, canvas_x: float, canvas_y: float) -> bool:
+        """
+        Allows touchless air tapping on presentation timer controls.
+        Returns True if an interactive button was activated.
+        """
+        local_pos = self.mapFromScene(QPointF(canvas_x, canvas_y))
+        px, py = local_pos.x(), local_pos.y()
+
+        # 1. Close Button (top-right)
+        close_rect = QRectF(self.width - 32.0, 6.0, 26.0, 26.0)
+        if close_rect.contains(px, py):
+            self.stop()
+            self.setVisible(False)
+            return True
+
+        # 2. Preset Pill Button (cycle presets)
+        pill_rect = QRectF(10.0, 6.0, 118.0, 30.0)
+        if pill_rect.contains(px, py):
+            self._cycle_preset()
+            return True
+
+        # 3. Play / Pause Button
+        btn_play_rect = QRectF(self.width / 2.0 - 40.0, 88.0, 40.0, 30.0)
+        if btn_play_rect.contains(px, py):
+            self.toggle_run()
+            return True
+
+        # 4. Reset Button
+        btn_reset_rect = QRectF(self.width / 2.0, 88.0, 40.0, 30.0)
+        if btn_reset_rect.contains(px, py):
+            self.reset()
+            return True
+
+        return False
+
+    def cleanup(self) -> None:
+        """Safely stop tick timer and disconnect signals to prevent memory leaks."""
+        self._timer.stop()
+        try:
+            self._timer.timeout.disconnect()
+        except Exception:
+            pass

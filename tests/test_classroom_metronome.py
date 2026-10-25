@@ -216,6 +216,65 @@ class TestClassroomMetronomeItem:
         assert not item.isVisible()
         assert not item.is_running()
 
+    def test_metronome_reset_and_cleanup(self, qapp):
+        item = ClassroomMetronomeItem(bpm=140)
+        item.start()
+        item._on_tick()
+        assert item.is_running()
+
+        # Reset stops running and zeroes beat
+        item.reset()
+        assert not item.is_running()
+        assert item._current_beat == 0
+
+        # Cleanup disconnects timer safely
+        item.cleanup()
+        assert not item.is_running()
+
+
+class TestPresentationTimerAcousticsAndAirClick:
+    def test_presentation_timer_air_clicks_and_stop(self, qapp):
+        from src.ui.presentation_timer import PresentationTimerItem
+
+        timer = PresentationTimerItem(duration_sec=300)
+        timer.setPos(200, 200)
+        timer.setVisible(True)
+
+        # 1. Air click Play/Pause (center-left bottom: local x ~ 95, y ~ 103 -> scene 295, 303)
+        assert not timer.is_running()
+        handled = timer.air_click_at(295.0, 303.0)
+        assert handled is True
+        assert timer.is_running()
+
+        # Pause via air click
+        handled = timer.air_click_at(295.0, 303.0)
+        assert handled is True
+        assert not timer.is_running()
+
+        # 2. Air click Preset Pill (local x ~ 60, y ~ 20 -> scene 260, 220)
+        old_dur = timer.total_seconds()
+        handled = timer.air_click_at(260.0, 220.0)
+        assert handled is True
+        assert timer.total_seconds() != old_dur
+
+        # 3. Air click Reset (local x ~ 135, y ~ 103 -> scene 335, 303)
+        handled = timer.air_click_at(335.0, 303.0)
+        assert handled is True
+        assert timer.remaining_seconds() == timer.total_seconds()
+
+        # 4. Air click Close Button (local x ~ 215, y ~ 18 -> scene 415, 218)
+        handled = timer.air_click_at(415.0, 218.0)
+        assert handled is True
+        assert not timer.isVisible()
+        assert not timer.is_running()
+
+        # 5. Method stop() and cleanup()
+        timer.start()
+        assert timer.is_running()
+        timer.stop()
+        assert not timer.is_running()
+        timer.cleanup()
+
 
 class TestLessonBoardMetronomeIntegration:
     def test_lesson_board_metronome_lifecycle(self, qapp):

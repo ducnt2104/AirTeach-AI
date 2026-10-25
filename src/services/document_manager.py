@@ -22,7 +22,7 @@ import zipfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import pypdfium2 as pdfium
@@ -349,14 +349,17 @@ class AirTeachPackage:
 
         # Compute SHA-256 of original source file
         links_data: dict = {}
-        if original_file_path and original_file_path.exists():
-            sha256 = _sha256_file(original_file_path)
+        if original_file_path and Path(original_file_path).exists():
+            orig_p = Path(original_file_path)
+            sha256 = _sha256_file(orig_p)
             links_data = {
-                "original_filename": original_file_path.name,
+                "original_filename": orig_p.name,
                 "original_sha256": sha256,
-                "original_path": str(original_file_path),
+                "original_path": str(orig_p.resolve()),
+                "file_size_bytes": orig_p.stat().st_size,
+                "linked_at": datetime.now(timezone.utc).isoformat(),
             }
-            manifest.original_filename = original_file_path.name
+            manifest.original_filename = orig_p.name
             manifest.original_sha256 = sha256
 
         # Strokes JSON: each StrokeRecord → dict
@@ -411,6 +414,116 @@ class AirTeachPackage:
                     pass
             raise
 
+    # ── Cryptographic Links ────────────────────────────────────────────────────
+
+    @classmethod
+    def read_links(cls, airteach_path: Path) -> dict[str, Any]:
+        """
+        Read and parse links.json metadata from an .airteach bundle.
+        Returns empty dict if links.json is missing or corrupt.
+        """
+        airteach_path = Path(airteach_path)
+        if not airteach_path.exists():
+            return {}
+        try:
+            with zipfile.ZipFile(str(airteach_path), "r") as zf:
+                if cls.LINKS_PATH in zf.namelist():
+                    return json.loads(zf.read(cls.LINKS_PATH).decode("utf-8"))
+        except Exception as e:
+            logger.warning("Could not read links.json from %s: %s", airteach_path, e)
+        return {}
+
+    @classmethod
+    def verify_original_link(
+        cls,
+        airteach_path: Path,
+        candidate_path: Optional[Path] = None,
+    ) -> dict[str, Any]:
+        """
+        Verify the cryptographic integrity of the original imported document link.
+
+        Resolves candidate locations:
+          1. Explicit candidate_path (if provided and exists).
+          2. Recorded original_path from links.json (if exists).
+          3. Sibling file in the same directory as the .airteach file.
+
+        Returns:
+          {
+            "linked": bool,
+            "found": bool,
+            "verified": bool,
+            "path": Optional[Path],
+            "original_filename": str,
+            "recorded_sha256": str,
+            "current_sha256": Optional[str],
+            "status": str,  # 'VERIFIED', 'HASH_MISMATCH', 'FILE_MOVED_OR_MISSING', 'NO_LINK'
+          }
+        """
+        airteach_path = Path(airteach_path)
+        links_data = cls.read_links(airteach_path)
+        if not links_data:
+            return {
+                "linked": False,
+                "found": False,
+                "verified": False,
+                "path": None,
+                "original_filename": "",
+                "recorded_sha256": "",
+                "current_sha256": None,
+                "status": "NO_LINK",
+            }
+
+        rec_sha256 = str(links_data.get("original_sha256", "")).strip()
+        rec_filename = str(links_data.get("original_filename", "")).strip()
+        rec_path_str = links_data.get("original_path")
+
+        if not rec_sha256:
+            return {
+                "linked": False,
+                "found": False,
+                "verified": False,
+                "path": None,
+                "original_filename": rec_filename,
+                "recorded_sha256": "",
+                "current_sha256": None,
+                "status": "NO_LINK",
+            }
+
+        resolved: Optional[Path] = None
+        if candidate_path is not None and Path(candidate_path).exists():
+            resolved = Path(candidate_path)
+        elif rec_path_str and Path(rec_path_str).exists():
+            resolved = Path(rec_path_str)
+        elif rec_filename and (airteach_path.parent / rec_filename).exists():
+            resolved = airteach_path.parent / rec_filename
+
+        if resolved is None:
+            return {
+                "linked": True,
+                "found": False,
+                "verified": False,
+                "path": None,
+                "original_filename": rec_filename,
+                "recorded_sha256": rec_sha256,
+                "current_sha256": None,
+                "status": "FILE_MOVED_OR_MISSING",
+            }
+
+        current_hash = _sha256_file(resolved)
+        is_verified = (current_hash.lower() == rec_sha256.lower())
+        status = "VERIFIED" if is_verified else "HASH_MISMATCH"
+
+        return {
+            "linked": True,
+            "found": True,
+            "verified": is_verified,
+            "path": resolved,
+            "original_filename": rec_filename,
+            "recorded_sha256": rec_sha256,
+            "current_sha256": current_hash,
+            "status": status,
+        }
+
     # ── Load ──────────────────────────────────────────────────────────────────
 
     @classmethod
@@ -435,6 +548,17 @@ class AirTeachPackage:
             # Read manifest
             manifest_json = json.loads(zf.read(cls.MANIFEST_PATH).decode("utf-8"))
             manifest = AirTeachManifest(**manifest_json)
+
+            # Backfill original link metadata from links.json if missing
+            if cls.LINKS_PATH in zf.namelist():
+                try:
+                    links_meta = json.loads(zf.read(cls.LINKS_PATH).decode("utf-8"))
+                    if not manifest.original_filename and links_meta.get("original_filename"):
+                        manifest.original_filename = links_meta["original_filename"]
+                    if not manifest.original_sha256 and links_meta.get("original_sha256"):
+                        manifest.original_sha256 = links_meta["original_sha256"]
+                except Exception:
+                    pass
 
             # Extract page images
             page_paths: list[Path] = []
@@ -562,6 +686,14 @@ class DocumentManager:
         """Open a .airteach file and return its contents."""
         extract_dir = self.work_root / f"open_{airteach_path.stem}"
         return AirTeachPackage.load(airteach_path, extract_dir)
+
+    def verify_lesson_source_link(
+        self,
+        airteach_path: Path,
+        candidate_path: Optional[Path] = None,
+    ) -> dict[str, Any]:
+        """Verify the cryptographic SHA-256 integrity of the linked source file."""
+        return AirTeachPackage.verify_original_link(airteach_path, candidate_path)
 
     @staticmethod
     def _overlay_rgba(bg_bgr: np.ndarray, fg_rgba: np.ndarray, x: int, y: int) -> None:

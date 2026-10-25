@@ -449,3 +449,94 @@ def test_bimanual_pinch_to_zoom_and_air_panning(qapp):
     assert len(win._scene._strokes) == 0
 
     win.close()
+
+
+# ── 5. Spotlight & Virtual Loupe High-DPI Smoothness Tests ─────────────────────
+
+
+def test_spotlight_overlay_delta_opacity_and_board_bounds(qapp):
+    """Verify SpotlightOverlayItem delta adjustment, dim opacity, and board resizing."""
+    from src.ui.spotlight_overlay import SpotlightOverlayItem
+
+    spot = SpotlightOverlayItem(board_width=1920, board_height=1080, initial_radius=120.0)
+    assert spot.radius() == 120.0
+    assert spot.dim_opacity() == pytest.approx(165 / 255.0, abs=0.01)
+
+    # Adjust radius delta
+    new_r = spot.adjust_radius_delta(30.0, sensitivity=1.0)
+    assert new_r == 150.0
+    assert spot.radius() == 150.0
+
+    # Underflow clamping
+    spot.adjust_radius_delta(-300.0)
+    assert spot.radius() == 40.0
+
+    # Overflow clamping
+    spot.adjust_radius_delta(600.0)
+    assert spot.radius() == 450.0
+
+    # Dim opacity tuning
+    spot.set_dim_opacity(0.85)
+    assert spot.dim_opacity() == pytest.approx(0.85, abs=0.01)
+
+    spot.set_dim_opacity(0.01)  # clamped min 0.10
+    assert spot.dim_opacity() == pytest.approx(0.10, abs=0.01)
+
+    spot.set_dim_opacity(0.99)  # clamped max 0.95
+    assert spot.dim_opacity() == pytest.approx(0.95, abs=0.01)
+
+    # Resizing canvas bounds
+    spot.set_board_size(3840, 2160)
+    assert spot.board_width == 3840
+    assert spot.board_height == 2160
+    assert spot.boundingRect().width() == 3840.0
+    assert spot.boundingRect().height() == 2160.0
+
+
+def test_virtual_loupe_high_dpi_retina_and_delta_tuning(qapp):
+    """Verify VirtualLoupeItem High-DPI device pixel ratio rendering and delta tuning."""
+    from PySide6.QtGui import QImage, QPainter
+    from src.ui.virtual_loupe import VirtualLoupeItem
+
+    scene = QGraphicsScene(0, 0, 1920, 1080)
+    loupe = VirtualLoupeItem(board_width=1920, board_height=1080, radius=100.0, zoom_factor=2.0)
+    scene.addItem(loupe)
+
+    # Delta tuning for zoom factor
+    new_z = loupe.adjust_zoom_delta(0.5, sensitivity=1.0)
+    assert new_z == pytest.approx(2.5, abs=0.01)
+    assert loupe.zoom_factor() == pytest.approx(2.5, abs=0.01)
+
+    loupe.adjust_zoom_delta(-5.0)  # clamped min 1.2
+    assert loupe.zoom_factor() == 1.2
+
+    loupe.adjust_zoom_delta(10.0)  # clamped max 5.0
+    assert loupe.zoom_factor() == 5.0
+
+    # Delta tuning for radius
+    new_r = loupe.adjust_radius_delta(25.0)
+    assert new_r == 125.0
+    assert loupe.radius() == 125.0
+
+    loupe.adjust_radius_delta(-200.0)  # clamped min 50.0
+    assert loupe.radius() == 50.0
+
+    loupe.adjust_radius_delta(500.0)  # clamped max 300.0
+    assert loupe.radius() == 300.0
+
+    # High-DPI Rendering verification (DPR = 2.0 on 4K display)
+    dpr = 2.0
+    target_img = QImage(1920, 1080, QImage.Format.Format_ARGB32_Premultiplied)
+    target_img.setDevicePixelRatio(dpr)
+    target_img.fill(0)
+
+    painter = QPainter(target_img)
+    loupe.setVisible(True)
+    loupe.paint(painter, None, None)
+    painter.end()
+
+    # Bounding rect check with padding
+    br = loupe.boundingRect()
+    assert br.width() == pytest.approx(2.0 * (loupe.radius() + 15.0), abs=0.1)
+    assert br.height() == pytest.approx(2.0 * (loupe.radius() + 15.0), abs=0.1)
+

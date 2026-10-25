@@ -2,10 +2,12 @@
 AirTeach AI - Virtual Loupe (Interactive Magnifying Glass)
 =========================================================
 Provides an optical zoom loupe overlay on LessonBoard:
-  - Magnifies the scene content directly underneath the air pointer by 2x-4x.
+  - Magnifies the scene content directly underneath the air pointer by 1.2x-5.0x.
+  - High-DPI native rendering (devicePixelRatio-aware) for ultra-crisp optics on 4K projectors/displays.
   - Features an anti-aliased circular aperture with metallic lens frame.
   - Optical glare highlights and dynamic zoom multiplier readout badge.
   - Safe recursion-free rendering via offscreen scene snapshot.
+  - Touchless air-gesture delta adjustments for zoom factor and lens radius.
 """
 from __future__ import annotations
 
@@ -32,7 +34,7 @@ from PySide6.QtWidgets import (
 class VirtualLoupeItem(QGraphicsObject):
     """
     Interactive Whiteboard Magnifying Glass (Virtual Loupe).
-    Renders an optically enlarged 2.0x-4.0x circular view of the underlying
+    Renders an optically enlarged 1.2x-5.0x circular view of the underlying
     LessonBoard canvas directly at the touchless pointer coordinates.
     """
 
@@ -52,6 +54,11 @@ class VirtualLoupeItem(QGraphicsObject):
         self._cx: float = board_width / 2.0
         self._cy: float = board_height / 2.0
 
+        # Ignore mouse/pointer clicks so canvas events pass through
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsFocusable, False)
+
         # Layering: sits at Z=37 (just under spotlight Z=38 and laser Z=40)
         self.setZValue(37.0)
         self.setVisible(False)
@@ -59,6 +66,31 @@ class VirtualLoupeItem(QGraphicsObject):
     def boundingRect(self) -> QRectF:
         r = self._radius + 15.0
         return QRectF(self._cx - r, self._cy - r, 2.0 * r, 2.0 * r)
+
+    def set_board_size(self, width: int, height: int) -> None:
+        """Update board dimensions for coordinate bounds."""
+        self.prepareGeometryChange()
+        self.board_width = max(100, int(width))
+        self.board_height = max(100, int(height))
+        self.update()
+
+    def adjust_zoom_delta(self, delta: float, sensitivity: float = 1.0) -> float:
+        """
+        Smoothly adjust zoom magnification factor by pinch/gesture delta.
+        Returns the new clamped zoom factor [1.2, 5.0].
+        """
+        new_zoom = self._zoom_factor + delta * sensitivity
+        self.set_zoom_factor(new_zoom)
+        return self._zoom_factor
+
+    def adjust_radius_delta(self, delta: float, sensitivity: float = 1.0) -> float:
+        """
+        Smoothly adjust lens aperture radius by pinch/gesture delta.
+        Returns the new clamped lens radius [50.0, 300.0].
+        """
+        new_r = self._radius + delta * sensitivity
+        self.set_radius(new_r)
+        return self._radius
 
     def paint(
         self,
@@ -85,9 +117,19 @@ class VirtualLoupeItem(QGraphicsObject):
             src_h = (2.0 * r) / m
             src_rect = QRectF(cx - src_w / 2.0, cy - src_h / 2.0, src_w, src_h)
 
-            img_w = max(10, int(2.0 * r))
-            img_h = max(10, int(2.0 * r))
+            # Determine High-DPI device pixel ratio (4K projectors / Retina displays)
+            dpr = 1.0
+            if widget is not None and hasattr(widget, "devicePixelRatioF"):
+                dpr = float(widget.devicePixelRatioF())
+            elif painter.device() is not None and hasattr(painter.device(), "devicePixelRatioF"):
+                dpr = float(painter.device().devicePixelRatioF())
+            dpr = max(1.0, min(4.0, dpr))
+
+            # Allocate high-resolution buffer matching physical display pixels
+            img_w = max(10, int(2.0 * r * dpr))
+            img_h = max(10, int(2.0 * r * dpr))
             img = QImage(img_w, img_h, QImage.Format.Format_ARGB32_Premultiplied)
+            img.setDevicePixelRatio(dpr)
             img.fill(0)
 
             # Temporarily hide loupe to prevent infinite recursive rendering
@@ -95,7 +137,8 @@ class VirtualLoupeItem(QGraphicsObject):
             sub_painter = QPainter(img)
             sub_painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             sub_painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-            scene.render(sub_painter, QRectF(0.0, 0.0, float(img_w), float(img_h)), src_rect)
+            # Render into logical viewport (2.0*r, 2.0*r); Qt scales via devicePixelRatio
+            scene.render(sub_painter, QRectF(0.0, 0.0, 2.0 * r, 2.0 * r), src_rect)
             sub_painter.end()
             self.setVisible(True)
 
@@ -135,7 +178,7 @@ class VirtualLoupeItem(QGraphicsObject):
         painter.drawLine(cx - 15.0, cy, cx + 15.0, cy)
         painter.drawLine(cx, cy - 15.0, cx, cy + 15.0)
 
-        # 5. Telemetry Badge on bottom right of loupe: "2.0×"
+        # 5. Telemetry Badge on bottom right of loupe: "2.0x"
         badge_rect = QRectF(cx + r * 0.42, cy + r * 0.42, 48.0, 22.0)
         painter.setBrush(QBrush(QColor(32, 33, 36, 215)))
         painter.setPen(QPen(QColor(255, 255, 255, 210), 1.0))
@@ -143,7 +186,7 @@ class VirtualLoupeItem(QGraphicsObject):
 
         painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
         painter.setPen(QPen(QColor("#ffffff")))
-        painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, f"{m:.1f}×")
+        painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, f"{m:.1f}\u00d7")
 
     def set_loupe_pos(self, x: float, y: float) -> None:
         """Update loupe center focus coordinates."""
