@@ -308,6 +308,7 @@ class LessonBoard(QGraphicsScene):
         self._band_theory_item: Optional[QGraphicsItem] = None
         self._synchrotron_radiation_item: Optional[QGraphicsItem] = None
         self._ising_model_item: Optional[QGraphicsItem] = None
+        self._cryo_em_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1724,6 +1725,43 @@ class LessonBoard(QGraphicsScene):
     def get_ising_model_item(self) -> Optional[QGraphicsItem]:
         """Return interactive 2D Ising Model instance if created."""
         return getattr(self, "_ising_model_item", None)
+
+    # ── Interactive Cryo-EM CTF & Fourier Shell Correlation (FSC) ──────
+    def show_cryo_em(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive Cryo-EM CTF visualizer."""
+        if getattr(self, "_cryo_em_item", None) is None:
+            from src.ui.interactive_cryo_em import InteractiveCryoEMItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 940.0 / 2.0, 110.0)
+            self._cryo_em_item = InteractiveCryoEMItem(board=self)
+            self._cryo_em_item.setPos(spawn_pos[0], spawn_pos[1])
+            self.addItem(self._cryo_em_item)
+
+        self._cryo_em_item.setVisible(visible)
+        if visible and pos is not None:
+            self._cryo_em_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._cryo_em_item if visible else None
+
+    def toggle_cryo_em(self) -> bool:
+        """Toggle interactive Cryo-EM CTF simulator visibility."""
+        if getattr(self, "_cryo_em_item", None) is None or not self._cryo_em_item.isVisible():
+            self.show_cryo_em(True)
+            return True
+        else:
+            self.show_cryo_em(False)
+            return False
+
+    def is_cryo_em_visible(self) -> bool:
+        """Return True if interactive Cryo-EM CTF visualizer is active on board."""
+        return getattr(self, "_cryo_em_item", None) is not None and self._cryo_em_item.isVisible()
+
+    def get_cryo_em_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive Cryo-EM CTF instance if created."""
+        return getattr(self, "_cryo_em_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6766,6 +6804,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_band_theory_item", None),
             getattr(self, "_synchrotron_radiation_item", None),
             getattr(self, "_ising_model_item", None),
+            getattr(self, "_cryo_em_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),

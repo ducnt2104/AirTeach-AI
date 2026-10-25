@@ -1068,6 +1068,11 @@ class MainWindow(QMainWindow):
         ising_model_act.triggered.connect(self._on_toggle_ising_model)
         view_menu.addAction(ising_model_act)
 
+        cryo_em_act = QAction("🔬 Sinh học cấu trúc: Kính Cryo-EM, Hàm truyền CTF & Vòng Thon", self)
+        cryo_em_act.setShortcut(QKeySequence("Ctrl+Shift+9"))
+        cryo_em_act.triggered.connect(self._on_toggle_cryo_em)
+        view_menu.addAction(cryo_em_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5467,6 +5472,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_ising_model()
         self._status.showMessage(
             f"Mô hình Ising 2D & Onsager: {'Hiển thị (Ctrl+Shift+8)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_cryo_em(self) -> bool:
+        """Toggle interactive Cryo-EM CTF & 3D Reconstruction on LessonBoard."""
+        is_visible = self._scene.toggle_cryo_em()
+        self._status.showMessage(
+            f"Kính hiển vi Cryo-EM CTF & Vòng Thon: {'Hiển thị (Ctrl+Shift+9)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

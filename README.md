@@ -5,7 +5,7 @@
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20Qt6-brightgreen.svg)](https://www.qt.io/)
 [![Computer Vision](https://img.shields.io/badge/CV-OpenCV%20%2B%20MediaPipe-orange.svg)](https://opencv.org/)
 [![AI Assistant](https://img.shields.io/badge/AI-Google%20Gemini%20API-4285F4.svg)](https://aistudio.google.com/)
-[![Tests](https://img.shields.io/badge/Tests-1%2C828%20passed%20(151%20suites)-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-1%2C839%20passed%20(152%20suites)-success.svg)](tests/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue.svg)](https://github.com/ducnt2104/AirTeach-AI)
 [![License](https://img.shields.io/badge/License-Apache%202.0%20%2F%20LGPLv3-lightgrey.svg)](LICENSE)
 
@@ -15,7 +15,7 @@
 
 **AirTeach AI** là nền tảng máy trạm giảng dạy tương tác thông minh thế hệ mới, cho phép giáo viên viết vẽ, thao tác giáo án và tương tác trực tiếp lên bảng điện tử thông qua **cử chỉ tay trong không gian (Air Gesture)** thu nhận từ webcam thông thường — hoàn toàn không cần bảng cảm ứng đắt tiền, bảng vẽ Wacom hay thiết bị đeo tay chuyên dụng.
 
-Phần mềm tích hợp **170 công cụ mô phỏng STEM tương tác chuyên sâu** (Vật lý, Hóa học, Sinh học, Tin học thuật toán, Toán giải tích/hình học, Thiên văn học, Khoa học vật liệu), xử lý nét vẽ vector 3 tầng toán học siêu mịn, nhận diện cử chỉ đa bàn tay (Bimanual Multi-Hand), nắn hình học tự động, nhận diện khuôn mặt sinh trắc học mở khóa hồ sơ giáo viên ngoại tuyến (YuNet + SFace), nhận diện chữ viết tay & công thức $\LaTeX$ offline, cùng trợ lý sư phạm trực tuyến Google Gemini.
+Phần mềm tích hợp **171 công cụ mô phỏng STEM tương tác chuyên sâu** (Vật lý, Hóa học, Sinh học, Tin học thuật toán, Toán giải tích/hình học, Thiên văn học, Khoa học vật liệu), xử lý nét vẽ vector 3 tầng toán học siêu mịn, nhận diện cử chỉ đa bàn tay (Bimanual Multi-Hand), nắn hình học tự động, nhận diện khuôn mặt sinh trắc học mở khóa hồ sơ giáo viên ngoại tuyến (YuNet + SFace), nhận diện chữ viết tay & công thức $\LaTeX$ offline, cùng trợ lý sư phạm trực tuyến Google Gemini.
 
 ---
 
@@ -146,6 +146,8 @@ AirTeach AI tích hợp **160+ công cụ mô phỏng khoa học chuyên sâu** 
 │   └── Đường cong ứng suất - biến dạng Hooke, Giới hạn chảy & Độ bền kéo
 │
 ├── 🧬 SINH HỌC & DI TRUYỀN (Biology & Genetics)
+│   ├── Kính hiển vi Cryo-EM: Hàm truyền tương phản CTF, Vòng Thon & Đường cong FSC 0.143
+│   ├── Giản đồ Ramachandran: Góc xoay liên kết peptit Phi/Psi & Cấu trúc bậc hai protein
 │   ├── Mô hình xoắn kép ADN, Cơ chế nhân đôi & Ghép cặp Bazơ nitơ
 │   ├── Chu trình nhiệt PCR & Điện di trên gel
 │   ├── Di truyền học Mendel & Bảng Punnett 2 cặp tính trạng

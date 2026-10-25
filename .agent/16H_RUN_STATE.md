@@ -1360,9 +1360,41 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+---
+
+### Milestone 217: Structural Biophysics & Cryo-EM: Contrast Transfer Function (CTF), Thon Rings & Fourier Shell Correlation (FSC)
+- **Cryo-EM & CTF Simulator (`src/ui/interactive_cryo_em.py`)**:
+  - Implemented `InteractiveCryoEMItem(QGraphicsObject)`, `CryoEMPreset`, and authentic relativistic electron optics solver.
+  - Authentic Biophysics & Nobel Prize 2017 Foundations:
+    - Relativistic electron de Broglie wavelength:
+      $$\lambda = \frac{h}{\sqrt{2 m_e e V (1 + \frac{e V}{2 m_e c^2})}}$$
+      (accurately yields $\lambda \approx 0.019687\text{ \AA}$ at 300 kV, $0.025079\text{ \AA}$ at 200 kV).
+    - Phase aberration and wave aberration polynomial:
+      $$\chi(k) = \pi \lambda \Delta f k^2 + \frac{1}{2} \pi C_s \lambda^3 k^4$$
+    - Contrast Transfer Function with envelope damping:
+      $$\text{CTF}(k) = -\left[\sqrt{1 - Q^2} \sin(\chi(k)) + Q \cos(\chi(k))\right] \cdot \exp\left(-\frac{B k^2}{4}\right)$$
+    - Scherzer optimal defocus: $\Delta f_{\text{Sch}} = -1.2 \sqrt{C_s \lambda}$.
+    - 2D concentric Thon rings power spectrum simulation and Gold-standard Fourier Shell Correlation (FSC) curve at 0.143 threshold.
+  - 5 Curriculum Presets:
+    1. Ribosome 70S ($300\text{ kV}, \Delta f = -1.5\,\mu\text{m}, 2.4\text{ \AA}$).
+    2. SARS-CoV-2 Spike Glycoprotein Trimer ($300\text{ kV}, \Delta f = -1.2\,\mu\text{m}, 3.1\text{ \AA}$).
+    3. Apoferritin Atomic Benchmark ($C_s$-corrected, $C_s = 0.01\text{ mm}, 1.25\text{ \AA}$).
+    4. K+ Ion Channel in Nanodisc ($200\text{ kV}, \Delta f = -2.2\,\mu\text{m}, 3.6\text{ \AA}$).
+    5. Overfocused Phase Reversal Artifact ($\Delta f = +1.0\,\mu\text{m}, 5.5\text{ \AA}$).
+  - Self-animating 30 FPS specimen particle rotation, interactive sliders, air gestures, and serialization.
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._cryo_em_item`, `show_cryo_em`, `toggle_cryo_em`, `is_cryo_em_visible`, `get_cryo_em_item`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+9` ("Sinh học cấu trúc: Kính Cryo-EM, Hàm truyền CTF & Vòng Thon"), `@Slot() def _on_toggle_cryo_em`.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_cryo_em.py` (11 unit tests, all passed in 1.32s).
+  - Total test suites raised from 151 to **152 test suites**.
+  - Total passing tests raised from 1,828 to **1,839 passed tests (100% pass rate across 152 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **151 Test Suites**
-- **Total Passing Tests**: **1,828 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **152 Test Suites**
+- **Total Passing Tests**: **1,839 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
