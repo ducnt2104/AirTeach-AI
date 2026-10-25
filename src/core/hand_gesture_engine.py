@@ -626,6 +626,10 @@ class HandTrackingWorker:
         lighting_mode: str = "adaptive",
         mirror: bool = True,
         multi_hand_mode: str = "draw_and_tool",
+        preferred_backend: Optional[int] = None,
+        enable_auto_reconnect: bool = True,
+        max_consecutive_failures: int = 30,
+        on_camera_status: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         self.camera_index = camera_index
         self.width = width
@@ -665,6 +669,35 @@ class HandTrackingWorker:
             draw_mode=self.fsm.draw_mode,
             pinch_threshold=self.fsm.pinch_threshold,
         )
+
+        from src.core.camera_capture import CameraReconnectController, CameraStatus
+        self.preferred_backend = preferred_backend
+        self.enable_auto_reconnect = enable_auto_reconnect
+        self.max_consecutive_failures = max_consecutive_failures
+        self.on_camera_status = on_camera_status
+        self._reconnect_ctrl = CameraReconnectController(
+            camera_index=self.camera_index,
+            width=self.width,
+            height=self.height,
+            fps=self.fps,
+            preferred_backend=self.preferred_backend,
+            max_consecutive_failures=self.max_consecutive_failures,
+            reconnect_cooldown_s=0.5,
+            on_status_change=self._handle_reconnect_status_change,
+        )
+        self.current_backend_name: str = "None"
+
+    def _handle_reconnect_status_change(self, status, msg: str) -> None:
+        if self.on_camera_status is not None:
+            try:
+                status_str = status.value if hasattr(status, "value") else str(status)
+                self.on_camera_status(status_str, msg)
+            except Exception as exc:
+                logger.warning("Error in on_camera_status callback: %s", exc)
+
+    def get_camera_status(self) -> dict:
+        """Return real-time camera connection and backend telemetry."""
+        return self._reconnect_ctrl.get_telemetry()
 
     def set_lighting_mode(self, mode: str) -> None:
         self.lighting_mode = mode
@@ -752,23 +785,30 @@ class HandTrackingWorker:
         """
         if self.camera_index < 0:
             logger.info("Camera index is negative (%d); skipping camera capture.", self.camera_index)
+            from src.core.camera_capture import CameraStatus
+            self._reconnect_ctrl.set_status(CameraStatus.STANDBY, "Headless / camera disabled")
             return
 
-        cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            # Fallback: try without DSHOW backend
-            cap = cv2.VideoCapture(self.camera_index)
+        from src.core.camera_capture import open_camera_capture, CameraStatus
+        cap, backend_name = open_camera_capture(
+            camera_index=self.camera_index,
+            width=self.width,
+            height=self.height,
+            fps=self.fps,
+            preferred_backend=self.preferred_backend,
+            test_read=False,
+        )
+        self.current_backend_name = backend_name
 
-        if not cap.isOpened():
+        if cap is None or not cap.isOpened():
             msg = f"Cannot open camera index {self.camera_index}"
             logger.error(msg)
+            self._reconnect_ctrl.set_status(CameraStatus.FAILED, msg)
             if self.on_error:
                 self.on_error(msg)
             return
 
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-        cap.set(cv2.CAP_PROP_FPS, self.fps)
+        self._reconnect_ctrl.record_frame_success(backend_name)
 
         self._init_mediapipe()
         self._running = True
@@ -791,9 +831,18 @@ class HandTrackingWorker:
                 ret, frame = cap.read()
                 if not ret:
                     frame_dropped_count += 1
-                    logger.warning("Camera read failed; retrying…")
+                    reconnect_needed = self._reconnect_ctrl.record_frame_failure()
+                    if self.enable_auto_reconnect and reconnect_needed and self._reconnect_ctrl.should_attempt_reconnect_now():
+                        logger.warning("Attempting automatic camera hardware reconnection...")
+                        new_cap, new_backend = self._reconnect_ctrl.execute_reconnect(current_cap=cap)
+                        if new_cap is not None and new_cap.isOpened():
+                            cap = new_cap
+                            self.current_backend_name = new_backend
+                            continue
                     time.sleep(0.01)
                     continue
+
+                self._reconnect_ctrl.record_frame_success(self.current_backend_name)
 
                 t_now = time.perf_counter()
                 if last_t is not None:
@@ -893,6 +942,8 @@ class HandTrackingWorker:
 
         finally:
             cap.release()
+            from src.core.camera_capture import CameraStatus
+            self._reconnect_ctrl.set_status(CameraStatus.STANDBY, "Camera stopped")
             if self._landmarker is not None:
                 self._landmarker.close()
             if self._hands_model is not None:

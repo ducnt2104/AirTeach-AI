@@ -165,6 +165,7 @@ class _QtCameraWorker(QObject):
     trainer_frame_ready  = Signal(np.ndarray, object, object, float, float) # (frame, lm, state, cx, cy)
     diagnostics_ready    = Signal(object)              # CameraDiagnosticsData
     error_occurred       = Signal(str)
+    camera_status_changed = Signal(str, str)          # (status: str, message: str)
 
     def __init__(
         self,
@@ -182,6 +183,7 @@ class _QtCameraWorker(QObject):
             on_error=self._on_error_cb,
             on_diagnostics=self._on_diagnostics_cb,
             on_multi_hands=self._on_multi_hands_cb,
+            on_camera_status=self._on_camera_status_cb,
             lighting_mode=lighting_mode,
             mirror=mirror,
             multi_hand_mode=multi_hand_mode,
@@ -296,6 +298,12 @@ class _QtCameraWorker(QObject):
 
     def _on_error_cb(self, msg: str) -> None:
         self.error_occurred.emit(msg)
+
+    def _on_camera_status_cb(self, status: str, msg: str) -> None:
+        self.camera_status_changed.emit(status, msg)
+
+    def get_camera_status(self) -> dict:
+        return self._worker.get_camera_status()
 
     def start_capture(self) -> None:
         """Called when QThread starts — runs the blocking camera loop."""
