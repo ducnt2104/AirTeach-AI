@@ -15,7 +15,9 @@ from __future__ import annotations
 import io
 import logging
 import math
+import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -89,6 +91,120 @@ class OcrResult:
     render_image_rgba: Optional[np.ndarray] = None   # RGBA numpy array if rendered
 
 
+# ─── Vietnamese OCR & LaTeX Sanitization Utilities ───────────────────────────
+
+def normalize_vietnamese_ocr_text(text: str) -> str:
+    """
+    Standardize raw OCR recognized text for Vietnamese and multilingual handwriting.
+    - Applies Unicode NFC normalization (composing decomposed accents/diacritics).
+    - Converts full-width Asian punctuation to standard ASCII equivalents.
+    - Eliminates irregular whitespace (e.g., spaces before punctuation marks).
+    - Preserves logical paragraph structure and line breaks.
+    """
+    if not text:
+        return ""
+
+    # 1. Unicode NFC canonical composition
+    normalized = unicodedata.normalize("NFC", text)
+
+    # 2. Full-width punctuation mapping
+    fw_map = {
+        "，": ", ",
+        "。": ". ",
+        "！": "! ",
+        "？": "? ",
+        "：": ": ",
+        "；": "; ",
+        "（": " (",
+        "）": ") ",
+        "【": " [",
+        "】": "] ",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+    }
+    for fw_char, ascii_char in fw_map.items():
+        normalized = normalized.replace(fw_char, ascii_char)
+
+    # 3. Clean line by line
+    cleaned_lines = []
+    for line in normalized.splitlines():
+        line = re.sub(r"[ \t]+", " ", line).strip()
+        line = re.sub(r"\s+([,.:;?!])", r"\1", line)
+        cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines).strip()
+
+
+def sanitize_latex_string(latex_str: str) -> str:
+    """
+    Sanitize and normalize math formula string for robust Matplotlib MathText rendering.
+    - Strips outer dollar delimiters.
+    - Converts common raw Unicode math operators to their LaTeX macro equivalents.
+    - Cleans duplicate superscripts/subscripts (e.g. x^^2 -> x^2, x__1 -> x_1).
+    - Balances unmatched curly braces.
+    """
+    if not latex_str:
+        return ""
+
+    s = latex_str.strip().strip("$").strip()
+    if not s:
+        return ""
+
+    # Unicode symbol to LaTeX macro mapping
+    math_symbols = {
+        "×": r"\times ",
+        "÷": r"\div ",
+        "±": r"\pm ",
+        "∓": r"\mp ",
+        "≤": r"\le ",
+        "≥": r"\ge ",
+        "≠": r"\neq ",
+        "≈": r"\approx ",
+        "≡": r"\equiv ",
+        "∞": r"\infty ",
+        "√": r"\sqrt ",
+        "π": r"\pi ",
+        "θ": r"\theta ",
+        "α": r"\alpha ",
+        "β": r"\beta ",
+        "γ": r"\gamma ",
+        "δ": r"\delta ",
+        "λ": r"\lambda ",
+        "μ": r"\mu ",
+        "σ": r"\sigma ",
+        "ω": r"\omega ",
+        "Δ": r"\Delta ",
+        "Ω": r"\Omega ",
+        "∑": r"\sum ",
+        "∏": r"\prod ",
+        "∫": r"\int ",
+        "∂": r"\partial ",
+        "→": r"\to ",
+        "⇒": r"\Rightarrow ",
+        "∈": r"\in ",
+        "∉": r"\notin ",
+        "⊂": r"\subset ",
+    }
+    for uni, macro in math_symbols.items():
+        s = s.replace(uni, macro)
+
+    # Clean double exponent or subscript marks
+    s = re.sub(r"\^{2,}", "^", s)
+    s = re.sub(r"_{2,}", "_", s)
+
+    # Balance curly braces { }
+    open_count = s.count("{")
+    close_count = s.count("}")
+    if open_count > close_count:
+        s = s + ("}" * (open_count - close_count))
+    elif close_count > open_count:
+        s = ("{" * (close_count - open_count)) + s
+
+    return s
+
+
 # ─── Stroke → Image Renderer ──────────────────────────────────────────────────
 
 class StrokeRenderer:
@@ -136,8 +252,11 @@ class StrokeRenderer:
         x_max, y_max = max(xs), max(ys)
         pad = cls.PADDING
 
-        w = output_width or max(int((x_max - x_min) * dpi_scale) + 2 * pad, 64)
-        h = output_height or max(int((y_max - y_min) * dpi_scale) + 2 * pad, 64)
+        scale = max(0.5, float(dpi_scale)) if dpi_scale > 0 else 2.0
+        span_x = max(0.0, x_max - x_min)
+        span_y = max(0.0, y_max - y_min)
+        w = output_width if output_width > 0 else max(int(span_x * scale) + 2 * pad, 64)
+        h = output_height if output_height > 0 else max(int(span_y * scale) + 2 * pad, 64)
 
         canvas = np.full((h, w, 3), 255, dtype=np.uint8)
 
@@ -219,7 +338,7 @@ class HandwritingOCR:
         # RapidOCR returns list of [bbox, text, score]
         texts = [item[1] for item in result if item]
         scores = [float(item[2]) for item in result if item]
-        combined_text = " ".join(texts)
+        combined_text = normalize_vietnamese_ocr_text(" ".join(texts))
         avg_confidence = float(np.mean(scores)) if scores else 0.0
 
         return OcrResult(
@@ -872,6 +991,27 @@ class LaTeXRenderer:
         return cls.render_to_rgba(latex_str, fontsize=fontsize, dpi=dpi, color=color)
 
     @staticmethod
+    def validate_latex_syntax(latex_str: str) -> bool:
+        """
+        Validate whether latex_str can be parsed by matplotlib.mathtext
+        without rendering a full graphical figure.
+        """
+        if not latex_str or not latex_str.strip():
+            return False
+        expr = sanitize_latex_string(latex_str)
+        if not expr:
+            return False
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            from matplotlib.mathtext import MathTextParser
+            parser = MathTextParser("path")
+            parser.parse(f"${expr}$")
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
     def render_to_rgba(
         latex_str: str,
         fontsize: int = DEFAULT_FONTSIZE,
@@ -898,8 +1038,8 @@ class LaTeXRenderer:
         if not latex_str or not latex_str.strip():
             return None
 
-        # Wrap in math delimiters if not already present
-        expr = latex_str.strip().strip("$").strip()
+        # Sanitize and wrap in math delimiters
+        expr = sanitize_latex_string(latex_str)
         if not expr:
             return None
         expr = f"${expr}$"

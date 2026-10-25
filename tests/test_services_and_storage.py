@@ -61,6 +61,8 @@ from src.services.smart_ink_ocr import (
     StrokeRenderer,
     LaTeXRenderer,
     OcrResult,
+    normalize_vietnamese_ocr_text,
+    sanitize_latex_string,
 )
 from src.utils.telemetry_logger import TelemetryLogger, TelemetryRecord
 
@@ -998,6 +1000,50 @@ class TestLaTeXRenderer:
         assert LaTeXRenderer.render_to_rgba("$$", fontsize=16, dpi=72) is None
         assert LaTeXRenderer.render_to_rgba("$$$", fontsize=16, dpi=72) is None
         assert LaTeXRenderer.render_to_png_bytes("") is None
+
+    def test_validate_latex_syntax_valid_and_invalid(self):
+        """validate_latex_syntax must accurately classify valid math and reject malformed syntax without figure render."""
+        assert LaTeXRenderer.validate_latex_syntax(r"x^2 + y^2 = r^2") is True
+        assert LaTeXRenderer.validate_latex_syntax(r"\int_{0}^{\infty} e^{-x} dx") is True
+        assert LaTeXRenderer.validate_latex_syntax(r"\frac{a}{b}") is True
+        assert LaTeXRenderer.validate_latex_syntax(r"\frac{a}{") is False
+        assert LaTeXRenderer.validate_latex_syntax("") is False
+        assert LaTeXRenderer.validate_latex_syntax("   ") is False
+
+    def test_sanitize_latex_string_unicode_and_braces(self):
+        """sanitize_latex_string converts Unicode math symbols and balances unclosed braces."""
+        raw = "  $ a × b ≤ c ± d ≠ e √x $ "
+        san = sanitize_latex_string(raw)
+        assert r"\times " in san
+        assert r"\le " in san
+        assert r"\pm " in san
+        assert r"\neq " in san
+        assert r"\sqrt " in san
+
+        # Exponent collapse
+        assert sanitize_latex_string("x^^3 + y__2") == "x^3 + y_2"
+
+        # Unmatched braces auto-balanced
+        assert sanitize_latex_string(r"\frac{a}{b") == r"\frac{a}{b}"
+        assert sanitize_latex_string(r"e^{2x") == r"e^{2x}"
+
+    def test_normalize_vietnamese_ocr_text_comprehensive(self):
+        """normalize_vietnamese_ocr_text handles decomposed NFD, full-width punctuation, and irregular spacing."""
+        import unicodedata
+        # Decomposed NFD string
+        nfd_raw = unicodedata.normalize("NFD", "Trường Đại học Bách Khoa Hà Nội")
+        assert len(nfd_raw) > len("Trường Đại học Bách Khoa Hà Nội")  # Verified NFD length
+
+        # Dirty OCR text with NFD, full-width comma/period, and extra spacing before punctuation
+        dirty = nfd_raw + " ，Toán học  , Vật lý  .  Khoa học ！"
+        cleaned = normalize_vietnamese_ocr_text(dirty)
+
+        # Output must be NFC
+        assert cleaned == unicodedata.normalize("NFC", cleaned)
+        assert "，" not in cleaned
+        assert "！" not in cleaned
+        assert "Toán học, Vật lý. Khoa học!" in cleaned
+        assert cleaned.startswith("Trường Đại học Bách Khoa Hà Nội,")
 
 
 
