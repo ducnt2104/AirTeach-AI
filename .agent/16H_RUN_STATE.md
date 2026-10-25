@@ -839,9 +839,38 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 203: Interactive Quantum Mechanics: Particle in a Box & Quantum Tunneling Simulator
+- **Interactive Quantum Mechanics & Tunneling Simulator (`src/ui/interactive_quantum_tunneling.py`)**:
+  - Implemented `InteractiveQuantumTunnelingItem(QGraphicsObject)` and `QuantumPreset`.
+  - Authentic 1D Time-Independent & Time-Dependent Schrödinger Equation ($\hbar = 1.0, m = 1.0$ natural units):
+    - $-\frac{\hbar^2}{2m} \frac{d^2 \psi}{dx^2} + V(x)\psi = E \psi$.
+  - Quantum Tunneling & Reflection Flux Conservation:
+    - Below-barrier tunneling ($E < V_0$): $T = \frac{1}{1 + \frac{V_0^2 \sinh^2(\kappa d)}{4E(V_0 - E)}}$, $\kappa = \sqrt{2m(V_0 - E)}/\hbar$.
+    - Above-barrier quantum reflection ($E > V_0$): $T = \frac{1}{1 + \frac{V_0^2 \sin^2(k_1 d)}{4E(E - V_0)}}$, $k_1 = \sqrt{2m(E - V_0)}/\hbar$.
+    - Exact probability flux conservation verified: $T + R = 1.0$ across all regimes.
+  - 5 Curriculum Presets:
+    1. Infinite Square Well (Particle in a Box, $E_n = n^2 \pi^2 / (2m L^2)$, boundary nodes $\psi(\pm L/2) = 0$).
+    2. Finite Potential Well (Evanescent penetration into classically forbidden barrier $\psi \sim e^{-\kappa |x|}$).
+    3. Rectangular Barrier Tunneling (Exponential barrier decay and transmitted plane wave).
+    4. Alpha Decay Coulomb Barrier (Gamow model explaining Geiger-Nuttall law $\ln T \propto -Z/\sqrt{E}$).
+    5. Quantum Harmonic Oscillator ($V(x) = \frac{1}{2}\omega^2 x^2$, equispaced levels $E_n = (n+1/2)\hbar\omega$, zero-point energy $E_0 = \frac{1}{2}\hbar\omega > 0$).
+  - Dual Visualization Modes:
+    - Stationary: Stationary eigenstates $\psi_n(x)$, probability density $|\psi_n(x)|^2$, and analytical $T$ and $R$.
+    - Dynamic: Real-time Gaussian wavepacket evolution showing packet splitting into reflected and transmitted waves.
+  - Touchless webcam air gestures (air-tap on buttons, energy & barrier sliders), bimanual manipulation, canvas stamping, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._quantum_tunneling_item`, `show_quantum_tunneling`, `toggle_quantum_tunneling`, `is_quantum_tunneling_visible`, `get_quantum_tunneling_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+Q` ("Cơ học Lượng tử: Giếng thế & Xuyên hầm (Quantum Tunneling)"), `@Slot() def _on_toggle_quantum_tunneling`, and touchless air-tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_quantum_tunneling.py` (16 unit tests, all passed in 8.44s).
+  - Total test suites raised from 137 to **138 test suites**.
+  - Total passing tests raised from 1,642 to **1,658 passed tests (100% pass rate across 138 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **137 Test Suites**
-- **Total Passing Tests**: **1,642 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **138 Test Suites**
+- **Total Passing Tests**: **1,658 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

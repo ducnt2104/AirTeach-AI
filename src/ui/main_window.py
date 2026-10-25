@@ -998,6 +998,11 @@ class MainWindow(QMainWindow):
         relativity_act.triggered.connect(self._on_toggle_special_relativity)
         view_menu.addAction(relativity_act)
 
+        quantum_act = QAction("⚛️ Cơ học Lượng tử: Giếng thế & Xuyên hầm (Quantum Tunneling)", self)
+        quantum_act.setShortcut(QKeySequence("Ctrl+Shift+Q"))
+        quantum_act.triggered.connect(self._on_toggle_quantum_tunneling)
+        view_menu.addAction(quantum_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -3432,7 +3437,7 @@ class MainWindow(QMainWindow):
                                 self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#06b6d4", radius=9.0)
                                 self._finalize_hand_stroke(h.track_id)
                                 break
-                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "InteractiveSpecialRelativityItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
+                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "InteractiveSpecialRelativityItem", "InteractiveQuantumTunnelingItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
 
                             if item.isVisible() and hasattr(item, "handle_air_tap"):
 
@@ -5259,6 +5264,16 @@ class MainWindow(QMainWindow):
 
         )
 
+        return is_visible
+
+    @Slot()
+    def _on_toggle_quantum_tunneling(self) -> bool:
+        """Toggle interactive Quantum Mechanics & Tunneling simulator on LessonBoard."""
+        is_visible = self._scene.toggle_quantum_tunneling()
+        self._status.showMessage(
+            f"Cơ học Lượng tử & Xuyên hầm: {'Hiển thị (Ctrl+Shift+Q)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
         return is_visible
 
 
