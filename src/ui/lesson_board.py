@@ -306,6 +306,7 @@ class LessonBoard(QGraphicsScene):
         self._double_pendulum_item: Optional[QGraphicsItem] = None
         self._superconductivity_item: Optional[QGraphicsItem] = None
         self._band_theory_item: Optional[QGraphicsItem] = None
+        self._synchrotron_radiation_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1648,6 +1649,43 @@ class LessonBoard(QGraphicsScene):
     def get_band_theory_item(self) -> Optional[QGraphicsItem]:
         """Return interactive Band Theory instance if created."""
         return getattr(self, "_band_theory_item", None)
+
+    # ── Interactive Synchrotron Radiation & Relativistic Undulator ────────
+    def show_synchrotron_radiation(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive Synchrotron Radiation visualizer."""
+        if getattr(self, "_synchrotron_radiation_item", None) is None:
+            from src.ui.interactive_synchrotron_radiation import InteractiveSynchrotronRadiationItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 940.0 / 2.0, 110.0)
+            self._synchrotron_radiation_item = InteractiveSynchrotronRadiationItem(board=self)
+            self._synchrotron_radiation_item.setPos(spawn_pos[0], spawn_pos[1])
+            self.addItem(self._synchrotron_radiation_item)
+
+        self._synchrotron_radiation_item.setVisible(visible)
+        if visible and pos is not None:
+            self._synchrotron_radiation_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._synchrotron_radiation_item if visible else None
+
+    def toggle_synchrotron_radiation(self) -> bool:
+        """Toggle interactive Synchrotron Radiation simulator visibility."""
+        if getattr(self, "_synchrotron_radiation_item", None) is None or not self._synchrotron_radiation_item.isVisible():
+            self.show_synchrotron_radiation(True)
+            return True
+        else:
+            self.show_synchrotron_radiation(False)
+            return False
+
+    def is_synchrotron_radiation_visible(self) -> bool:
+        """Return True if interactive Synchrotron Radiation visualizer is active on board."""
+        return getattr(self, "_synchrotron_radiation_item", None) is not None and self._synchrotron_radiation_item.isVisible()
+
+    def get_synchrotron_radiation_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive Synchrotron Radiation instance if created."""
+        return getattr(self, "_synchrotron_radiation_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6688,6 +6726,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_double_pendulum_item", None),
             getattr(self, "_superconductivity_item", None),
             getattr(self, "_band_theory_item", None),
+            getattr(self, "_synchrotron_radiation_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),

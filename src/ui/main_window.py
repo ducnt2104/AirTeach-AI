@@ -1058,6 +1058,11 @@ class MainWindow(QMainWindow):
         band_theory_act.triggered.connect(self._on_toggle_band_theory)
         view_menu.addAction(band_theory_act)
 
+        synchrotron_act = QAction("⚡ Vật lý tương đối tính: Bức xạ Synchrotron & Bộ chèn Undulator", self)
+        synchrotron_act.setShortcut(QKeySequence("Ctrl+Shift+7"))
+        synchrotron_act.triggered.connect(self._on_toggle_synchrotron_radiation)
+        view_menu.addAction(synchrotron_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5437,6 +5442,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_band_theory()
         self._status.showMessage(
             f"Lý thuyết vùng & Kronig-Penney: {'Hiển thị (Ctrl+Shift+6)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_synchrotron_radiation(self) -> bool:
+        """Toggle interactive Synchrotron Radiation on LessonBoard."""
+        is_visible = self._scene.toggle_synchrotron_radiation()
+        self._status.showMessage(
+            f"Bức xạ Synchrotron & Undulator: {'Hiển thị (Ctrl+Shift+7)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

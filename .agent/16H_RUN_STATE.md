@@ -1284,9 +1284,48 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 215: Relativistic Electrodynamics: Synchrotron Radiation, Relativistic Larmor Formula & Insertion Devices
+- **Synchrotron Radiation & Undulator Simulator (`src/ui/interactive_synchrotron_radiation.py`)**:
+  - Implemented `InteractiveSynchrotronRadiationItem(QGraphicsObject)`, `SynchrotronPreset`, and authentic Lienard-Wiechert relativistic radiation numerical engine.
+  - Authentic High-Energy Physics & Relativistic Light Source Physics:
+    - Relativistic Lorentz Factor & Kinematics:
+      $$\gamma = \frac{E}{m_e c^2} = \frac{1}{\sqrt{1 - \beta^2}}$$
+      $$\rho = \frac{\gamma m_e v}{e B_0} \approx \frac{E[\text{GeV}]}{0.2998 \cdot B_0[\text{T}]}$$
+    - Relativistic Larmor Formula & Razor-Thin Beaming Cone:
+      $$P_{\text{rad}} = \frac{e^2 c}{6\pi \varepsilon_0} \frac{\gamma^4}{\rho^2}$$
+      $$\theta_{\text{cone}} \approx \frac{1}{\gamma} \quad (\sim 0.17\text{ mrad for } 3\text{ GeV storage ring})$$
+    - Critical Photon Energy & Universal Spectrum:
+      $$E_c = \hbar \omega_c = \frac{3}{2} \frac{\hbar c \gamma^3}{\rho} \approx 0.665 \cdot E[\text{GeV}]^2 \cdot B_0[\text{T}] \text{ (keV)}$$
+      Half the total radiated power is emitted above $E_c$, half below.
+    - Periodic Insertion Devices (Undulators vs Wigglers):
+      Deflection parameter $K = \frac{e B_0 \lambda_u}{2\pi m_e c} \approx 0.9337 \cdot B_0[\text{T}] \cdot \lambda_u[\text{cm}]$.
+      - Undulator regime ($K \le 1$): Electron oscillation angle $\theta_0 \le 1/\gamma$, coherent $N$-period constructive interference yielding razor-sharp harmonic peaks:
+        $$\lambda_n = \frac{\lambda_u}{2 n \gamma^2} \left( 1 + \frac{K^2}{2} + \gamma^2 \theta^2 \right)$$
+        Brilliance scales as $N^2$.
+      - Wiggler regime ($K \gg 1$): Large deflection angles, continuous hard X-ray spectrum with $2N$-fold enhanced flux.
+    - Dual-Panel Architecture:
+      - Left: Electron trajectory canvas showing circular dipole bend or sinusoidal undulating orbit through alternating permanent magnet Halbach arrays, with the forward-beaming relativistic radiation fan.
+      - Right: Semi-log spectral flux plot $dP/d\omega$ showing universal continuum curve or sharp multi-harmonic peaks ($n=1, 3, 5$) with off-axis red-shifting.
+  - 5 Curriculum Presets:
+    1. Bending Dipole Magnet ($E = 3.0\text{ GeV}, B_0 = 1.2\text{ T}$, continuous synchrotron spectrum).
+    2. Planar Undulator ($K = 1.2, N = 60, \lambda_u = 2.8\text{ cm}$, coherent monochromatic harmonics).
+    3. Multipole Wiggler ($K = 15, B_0 = 1.8\text{ T}$, boosted hard X-ray continuum).
+    4. Free Electron Laser (SASE XFEL femtosecond coherent laser pulses).
+    5. Low-Energy VUV Synchrotron ($E = 1.5\text{ GeV}$, soft X-rays for photoemission spectroscopy).
+  - Continuous 30 FPS self-animating `QTimer`, touchless air gestures, electron energy/field/observation angle sliders, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._synchrotron_radiation_item`, `show_synchrotron_radiation`, `toggle_synchrotron_radiation`, `is_synchrotron_radiation_visible`, `get_synchrotron_radiation_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+7` ("Vật lý tương đối tính: Bức xạ Synchrotron & Bộ chèn Undulator"), `@Slot() def _on_toggle_synchrotron_radiation`, and air-tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_synchrotron_radiation.py` (11 unit tests, all passed in 0.77s).
+  - Total test suites raised from 149 to **150 test suites**.
+  - Total passing tests raised from 1,806 to **1,817 passed tests (100% pass rate across 150 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **149 Test Suites**
-- **Total Passing Tests**: **1,806 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **150 Test Suites**
+- **Total Passing Tests**: **1,817 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
