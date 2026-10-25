@@ -898,9 +898,48 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 205: Acoustic Wave Physics: Doppler Spectrogram, Ultrasonic Echolocation & Sonar Beamforming
+- **Acoustic Wave Mechanics & Sonar Simulator (`src/ui/interactive_acoustic_sonar.py`)**:
+  - Implemented `InteractiveAcousticSonarItem(QGraphicsObject)` and `AcousticPreset`.
+  - Authentic Classical Acoustics & Sonar Wave Mechanics:
+    - Speed of Sound in air: $c = 343.0\text{ m/s}$ ($20^\circ\text{C}$, 1 atm, $\gamma = 1.4$).
+    - Classical Acoustic Doppler Shift: $f_o = f_s \left( \frac{c - v_o \cdot u}{c - v_s \cdot u} \right)$ with directional projection along line of sight.
+      - Approaching source ($v_s \cdot u > 0$): Compressed wavefronts, perceived pitch rises ($f_o > f_s$).
+      - Receding source ($v_s \cdot u < 0$): Stretched wavefronts, perceived pitch drops ($f_o < f_s$).
+      - Closest approach ($v_s \cdot u = 0$): Inflection point with maximum pitch drop rate $df_o/dt$.
+    - Supersonic Flow & Mach Shock Cone:
+      - Mach number $M = v_s / c$.
+      - Shock envelope half-angle $\mu = \arcsin(1/M) = \arcsin(c / v_s)$ for $M \ge 1.0$.
+      - Conical shockwave wedge visualization and sonic boom pressure discontinuity.
+    - Ultrasonic Echolocation (Time-of-Flight / TOF):
+      - Pulse round-trip time $\Delta t = \frac{2d}{c} \implies d = \frac{c \Delta t}{2}$.
+      - Spherical pulse propagation, obstacle reflection, and echo pulse reception.
+    - Phased Array Sonar / Ultrasound Beamforming:
+      - Uniform Linear Array (ULA) with $N = 8$ transducers, element pitch $d = \lambda / 2$.
+      - Array Directivity Factor: $AF(\theta) = \left| \frac{\sin\left(N \frac{\pi}{2} (\sin\theta - \sin\theta_0)\right)}{N \sin\left(\frac{\pi}{2} (\sin\theta - \sin\theta_0)\right)} \right|$.
+      - Dynamic polar beam fan with steerable main lobe angle $\theta_0 \in [-60^\circ, +60^\circ]$.
+    - Time-Frequency Waterfall Spectrogram:
+      - Real-time scrolling heatmap recording continuous spectro-temporal signature and Doppler S-curve.
+  - 5 Curriculum Presets:
+    1. Ambulance Doppler Siren ($f_s = 700\text{ Hz}$, $v_s = 34.3\text{ m/s} = 0.10\text{ Mach}$, $\sim 123.5\text{ km/h}$).
+    2. Supersonic Jet & Mach Cone ($v_s = 480.2\text{ m/s} = 1.40\text{ Mach}$, $\mu = 45.6^\circ$, shockwave wedge).
+    3. Bat Biosonar Echolocation ($f = 40\text{ kHz}$ ultrasound, obstacle at $d = 6.86\text{ m}$, $\text{TOF} = 40.0\text{ ms}$).
+    4. Phased Array Sonar Beamforming ($N = 8$, steering angle $\theta_0 = 30^\circ$, directional acoustic beam).
+    5. Multi-harmonic Doppler Waterfall Spectrogram ($f_s = 600\text{ Hz}$, $v_s = 51.45\text{ m/s}$, S-curve visualization).
+  - Touchless webcam air gestures (air-tap on buttons, velocity slider, frequency slider, beam angle slider), bimanual manipulation, canvas stamping, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._acoustic_sonar_item`, `show_acoustic_sonar`, `toggle_acoustic_sonar`, `is_acoustic_sonar_visible`, `get_acoustic_sonar_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+S` ("Vật lý Âm học: Sóng âm Doppler & Sonar Beamforming"), `@Slot() def _on_toggle_acoustic_sonar`, and touchless air-tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_acoustic_sonar.py` (17 unit tests, all passed in 8.15s).
+  - Total test suites raised from 139 to **140 test suites**.
+  - Total passing tests raised from 1,673 to **1,690 passed tests (100% pass rate across 140 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **139 Test Suites**
-- **Total Passing Tests**: **1,673 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **140 Test Suites**
+- **Total Passing Tests**: **1,690 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

@@ -296,6 +296,7 @@ class LessonBoard(QGraphicsScene):
         self._special_relativity_item: Optional[QGraphicsItem] = None
         self._quantum_tunneling_item: Optional[QGraphicsItem] = None
         self._coriolis_earth_item: Optional[QGraphicsItem] = None
+        self._acoustic_sonar_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1271,6 +1272,42 @@ class LessonBoard(QGraphicsScene):
     def get_coriolis_earth_item(self) -> Optional[QGraphicsItem]:
         """Return interactive Coriolis Effect visualizer instance if created."""
         return getattr(self, "_coriolis_earth_item", None)
+
+    # ── Interactive Acoustic Wave Physics & Sonar Simulator ──────────────────
+    def show_acoustic_sonar(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive Acoustic Doppler, Ultrasound & Sonar visualizer."""
+        if getattr(self, "_acoustic_sonar_item", None) is None:
+            from src.ui.interactive_acoustic_sonar import InteractiveAcousticSonarItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 940.0 / 2.0, 110.0)
+            self._acoustic_sonar_item = InteractiveAcousticSonarItem(board=self, pos=spawn_pos)
+            self.addItem(self._acoustic_sonar_item)
+
+        self._acoustic_sonar_item.setVisible(visible)
+        if visible and pos is not None:
+            self._acoustic_sonar_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._acoustic_sonar_item if visible else None
+
+    def toggle_acoustic_sonar(self) -> bool:
+        """Toggle interactive Acoustic Doppler & Sonar visualizer visibility."""
+        if getattr(self, "_acoustic_sonar_item", None) is None or not self._acoustic_sonar_item.isVisible():
+            self.show_acoustic_sonar(True)
+            return True
+        else:
+            self.show_acoustic_sonar(False)
+            return False
+
+    def is_acoustic_sonar_visible(self) -> bool:
+        """Return True if interactive Acoustic Doppler visualizer is active on board."""
+        return getattr(self, "_acoustic_sonar_item", None) is not None and self._acoustic_sonar_item.isVisible()
+
+    def get_acoustic_sonar_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive Acoustic Doppler visualizer instance if created."""
+        return getattr(self, "_acoustic_sonar_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6300,7 +6337,8 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_transformer_attention_item", None),
             getattr(self, "_special_relativity_item", None),
             getattr(self, "_quantum_tunneling_item", None),
-            getattr(self, "_coriolis_earth_item", None),
+            getattr(self, "_coriolis_earth_item", None),
+            getattr(self, "_acoustic_sonar_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),

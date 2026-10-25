@@ -1008,6 +1008,11 @@ class MainWindow(QMainWindow):
         coriolis_act.triggered.connect(self._on_toggle_coriolis_earth)
         view_menu.addAction(coriolis_act)
 
+        acoustic_act = QAction("🔊 Vật lý Âm học: Sóng âm Doppler & Sonar Beamforming", self)
+        acoustic_act.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        acoustic_act.triggered.connect(self._on_toggle_acoustic_sonar)
+        view_menu.addAction(acoustic_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -3442,7 +3447,7 @@ class MainWindow(QMainWindow):
                                 self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#06b6d4", radius=9.0)
                                 self._finalize_hand_stroke(h.track_id)
                                 break
-                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "InteractiveSpecialRelativityItem", "InteractiveQuantumTunnelingItem", "InteractiveCoriolisEarthItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
+                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "InteractiveSpecialRelativityItem", "InteractiveQuantumTunnelingItem", "InteractiveCoriolisEarthItem", "InteractiveAcousticSonarItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
 
                             if item.isVisible() and hasattr(item, "handle_air_tap"):
 
@@ -5287,6 +5292,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_coriolis_earth()
         self._status.showMessage(
             f"Hiệu ứng Coriolis & Khí quyển: {'Hiển thị (Ctrl+Shift+C)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_acoustic_sonar(self) -> bool:
+        """Toggle interactive Acoustic Doppler & Sonar visualizer on LessonBoard."""
+        is_visible = self._scene.toggle_acoustic_sonar()
+        self._status.showMessage(
+            f"Sóng âm Doppler & Sonar: {'Hiển thị (Ctrl+Shift+S)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible
