@@ -132,6 +132,16 @@ class CanvasExporter:
                 hidden_items.append((compass_itm, compass_itm.isVisible()))
                 compass_itm.setVisible(False)
 
+            ruler_itm = getattr(scene, "_ruler_item", None)
+            if ruler_itm is not None and ruler_itm.isVisible():
+                hidden_items.append((ruler_itm, ruler_itm.isVisible()))
+                ruler_itm.setVisible(False)
+
+            protractor_itm = getattr(scene, "_protractor_item", None)
+            if protractor_itm is not None and protractor_itm.isVisible():
+                hidden_items.append((protractor_itm, protractor_itm.isVisible()))
+                protractor_itm.setVisible(False)
+
             # Laser trails
             trails = getattr(scene, "_laser_trails", {})
             for t_item in trails.values():
@@ -148,7 +158,11 @@ class CanvasExporter:
             if transparent_bg:
                 image.fill(Qt.GlobalColor.transparent)
             else:
-                image.fill(Qt.GlobalColor.white)
+                bg_col = scene.backgroundBrush().color()
+                if bg_col.isValid() and bg_col != Qt.GlobalColor.transparent:
+                    image.fill(bg_col)
+                else:
+                    image.fill(Qt.GlobalColor.white)
 
             painter = QPainter(image)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -175,6 +189,45 @@ class CanvasExporter:
                     item.setVisible(was_vis)
                 except Exception:
                     pass
+
+    @staticmethod
+    def save_image_atomic(
+        image: QImage,
+        file_path: Union[str, Path],
+        quality: int = 95,
+    ) -> bool:
+        """
+        Atomically save a QImage to disk, ensuring no partial or corrupted files.
+        """
+        out_p = Path(file_path).resolve()
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        ext = out_p.suffix.lower()
+        temp_out = out_p.with_name(f".tmp_{uuid.uuid4().hex}_{out_p.name}")
+        try:
+            if ext in (".jpg", ".jpeg"):
+                if image.hasAlphaChannel():
+                    opaque_img = QImage(image.size(), QImage.Format.Format_RGB32)
+                    opaque_img.fill(Qt.GlobalColor.white)
+                    p = QPainter(opaque_img)
+                    p.drawImage(0, 0, image)
+                    p.end()
+                    image = opaque_img
+                saved = image.save(str(temp_out), "JPEG", quality)
+            else:
+                saved = image.save(str(temp_out), "PNG")
+
+            if not saved:
+                return False
+
+            temp_out.replace(out_p)
+            return True
+        except Exception:
+            if temp_out.exists():
+                try:
+                    temp_out.unlink()
+                except Exception:
+                    pass
+            return False
 
     @classmethod
     def export_scene_to_file(
@@ -215,33 +268,9 @@ class CanvasExporter:
             include_overlays=include_overlays,
         )
 
-        ext = out_p.suffix.lower()
-        temp_out = out_p.with_name(f".tmp_{uuid.uuid4().hex}_{out_p.name}")
-        try:
-            if ext in (".jpg", ".jpeg"):
-                # Ensure background is opaque for JPEG
-                if qimage.hasAlphaChannel():
-                    opaque_img = QImage(qimage.size(), QImage.Format.Format_RGB32)
-                    opaque_img.fill(Qt.GlobalColor.white)
-                    p = QPainter(opaque_img)
-                    p.drawImage(0, 0, qimage)
-                    p.end()
-                    qimage = opaque_img
-                saved = qimage.save(str(temp_out), "JPEG", quality)
-            else:
-                saved = qimage.save(str(temp_out), "PNG")
-
-            if not saved:
-                raise IOError(f"Không thể ghi tệp tạm thời: {temp_out}")
-
-            temp_out.replace(out_p)
-        except Exception:
-            if temp_out.exists():
-                try:
-                    temp_out.unlink()
-                except Exception:
-                    pass
-            raise
+        saved = cls.save_image_atomic(qimage, out_p, quality=quality)
+        if not saved:
+            raise IOError(f"Không thể ghi tệp hình ảnh xuất khẩu: {out_p}")
 
         return out_p
 

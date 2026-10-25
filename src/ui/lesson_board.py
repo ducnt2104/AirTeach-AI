@@ -6394,10 +6394,50 @@ class LessonBoard(QGraphicsScene):
 
     def snapshot_as_pixmap(self) -> QPixmap:
         """Render the entire board to a QPixmap (for export / thumbnail)."""
+        bg_col = self.backgroundBrush().color()
+        if not bg_col.isValid() or bg_col == Qt.GlobalColor.transparent:
+            bg_col = QColor("#f8f9fa")
         pixmap = QPixmap(BOARD_WIDTH, BOARD_HEIGHT)
-        pixmap.fill(QColor("#f8f9fa"))
+        pixmap.fill(bg_col)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.render(painter)
         painter.end()
         return pixmap
+
+    def snapshot_as_image(
+        self,
+        target_width: int = 1920,
+        target_height: int = 1080,
+        scale: float = 1.0,
+        transparent_bg: bool = False,
+        include_overlays: bool = False,
+    ) -> QImage:
+        """Render the lesson board to a high-resolution QImage."""
+        from src.ui.canvas_exporter import CanvasExporter
+        return CanvasExporter.render_scene_to_image(
+            scene=self,
+            width=target_width,
+            height=target_height,
+            scale=scale,
+            transparent_bg=transparent_bg,
+            include_overlays=include_overlays,
+        )
+
+    def export_to_file(
+        self,
+        output_path: Union[str, Path],
+        scale: float = 1.0,
+        transparent_bg: bool = False,
+        include_overlays: bool = False,
+        quality: int = 95,
+    ) -> bool:
+        """Directly export board canvas to an image file (PNG, JPG) using atomic writing."""
+        from pathlib import Path
+        from src.ui.canvas_exporter import CanvasExporter
+        qimage = self.snapshot_as_image(
+            scale=scale,
+            transparent_bg=transparent_bg,
+            include_overlays=include_overlays,
+        )
+        return CanvasExporter.save_image_atomic(qimage, Path(output_path), quality=quality)

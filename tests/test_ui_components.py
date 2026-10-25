@@ -171,6 +171,39 @@ class TestLessonBoard:
         assert pixmap.width() == self.BOARD_WIDTH
         assert pixmap.height() == self.BOARD_HEIGHT
 
+    def test_snapshot_as_image_and_export_to_file(self, tmp_path):
+        """Verify snapshot_as_image resolution supersampling and atomic export_to_file."""
+        # 1. 1080p standard snapshot
+        img_1080p = self.board.snapshot_as_image(scale=1.0)
+        assert not img_1080p.isNull()
+        assert img_1080p.width() == 1920
+        assert img_1080p.height() == 1080
+
+        # 2. 4K UHD supersampling (scale=2.0)
+        img_4k = self.board.snapshot_as_image(scale=2.0)
+        assert not img_4k.isNull()
+        assert img_4k.width() == 3840
+        assert img_4k.height() == 2160
+
+        # 3. Transparent PNG background
+        img_trans = self.board.snapshot_as_image(scale=1.0, transparent_bg=True)
+        assert not img_trans.isNull()
+        assert img_trans.hasAlphaChannel()
+
+        # 4. Atomic export to PNG file
+        png_path = tmp_path / "board_export.png"
+        ok_png = self.board.export_to_file(png_path, scale=1.0)
+        assert ok_png is True
+        assert png_path.exists()
+        assert png_path.stat().st_size > 0
+
+        # 5. Atomic export to JPG file
+        jpg_path = tmp_path / "board_export.jpg"
+        ok_jpg = self.board.export_to_file(jpg_path, scale=1.0, quality=90)
+        assert ok_jpg is True
+        assert jpg_path.exists()
+        assert jpg_path.stat().st_size > 0
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CameraWidget Tests
