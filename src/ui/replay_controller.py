@@ -97,6 +97,15 @@ class ReplayStrokePoint:
     stroke_id: str
 
 
+@dataclass
+class ReplayTimelineEvent:
+    """A timed presentation event (STEM simulation update, slide page switch, gesture, or note)."""
+    time_ms: float
+    event_type: str
+    payload: dict
+    event_id: str = ""
+
+
 
 
 
@@ -125,6 +134,8 @@ class ReplayController(QWidget):
     playback_state_changed = Signal(bool)
 
     time_updated           = Signal(float, float)
+    chapter_reached        = Signal(int, str)
+    event_triggered        = Signal(object)
 
 
 
@@ -165,6 +176,13 @@ class ReplayController(QWidget):
         # Cached stroke data for playback
 
         self._source_strokes: list[InkStroke] = []
+
+        # Chapters and Timeline Telemetry
+        self._chapters: list[tuple[float, str]] = []
+        self._current_chapter_idx: int = -1
+        self._timeline_events: list[ReplayTimelineEvent] = []
+        self._event_handlers: dict[str, list[Callable[[ReplayTimelineEvent], None]]] = {}
+        self._dispatched_event_ids: set[str] = set()
 
         self._timer = QTimer(self)
 
@@ -300,6 +318,12 @@ class ReplayController(QWidget):
 
         # Speed selector
 
+        self._combo_chapters = QComboBox()
+        self._combo_chapters.addItem("📖 Toàn bộ bài giảng")
+        self._combo_chapters.setStyleSheet("padding: 4px 8px; border: 1px solid #dadce0; border-radius: 4px; max-width: 170px;")
+        self._combo_chapters.currentIndexChanged.connect(self._on_chapter_selected)
+        layout.addWidget(self._combo_chapters)
+
         speed_lbl = QLabel("Tốc độ:")
 
         speed_lbl.setFont(QFont("Segoe UI", 9))
@@ -325,6 +349,150 @@ class ReplayController(QWidget):
     # ─── Public API ───────────────────────────────────────────────────────────
 
 
+
+    # ─── Chapter Navigation & Timeline API ────────────────────────────────────
+
+    def add_chapter(self, time_ms: float, title: str) -> None:
+        """Register a chapter marker at a specific timestamp in milliseconds."""
+        self._chapters.append((float(time_ms), str(title)))
+        self._chapters.sort(key=lambda c: c[0])
+        self._rebuild_chapter_combo()
+
+    def get_chapters(self) -> list[tuple[float, str]]:
+        """Return list of registered chapters as (time_ms, title) tuples."""
+        return list(self._chapters)
+
+    def clear_chapters(self) -> None:
+        """Clear all registered chapter markers."""
+        self._chapters.clear()
+        self._current_chapter_idx = -1
+        self._rebuild_chapter_combo()
+
+    def _rebuild_chapter_combo(self) -> None:
+        """Update dropdown items for chapters."""
+        self._combo_chapters.blockSignals(True)
+        self._combo_chapters.clear()
+        self._combo_chapters.addItem("📖 Toàn bộ bài giảng")
+        for idx, (t, title) in enumerate(self._chapters):
+            sec = int(t / 1000.0)
+            time_str = f"{sec // 60:02d}:{sec % 60:02d}"
+            self._combo_chapters.addItem(f"[{time_str}] {title}")
+        self._combo_chapters.blockSignals(False)
+
+    def _on_chapter_selected(self, index: int) -> None:
+        """Handle user selecting a chapter from dropdown."""
+        if index <= 0 or index > len(self._chapters):
+            return
+        ch_time, ch_title = self._chapters[index - 1]
+        self.seek_to(ch_time)
+
+    def jump_to_chapter(self, index: int) -> bool:
+        """Jump to specific chapter by index (0-based)."""
+        if 0 <= index < len(self._chapters):
+            ch_time, ch_title = self._chapters[index]
+            self.seek_to(ch_time)
+            return True
+        return False
+
+    def jump_to_next_chapter(self) -> bool:
+        """Jump to next sequential chapter after current playhead position."""
+        for idx, (t, title) in enumerate(self._chapters):
+            if t > self._current_time_ms + 100.0:
+                self.seek_to(t)
+                return True
+        return False
+
+    def jump_to_prev_chapter(self) -> bool:
+        """Jump to previous chapter before current playhead position."""
+        for idx in range(len(self._chapters) - 1, -1, -1):
+            t, title = self._chapters[idx]
+            if t < self._current_time_ms - 100.0:
+                self.seek_to(t)
+                return True
+        self.seek_to(0.0)
+        return True
+
+    def add_timeline_event(self, event: ReplayTimelineEvent) -> None:
+        """Register a timed telemetry or presentation event."""
+        self._timeline_events.append(event)
+        self._timeline_events.sort(key=lambda ev: ev.time_ms)
+
+    def get_timeline_events(self) -> list[ReplayTimelineEvent]:
+        """Return registered timeline events."""
+        return list(self._timeline_events)
+
+    def clear_timeline_events(self) -> None:
+        """Clear all registered timeline events."""
+        self._timeline_events.clear()
+        self._dispatched_event_ids.clear()
+
+    def register_event_handler(self, event_type: str, handler: Callable[[ReplayTimelineEvent], None]) -> None:
+        """Register a handler callback for a specific event type."""
+        if event_type not in self._event_handlers:
+            self._event_handlers[event_type] = []
+        self._event_handlers[event_type].append(handler)
+
+    def seek_to(self, target_time_ms: float) -> None:
+        """Seek playback head to target timestamp in milliseconds."""
+        self._current_time_ms = max(0.0, min(self._total_duration_ms, float(target_time_ms)))
+        self._slider.blockSignals(True)
+        self._slider.setValue(int(self._current_time_ms))
+        self._slider.blockSignals(False)
+        self._apply_timestamp_to_canvas(self._current_time_ms)
+        self._update_time_label()
+        self.time_updated.emit(self._current_time_ms, self._total_duration_ms)
+
+    def get_progress(self) -> float:
+        """Return playback progress as a normalized float [0.0, 1.0]."""
+        if self._total_duration_ms <= 0:
+            return 0.0
+        return max(0.0, min(1.0, self._current_time_ms / self._total_duration_ms))
+
+    def set_progress(self, progress: float) -> None:
+        """Seek playback head using normalized progress [0.0, 1.0]."""
+        self.seek_to(max(0.0, min(1.0, float(progress))) * self._total_duration_ms)
+
+    def export_timeline_data(self) -> dict:
+        """Export complete replay timeline metadata for lesson packaging."""
+        return {
+            "total_duration_ms": self._total_duration_ms,
+            "start_time_ms": self._start_time_ms,
+            "speed_multiplier": self._speed_multiplier,
+            "chapters": [{"time_ms": t, "title": title} for t, title in self._chapters],
+            "events": [
+                {
+                    "time_ms": ev.time_ms,
+                    "event_type": ev.event_type,
+                    "payload": ev.payload,
+                    "event_id": ev.event_id,
+                }
+                for ev in self._timeline_events
+            ],
+        }
+
+    def load_timeline_data(self, data: dict) -> None:
+        """Load timeline metadata, chapters, and presentation events."""
+        self.clear_chapters()
+        self.clear_timeline_events()
+        if not isinstance(data, dict):
+            return
+        for ch in data.get("chapters", []):
+            if "time_ms" in ch and "title" in ch:
+                self.add_chapter(float(ch["time_ms"]), str(ch["title"]))
+        for ev in data.get("events", []):
+            if "time_ms" in ev and "event_type" in ev:
+                self.add_timeline_event(
+                    ReplayTimelineEvent(
+                        time_ms=float(ev["time_ms"]),
+                        event_type=str(ev["event_type"]),
+                        payload=dict(ev.get("payload", {})),
+                        event_id=str(ev.get("event_id", "")),
+                    )
+                )
+        if "total_duration_ms" in data:
+            self._total_duration_ms = max(self._total_duration_ms, float(data["total_duration_ms"]))
+            self._slider.setRange(0, int(self._total_duration_ms))
+            self._update_time_label()
 
     def set_speed(self, speed: float) -> None:
 
@@ -530,6 +698,13 @@ class ReplayController(QWidget):
 
         self._current_time_ms = 0.0
 
+        self._dispatched_event_ids.clear()
+        self._current_chapter_idx = -1
+        if hasattr(self, "_combo_chapters"):
+            self._combo_chapters.blockSignals(True)
+            self._combo_chapters.setCurrentIndex(0)
+            self._combo_chapters.blockSignals(False)
+
         self._slider.setValue(0)
 
         self._apply_timestamp_to_canvas(0.0)
@@ -627,6 +802,40 @@ class ReplayController(QWidget):
             return
 
 
+
+        # 1. Update Chapter tracking
+        active_ch_idx = -1
+        for idx, (ch_time, ch_title) in enumerate(self._chapters):
+            if target_ms >= ch_time:
+                active_ch_idx = idx
+            else:
+                break
+        if active_ch_idx != self._current_chapter_idx:
+            self._current_chapter_idx = active_ch_idx
+            if 0 <= active_ch_idx < len(self._chapters):
+                title = self._chapters[active_ch_idx][1]
+                self.chapter_reached.emit(active_ch_idx, title)
+                if hasattr(self, "_combo_chapters") and self._combo_chapters.count() > active_ch_idx + 1:
+                    self._combo_chapters.blockSignals(True)
+                    self._combo_chapters.setCurrentIndex(active_ch_idx + 1)
+                    self._combo_chapters.blockSignals(False)
+
+        # 2. Dispatch Timeline Presentation Events
+        for ev in self._timeline_events:
+            ev_key = ev.event_id or f"{ev.event_type}_{ev.time_ms}"
+            if ev.time_ms <= target_ms:
+                if ev_key not in self._dispatched_event_ids:
+                    self._dispatched_event_ids.add(ev_key)
+                    self.event_triggered.emit(ev)
+                    handlers = self._event_handlers.get(ev.event_type, [])
+                    for h in handlers:
+                        try:
+                            h(ev)
+                        except Exception as exc:
+                            logger.warning("Error in replay event handler for %s: %s", ev.event_type, exc)
+            else:
+                if ev_key in self._dispatched_event_ids:
+                    self._dispatched_event_ids.remove(ev_key)
 
         abs_target = self._start_time_ms + target_ms
 

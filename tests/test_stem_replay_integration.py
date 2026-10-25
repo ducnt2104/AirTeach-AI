@@ -1017,3 +1017,141 @@ def test_main_window_insert_chem_molecule(qapp):
     assert len(win._page_stem_items.get(win._current_page_index, [])) == len(current_items)
 
     win.close()
+
+
+
+def test_replay_chapters_navigation_and_signals(qapp):
+    """Verify chapter marker additions, sorting, jump navigation, and signal emissions."""
+    from src.ui.replay_controller import ReplayController
+    from src.ui.lesson_board_canvas import LessonBoardCanvas
+
+    canvas = LessonBoardCanvas()
+    ctrl = ReplayController(canvas=canvas)
+    ctrl._total_duration_ms = 10000.0
+    ctrl._slider.setRange(0, 10000)
+
+    # 1. Register chapters out of order to verify auto-sorting
+    ctrl.add_chapter(5000.0, "Phần 2: Thí nghiệm")
+    ctrl.add_chapter(1000.0, "Phần 1: Giới thiệu")
+    ctrl.add_chapter(8000.0, "Phần 3: Tổng kết")
+
+    chapters = ctrl.get_chapters()
+    assert len(chapters) == 3
+    assert chapters[0] == (1000.0, "Phần 1: Giới thiệu")
+    assert chapters[1] == (5000.0, "Phần 2: Thí nghiệm")
+    assert chapters[2] == (8000.0, "Phần 3: Tổng kết")
+
+    # 2. Track chapter_reached signal
+    emitted_chapters = []
+    ctrl.chapter_reached.connect(lambda idx, title: emitted_chapters.append((idx, title)))
+
+    # Jump to chapter 1
+    assert ctrl.jump_to_chapter(1) is True
+    assert ctrl._current_time_ms == 5000.0
+    assert (1, "Phần 2: Thí nghiệm") in emitted_chapters
+
+    # Jump to next chapter
+    assert ctrl.jump_to_next_chapter() is True
+    assert ctrl._current_time_ms == 8000.0
+    assert (2, "Phần 3: Tổng kết") in emitted_chapters
+
+    # Jump to previous chapter
+    assert ctrl.jump_to_prev_chapter() is True
+    assert ctrl._current_time_ms == 5000.0
+
+    # Jump to invalid chapter index
+    assert ctrl.jump_to_chapter(99) is False
+
+    # 3. Clear chapters
+    ctrl.clear_chapters()
+    assert len(ctrl.get_chapters()) == 0
+
+
+def test_replay_timeline_events_dispatch_and_handlers(qapp):
+    """Verify presentation events are properly dispatched and trigger registered handlers."""
+    from src.ui.replay_controller import ReplayController, ReplayTimelineEvent
+    from src.ui.lesson_board_canvas import LessonBoardCanvas
+
+    canvas = LessonBoardCanvas()
+    ctrl = ReplayController(canvas=canvas)
+    ctrl._total_duration_ms = 6000.0
+    ctrl._slider.setRange(0, 6000)
+
+    received_stem_events = []
+    received_page_events = []
+
+    ctrl.register_event_handler("stem_action", lambda ev: received_stem_events.append(ev))
+    ctrl.register_event_handler("page_switch", lambda ev: received_page_events.append(ev))
+
+    ev1 = ReplayTimelineEvent(time_ms=1000.0, event_type="stem_action", payload={"action": "rotate", "deg": 45}, event_id="stem_1")
+    ev2 = ReplayTimelineEvent(time_ms=2500.0, event_type="page_switch", payload={"page": 2}, event_id="page_1")
+    ev3 = ReplayTimelineEvent(time_ms=4000.0, event_type="stem_action", payload={"action": "step"}, event_id="stem_2")
+
+    ctrl.add_timeline_event(ev1)
+    ctrl.add_timeline_event(ev2)
+    ctrl.add_timeline_event(ev3)
+
+    assert len(ctrl.get_timeline_events()) == 3
+
+    # Scrub to 2000 ms -> only ev1 should fire
+    ctrl.seek_to(2000.0)
+    assert len(received_stem_events) == 1
+    assert received_stem_events[0].event_id == "stem_1"
+    assert len(received_page_events) == 0
+
+    # Scrub to 5000 ms -> ev2 and ev3 should now fire as well
+    ctrl.seek_to(5000.0)
+    assert len(received_stem_events) == 2
+    assert len(received_page_events) == 1
+    assert received_page_events[0].event_id == "page_1"
+
+    # Rewind to 500 ms -> should reset dispatch state so scrubbing forward fires again
+    ctrl.seek_to(500.0)
+    assert "stem_1" not in ctrl._dispatched_event_ids
+
+    # Clear timeline events
+    ctrl.clear_timeline_events()
+    assert len(ctrl.get_timeline_events()) == 0
+
+
+def test_replay_seek_progress_and_timeline_export_import(qapp):
+    """Verify progress calculation, direct seek, and timeline serialization round-trip."""
+    from src.ui.replay_controller import ReplayController, ReplayTimelineEvent
+    from src.ui.lesson_board_canvas import LessonBoardCanvas
+
+    canvas = LessonBoardCanvas()
+    ctrl = ReplayController(canvas=canvas)
+    ctrl._total_duration_ms = 4000.0
+    ctrl._slider.setRange(0, 4000)
+
+    # 1. Progress and seek
+    ctrl.set_progress(0.25)
+    assert ctrl._current_time_ms == 1000.0
+    assert ctrl.get_progress() == 0.25
+
+    ctrl.set_progress(0.75)
+    assert ctrl._current_time_ms == 3000.0
+    assert ctrl.get_progress() == 0.75
+
+    # 2. Add chapters and events
+    ctrl.add_chapter(1500.0, "Giới thiệu")
+    ctrl.add_timeline_event(
+        ReplayTimelineEvent(time_ms=2000.0, event_type="gesture", payload={"state": "POINT"}, event_id="gest_1")
+    )
+
+    # 3. Export
+    exported = ctrl.export_timeline_data()
+    assert exported["total_duration_ms"] == 4000.0
+    assert len(exported["chapters"]) == 1
+    assert exported["chapters"][0]["title"] == "Giới thiệu"
+    assert len(exported["events"]) == 1
+    assert exported["events"][0]["event_id"] == "gest_1"
+
+    # 4. Import into new controller
+    ctrl2 = ReplayController(canvas=canvas)
+    ctrl2.load_timeline_data(exported)
+    assert ctrl2._total_duration_ms == 4000.0
+    assert len(ctrl2.get_chapters()) == 1
+    assert ctrl2.get_chapters()[0] == (1500.0, "Giới thiệu")
+    assert len(ctrl2.get_timeline_events()) == 1
+    assert ctrl2.get_timeline_events()[0].event_type == "gesture"
