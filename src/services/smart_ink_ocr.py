@@ -259,9 +259,28 @@ class GeometricMathParser:
 
         primitives: list[_MathToken] = []
         for s in strokes:
-            pts = s.to_numpy()
-            if len(pts) < 2:
+            if s is None:
                 continue
+            if hasattr(s, "to_numpy"):
+                try:
+                    pts = s.to_numpy()
+                except Exception:
+                    continue
+            elif isinstance(s, np.ndarray):
+                pts = s
+            elif isinstance(s, (list, tuple)):
+                try:
+                    pts = np.asarray(s, dtype=np.float64)
+                except Exception:
+                    continue
+            else:
+                continue
+
+            if not isinstance(pts, np.ndarray) or pts.ndim != 2 or pts.shape[0] < 2 or pts.shape[1] < 2:
+                continue
+            if not np.all(np.isfinite(pts)):
+                continue
+
             token = cls._classify_single_stroke(pts)
             if token is not None:
                 primitives.append(token)
@@ -876,11 +895,16 @@ class LaTeXRenderer:
         import matplotlib.pyplot as plt
         from matplotlib.mathtext import MathTextParser  # noqa: F401
 
-        # Wrap in math delimiters if not already present
-        expr = latex_str.strip()
-        if not (expr.startswith("$") and expr.endswith("$")):
-            expr = f"${expr}$"
+        if not latex_str or not latex_str.strip():
+            return None
 
+        # Wrap in math delimiters if not already present
+        expr = latex_str.strip().strip("$").strip()
+        if not expr:
+            return None
+        expr = f"${expr}$"
+
+        fig = None
         try:
             fig = plt.figure(figsize=(0.01, 0.01))
             fig.patch.set_alpha(0.0)  # transparent background
@@ -897,7 +921,6 @@ class LaTeXRenderer:
             buf = io.BytesIO()
             fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight",
                         transparent=True, pad_inches=0.1)
-            plt.close(fig)
             buf.seek(0)
 
             # Decode PNG → RGBA numpy array
@@ -916,9 +939,13 @@ class LaTeXRenderer:
             return rgba
 
         except Exception as exc:
-            logger.exception("LaTeX render failed for '%s': %s", latex_str, exc)
-            plt.close("all")
+            logger.warning("LaTeX render failed for '%s': %s", latex_str, exc)
             return None
+        finally:
+            if fig is not None:
+                plt.close(fig)
+            else:
+                plt.close("all")
 
     @staticmethod
     def render_to_png_bytes(

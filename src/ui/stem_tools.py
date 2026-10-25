@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import math
 from enum import Enum, auto
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QObject
@@ -12987,14 +12987,35 @@ class InformaticsTools:
         path = QPainterPath()
         path.moveTo(x1, y1)
 
-        if arrow_type.lower() == "elbow":
-            mid_x = (x1 + x2) / 2.0
-            path.lineTo(mid_x, y1)
-            path.lineTo(mid_x, y2)
-            path.lineTo(x2, y2)
-            arrow_dir = (1.0 if x2 >= mid_x else -1.0, 0.0) if abs(x2 - mid_x) > 1e-3 else (0.0, 1.0 if y2 >= y1 else -1.0)
-            label_x = mid_x + 6.0
-            label_y = (y1 + y2) / 2.0 - 10.0
+        if arrow_type.lower() in ("elbow", "manhattan"):
+            pts = InformaticsTools.compute_manhattan_route(
+                start=start,
+                end=end,
+                start_pin=kwargs.get("start_pin", "auto"),
+                end_pin=kwargs.get("end_pin", "auto"),
+                obstacles=kwargs.get("obstacles", None),
+            )
+            path = QPainterPath()
+            if pts:
+                path.moveTo(pts[0][0], pts[0][1])
+                for pt in pts[1:]:
+                    path.lineTo(pt[0], pt[1])
+
+            if len(pts) >= 2:
+                p_last = pts[-1]
+                p_prev = pts[-2]
+                dx, dy = p_last[0] - p_prev[0], p_last[1] - p_prev[1]
+                L = math.hypot(dx, dy)
+                arrow_dir = (dx / L, dy / L) if L > 1e-4 else (1.0, 0.0)
+
+                mid_idx = len(pts) // 2
+                p_m1 = pts[mid_idx - 1]
+                p_m2 = pts[mid_idx]
+                label_x = (p_m1[0] + p_m2[0]) / 2.0 + 6.0
+                label_y = (p_m1[1] + p_m2[1]) / 2.0 - 10.0
+            else:
+                arrow_dir = (1.0, 0.0)
+                label_x, label_y = (x1 + x2) / 2.0, (y1 + y2) / 2.0
         else:
             path.lineTo(x2, y2)
             dx, dy = x2 - x1, y2 - y1
@@ -13081,38 +13102,288 @@ class InformaticsTools:
         return None
 
     @staticmethod
+    def get_flowchart_bounding_box(
+        center: tuple[float, float],
+        width: float,
+        height: float,
+        margin: float = 0.0,
+    ) -> tuple[float, float, float, float]:
+        """Returns (x, y, w, h) bounding box of a flowchart block, with optional safety margin."""
+        cx, cy = center
+        w = width + 2.0 * margin
+        h = height + 2.0 * margin
+        return (cx - w / 2.0, cy - h / 2.0, w, h)
+
+    @staticmethod
+    def compute_manhattan_route(
+        start: tuple[float, float],
+        end: tuple[float, float],
+        start_pin: str = "auto",
+        end_pin: str = "auto",
+        obstacles: Optional[list[Union[QRectF, tuple[float, float, float, float]]]] = None,
+        stub_length: float = 20.0,
+        margin: float = 15.0,
+    ) -> list[tuple[float, float]]:
+        """
+        Computes an orthogonal rectilinear (Manhattan) route connecting start and end points.
+        Supports pin-constrained departures and arrivals (top, bottom, left, right) and
+        obstacle avoidance around flowchart block bounding boxes.
+        """
+        x1, y1 = float(start[0]), float(start[1])
+        x2, y2 = float(end[0]), float(end[1])
+
+        if abs(x1 - x2) < 1e-4 and abs(y1 - y2) < 1e-4:
+            return [(x1, y1), (x2, y2)]
+
+        s_pin = (start_pin or "auto").lower().strip()
+        e_pin = (end_pin or "auto").lower().strip()
+
+        # Deduce auto pins if requested
+        if s_pin == "auto" and e_pin == "auto":
+            # Standard default 3-segment Z-route
+            if abs(x1 - x2) < 1e-4 or abs(y1 - y2) < 1e-4:
+                base_path = [(x1, y1), (x2, y2)]
+            else:
+                mid_x = (x1 + x2) / 2.0
+                base_path = [(x1, y1), (mid_x, y1), (mid_x, y2), (x2, y2)]
+        else:
+            if s_pin == "auto":
+                s_pin = "right" if x2 >= x1 else "left"
+            if e_pin == "auto":
+                e_pin = "left" if x2 >= x1 else "right"
+
+            # Both vertical
+            if s_pin in ("top", "bottom") and e_pin in ("top", "bottom"):
+                if s_pin == "bottom" and e_pin == "top" and y2 >= y1:
+                    mid_y = (y1 + y2) / 2.0
+                    base_path = [(x1, y1), (x1, mid_y), (x2, mid_y), (x2, y2)]
+                elif s_pin == "top" and e_pin == "bottom" and y2 <= y1:
+                    mid_y = (y1 + y2) / 2.0
+                    base_path = [(x1, y1), (x1, mid_y), (x2, mid_y), (x2, y2)]
+                else:
+                    sy = y1 + (stub_length if s_pin == "bottom" else -stub_length)
+                    ey = y2 + (stub_length if e_pin == "bottom" else -stub_length)
+                    if x2 >= x1:
+                        bypass_x = max(x1, x2) + stub_length * 2.0
+                    else:
+                        bypass_x = min(x1, x2) - stub_length * 2.0
+                    base_path = [(x1, y1), (x1, sy), (bypass_x, sy), (bypass_x, ey), (x2, ey), (x2, y2)]
+
+            # Both horizontal
+            elif s_pin in ("left", "right") and e_pin in ("left", "right"):
+                if s_pin == "right" and e_pin == "left" and x2 >= x1:
+                    mid_x = (x1 + x2) / 2.0
+                    base_path = [(x1, y1), (mid_x, y1), (mid_x, y2), (x2, y2)]
+                elif s_pin == "left" and e_pin == "right" and x2 <= x1:
+                    mid_x = (x1 + x2) / 2.0
+                    base_path = [(x1, y1), (mid_x, y1), (mid_x, y2), (x2, y2)]
+                else:
+                    sx = x1 + (stub_length if s_pin == "right" else -stub_length)
+                    ex = x2 + (stub_length if e_pin == "right" else -stub_length)
+                    if y2 >= y1:
+                        bypass_y = max(y1, y2) + stub_length * 2.0
+                    else:
+                        bypass_y = min(y1, y2) - stub_length * 2.0
+                    base_path = [(x1, y1), (sx, y1), (sx, bypass_y), (ex, bypass_y), (ex, y2), (x2, y2)]
+
+            # Horizontal to Vertical
+            elif s_pin in ("left", "right") and e_pin in ("top", "bottom"):
+                if s_pin == "right":
+                    if x2 >= x1 + stub_length:
+                        base_path = [(x1, y1), (x2, y1), (x2, y2)]
+                    else:
+                        sx = x1 + stub_length
+                        ey = y2 + (stub_length if e_pin == "bottom" else -stub_length)
+                        base_path = [(x1, y1), (sx, y1), (sx, ey), (x2, ey), (x2, y2)]
+                else:
+                    if x2 <= x1 - stub_length:
+                        base_path = [(x1, y1), (x2, y1), (x2, y2)]
+                    else:
+                        sx = x1 - stub_length
+                        ey = y2 + (stub_length if e_pin == "bottom" else -stub_length)
+                        base_path = [(x1, y1), (sx, y1), (sx, ey), (x2, ey), (x2, y2)]
+
+            # Vertical to Horizontal
+            else:
+                if s_pin == "bottom":
+                    if y2 >= y1 + stub_length:
+                        base_path = [(x1, y1), (x1, y2), (x2, y2)]
+                    else:
+                        sy = y1 + stub_length
+                        ex = x2 + (stub_length if e_pin == "right" else -stub_length)
+                        base_path = [(x1, y1), (x1, sy), (ex, sy), (ex, y2), (x2, y2)]
+                else:
+                    if y2 <= y1 - stub_length:
+                        base_path = [(x1, y1), (x1, y2), (x2, y2)]
+                    else:
+                        sy = y1 - stub_length
+                        ex = x2 + (stub_length if e_pin == "right" else -stub_length)
+                        base_path = [(x1, y1), (x1, sy), (ex, sy), (ex, y2), (x2, y2)]
+
+        def _simplify(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
+            if len(pts) <= 2:
+                return pts
+            res = [pts[0]]
+            for i in range(1, len(pts) - 1):
+                p_prev = res[-1]
+                p_curr = pts[i]
+                p_next = pts[i + 1]
+                if abs(p_curr[0] - p_prev[0]) < 1e-4 and abs(p_curr[1] - p_prev[1]) < 1e-4:
+                    continue
+                is_collinear_h = (abs(p_prev[1] - p_curr[1]) < 1e-4 and abs(p_curr[1] - p_next[1]) < 1e-4)
+                is_collinear_v = (abs(p_prev[0] - p_curr[0]) < 1e-4 and abs(p_curr[0] - p_next[0]) < 1e-4)
+                if is_collinear_h or is_collinear_v:
+                    continue
+                res.append(p_curr)
+            p_last = pts[-1]
+            if abs(p_last[0] - res[-1][0]) > 1e-4 or abs(p_last[1] - res[-1][1]) > 1e-4:
+                res.append(p_last)
+            return res
+
+        curr_path = _simplify(base_path)
+
+        if obstacles:
+            norm_obs = []
+            for obs in obstacles:
+                if isinstance(obs, QRectF):
+                    norm_obs.append((obs.x(), obs.y(), obs.width(), obs.height()))
+                elif isinstance(obs, (tuple, list)) and len(obs) == 4:
+                    norm_obs.append((float(obs[0]), float(obs[1]), float(obs[2]), float(obs[3])))
+
+            for obs in norm_obs:
+                ox, oy, ow, oh = obs
+                bx1, bx2 = ox - margin, ox + ow + margin
+                by1, by2 = oy - margin, oy + oh + margin
+
+                new_path = [curr_path[0]]
+                for seg_idx in range(len(curr_path) - 1):
+                    p_a = curr_path[seg_idx]
+                    p_b = curr_path[seg_idx + 1]
+                    px1, py1 = p_a
+                    px2, py2 = p_b
+
+                    seg_min_x, seg_max_x = min(px1, px2), max(px1, px2)
+                    seg_min_y, seg_max_y = min(py1, py2), max(py1, py2)
+
+                    collides = not (seg_max_x <= bx1 or seg_min_x >= bx2 or seg_max_y <= by1 or seg_min_y >= by2)
+
+                    if collides:
+                        if abs(py1 - py2) < 1e-4:
+                            if by1 <= py1 <= by2:
+                                d_top = abs(py1 - by1)
+                                d_bot = abs(py1 - by2)
+                                detour_y = by1 if d_top <= d_bot else by2
+                                if px1 <= px2:
+                                    detour = [(bx1, py1), (bx1, detour_y), (bx2, detour_y), (bx2, py2), p_b]
+                                else:
+                                    detour = [(bx2, py1), (bx2, detour_y), (bx1, detour_y), (bx1, py2), p_b]
+                                for dp in detour:
+                                    new_path.append(dp)
+                            else:
+                                new_path.append(p_b)
+                        elif abs(px1 - px2) < 1e-4:
+                            if bx1 <= px1 <= bx2:
+                                d_left = abs(px1 - bx1)
+                                d_right = abs(px1 - bx2)
+                                detour_x = bx1 if d_left <= d_right else bx2
+                                if py1 <= py2:
+                                    detour = [(px1, by1), (detour_x, by1), (detour_x, by2), (px2, by2), p_b]
+                                else:
+                                    detour = [(px1, by2), (detour_x, by2), (detour_x, by1), (px2, by1), p_b]
+                                for dp in detour:
+                                    new_path.append(dp)
+                            else:
+                                new_path.append(p_b)
+                        else:
+                            new_path.append(p_b)
+                    else:
+                        new_path.append(p_b)
+                curr_path = _simplify(new_path)
+
+        return curr_path
+
+    @staticmethod
     def create_manhattan_wire(
         start: tuple[float, float] = (100.0, 100.0),
         end: tuple[float, float] = (300.0, 250.0),
         color: Optional[QColor] = None,
         has_junction_dot: bool = True,
+        start_pin: str = "auto",
+        end_pin: str = "auto",
+        obstacles: Optional[list[Union[QRectF, tuple[float, float, float, float]]]] = None,
+        has_arrowhead: bool = False,
+        arrowhead_size: float = 10.0,
+        label: str = "",
+        pen_width: float = 2.0,
     ) -> list[QGraphicsItem]:
-        """Creates orthogonal Manhattan wire and connection junction dot."""
+        """Creates orthogonal Manhattan wire, with optional pin constraints, obstacle avoidance, junction dot, or arrowhead."""
         items: list[QGraphicsItem] = []
-        x1, y1 = start
-        x2, y2 = end
         col = color or QColor("#10b981")
 
-        mid_x = (x1 + x2) / 2.0
+        pts = InformaticsTools.compute_manhattan_route(
+            start=start,
+            end=end,
+            start_pin=start_pin,
+            end_pin=end_pin,
+            obstacles=obstacles,
+        )
+
         path = QPainterPath()
-        path.moveTo(x1, y1)
-        path.lineTo(mid_x, y1)
-        path.lineTo(mid_x, y2)
-        path.lineTo(x2, y2)
+        if pts:
+            path.moveTo(pts[0][0], pts[0][1])
+            for pt in pts[1:]:
+                path.lineTo(pt[0], pt[1])
 
         wire_item = QGraphicsPathItem(path)
-        wire_item.setPen(QPen(col, 2.0))
+        wire_item.setPen(QPen(col, pen_width, Qt.PenStyle.SolidLine))
         wire_item.setZValue(11.0)
         items.append(wire_item)
 
-        if has_junction_dot:
+        if has_arrowhead and len(pts) >= 2:
+            p_last = pts[-1]
+            p_prev = pts[-2]
+            dx = p_last[0] - p_prev[0]
+            dy = p_last[1] - p_prev[1]
+            length = math.hypot(dx, dy)
+            ux, uy = (dx / length, dy / length) if length > 1e-4 else (1.0, 0.0)
+            nx, ny = -uy, ux
+
+            ah_len = arrowhead_size
+            ah_w = arrowhead_size * 0.6
+            p_tip = QPointF(p_last[0], p_last[1])
+            p_base1 = QPointF(p_last[0] - ux * ah_len + nx * ah_w, p_last[1] - uy * ah_len + ny * ah_w)
+            p_base2 = QPointF(p_last[0] - ux * ah_len - nx * ah_w, p_last[1] - uy * ah_len - ny * ah_w)
+
+            poly = QPolygonF([p_tip, p_base1, p_base2])
+            poly_item = QGraphicsPolygonItem(poly)
+            poly_item.setBrush(QBrush(col))
+            poly_item.setPen(Qt.PenStyle.NoPen)
+            poly_item.setZValue(11.5)
+            items.append(poly_item)
+        elif has_junction_dot:
+            x2, y2 = end
             dot = QGraphicsEllipseItem(x2 - 3.5, y2 - 3.5, 7.0, 7.0)
             dot.setBrush(QBrush(col))
             dot.setPen(Qt.PenStyle.NoPen)
             dot.setZValue(11.5)
             items.append(dot)
 
+        if label and len(pts) >= 2:
+            mid_idx = len(pts) // 2
+            p_m1 = pts[mid_idx - 1]
+            p_m2 = pts[mid_idx]
+            lx = (p_m1[0] + p_m2[0]) / 2.0 + 4.0
+            ly = (p_m1[1] + p_m2[1]) / 2.0 - 18.0
+
+            txt = QGraphicsTextItem(label)
+            txt.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            txt.setDefaultTextColor(col)
+            txt.setPos(lx, ly)
+            txt.setZValue(12.0)
+            items.append(txt)
+
         return items
+
 
     @staticmethod
     def create_cnn_diagram(

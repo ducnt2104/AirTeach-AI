@@ -175,6 +175,7 @@ class _QtCameraWorker(QObject):
     ) -> None:
         super().__init__()
         self._last_multi_hands_data: list[HandLandmarkData] = []
+        self.is_trainer_active: bool = False
         self._worker = HandTrackingWorker(
             camera_index=camera_index,
             on_frame=self._on_frame_cb,
@@ -290,7 +291,8 @@ class _QtCameraWorker(QObject):
 
         self.frame_ready.emit(annotated_frame)
         self.gesture_event.emit(state, cx, cy)
-        self.trainer_frame_ready.emit(frame_bgr, landmarks, state, cx, cy)
+        if getattr(self, 'is_trainer_active', False):
+            self.trainer_frame_ready.emit(frame_bgr, landmarks, state, cx, cy)
 
     def _on_error_cb(self, msg: str) -> None:
         self.error_occurred.emit(msg)
@@ -4857,12 +4859,14 @@ class MainWindow(QMainWindow):
         from src.ui.gesture_trainer_dialog import GestureTrainerDialog  # noqa: PLC0415
         dlg = GestureTrainerDialog(parent=self)
         if self._cam_worker is not None:
+            self._cam_worker.is_trainer_active = True
             self._cam_worker.trainer_frame_ready.connect(
                 dlg.update_frame, Qt.ConnectionType.QueuedConnection
             )
             dlg.calibration_updated.connect(self._cam_worker.calibrate_perspective)
         dlg.exec()
         if self._cam_worker is not None:
+            self._cam_worker.is_trainer_active = False
             try:
                 self._cam_worker.trainer_frame_ready.disconnect(dlg.update_frame)
             except Exception:

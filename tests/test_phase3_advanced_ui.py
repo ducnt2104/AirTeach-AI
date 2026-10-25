@@ -252,6 +252,25 @@ class TestLessonBoardCanvas:
         assert "widths" in exported[0]
         assert "color_hex" in exported[0]
 
+    def test_undo_redo_stack_bounded_memory(self, canvas):
+        """Undo and redo stacks must be bounded by MAX_UNDO_DEPTH and MAX_REDO_DEPTH."""
+        assert canvas.MAX_UNDO_DEPTH == 200
+        assert canvas.MAX_REDO_DEPTH == 100
+
+        # Draw 250 strokes
+        for i in range(250):
+            canvas.start_stroke(float(i % 100), float(i % 100), 0.0)
+            canvas.update_stroke(float((i % 100) + 10), float((i % 100) + 10), 16.0)
+            canvas.finish_stroke()
+
+        assert len(canvas._undo_stack) == canvas.MAX_UNDO_DEPTH
+
+        # Undo 150 times
+        for _ in range(150):
+            canvas.undo()
+
+        assert len(canvas._redo_stack) == canvas.MAX_REDO_DEPTH
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 5. ReplayController Tests

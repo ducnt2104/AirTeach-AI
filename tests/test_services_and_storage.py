@@ -873,6 +873,16 @@ class TestLaTeXRenderer:
         # May return None OR a fallback image — must not raise
         assert result is None or isinstance(result, np.ndarray)
 
+    def test_renders_empty_and_isolated_dollar_gracefully(self):
+        """Empty, whitespace, or bare delimiter strings must return None without raising."""
+        assert LaTeXRenderer.render_to_rgba("", fontsize=16, dpi=72) is None
+        assert LaTeXRenderer.render_to_rgba("   ", fontsize=16, dpi=72) is None
+        assert LaTeXRenderer.render_to_rgba("$", fontsize=16, dpi=72) is None
+        assert LaTeXRenderer.render_to_rgba("$$", fontsize=16, dpi=72) is None
+        assert LaTeXRenderer.render_to_rgba("$$$", fontsize=16, dpi=72) is None
+        assert LaTeXRenderer.render_to_png_bytes("") is None
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 9. StrokeRenderer Tests
@@ -1692,6 +1702,36 @@ class TestGeometricMathParser:
         s_leg_neg = Stroke([StrokePoint(150.0, 100.0, 80), StrokePoint(200.0, 200.0, 90)])
         res_multi = GeometricMathParser.parse([s_base, s_leg_pos, s_leg_neg])
         assert res_multi == r"\Delta"
+
+    def test_parse_adversarial_malformed_strokes_and_types(self):
+        """Parser must gracefully reject None, NaNs, single points, and handle raw coordinate lists."""
+        import numpy as np
+        from src.services.smart_ink_ocr import GeometricMathParser
+
+        pts_nan = np.array([[np.nan, 10.0], [20.0, np.inf]])
+        class DummyNaNStroke:
+            def to_numpy(self):
+                return pts_nan
+
+        class EmptyStroke:
+            def to_numpy(self):
+                return np.empty((0, 2))
+
+        adv_strokes = [
+            None,
+            DummyNaNStroke(),
+            EmptyStroke(),
+            [(10.0, 10.0)],
+            "not_a_valid_stroke",
+        ]
+        res = GeometricMathParser.parse(adv_strokes)
+        assert res == ""
+
+        # Raw coordinate list support
+        pts_line = [(100.0, 100.0), (100.0, 200.0)]
+        res_line = GeometricMathParser.parse([pts_line])
+        assert res_line == "1"
+
 
 
 

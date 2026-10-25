@@ -265,6 +265,121 @@ class TestInformaticsTools:
         )
         assert len(items) >= 6  # bg, header bar, 3 dots, title, code text
 
+    def test_flowchart_bounding_box_and_pins(self, qapp):
+        pins = InformaticsTools.get_flowchart_pins(center=(300.0, 200.0), width=160.0, height=80.0)
+        assert pins["top"] == (300.0, 160.0)
+        assert pins["bottom"] == (300.0, 240.0)
+        assert pins["left"] == (220.0, 200.0)
+        assert pins["right"] == (380.0, 200.0)
+
+        bbox = InformaticsTools.get_flowchart_bounding_box(center=(300.0, 200.0), width=160.0, height=80.0, margin=10.0)
+        assert bbox == (210.0, 150.0, 180.0, 100.0)
+
+        snapped = InformaticsTools.snap_to_nearest_pin((382.0, 198.0), pins, tolerance=15.0)
+        assert snapped is not None
+        assert snapped[0] == "right"
+        assert snapped[1] == (380.0, 200.0)
+
+        missed = InformaticsTools.snap_to_nearest_pin((500.0, 500.0), pins, tolerance=15.0)
+        assert missed is None
+
+    def test_manhattan_routing_pin_orientations(self, qapp):
+        # 1. Vertical routing: bottom to top
+        r_v = InformaticsTools.compute_manhattan_route(
+            start=(200.0, 100.0),
+            end=(400.0, 300.0),
+            start_pin="bottom",
+            end_pin="top",
+        )
+        assert len(r_v) == 4
+        assert r_v[0] == (200.0, 100.0)
+        assert r_v[1] == (200.0, 200.0)
+        assert r_v[2] == (400.0, 200.0)
+        assert r_v[3] == (400.0, 300.0)
+
+        # 2. Straight line bottom to top (same X)
+        r_straight = InformaticsTools.compute_manhattan_route(
+            start=(200.0, 100.0),
+            end=(200.0, 300.0),
+            start_pin="bottom",
+            end_pin="top",
+        )
+        assert len(r_straight) == 2
+        assert r_straight == [(200.0, 100.0), (200.0, 300.0)]
+
+        # 3. Horizontal routing: right to left
+        r_h = InformaticsTools.compute_manhattan_route(
+            start=(100.0, 150.0),
+            end=(300.0, 250.0),
+            start_pin="right",
+            end_pin="left",
+        )
+        assert len(r_h) == 4
+        assert r_h[0] == (100.0, 150.0)
+        assert r_h[1] == (200.0, 150.0)
+        assert r_h[2] == (200.0, 250.0)
+        assert r_h[3] == (300.0, 250.0)
+
+    def test_manhattan_routing_obstacle_avoidance(self, qapp):
+        # Obstacle between (100, 200) and (500, 200)
+        obs = (200.0, 150.0, 100.0, 100.0)  # X: 200..300, Y: 150..250
+        route = InformaticsTools.compute_manhattan_route(
+            start=(100.0, 200.0),
+            end=(500.0, 200.0),
+            obstacles=[obs],
+            margin=15.0,
+        )
+        assert len(route) >= 4
+        assert route[0] == (100.0, 200.0)
+        assert route[-1] == (500.0, 200.0)
+
+        # Verify no segment cuts through the obstacle interior
+        for i in range(len(route) - 1):
+            p1 = route[i]
+            p2 = route[i + 1]
+            if abs(p1[1] - p2[1]) < 1e-4:  # horizontal segment
+                # If Y is inside obstacle height
+                if 150.0 < p1[1] < 250.0:
+                    seg_min_x, seg_max_x = min(p1[0], p2[0]), max(p1[0], p2[0])
+                    assert seg_max_x <= 200.0 or seg_min_x >= 300.0
+
+    def test_create_manhattan_wire_with_arrowhead_and_label(self, qapp):
+        from PySide6.QtWidgets import QGraphicsPathItem, QGraphicsPolygonItem, QGraphicsTextItem
+        items = InformaticsTools.create_manhattan_wire(
+            start=(100.0, 100.0),
+            end=(400.0, 250.0),
+            has_junction_dot=False,
+            has_arrowhead=True,
+            label="Condition = True",
+        )
+        assert len(items) == 3
+        paths = [it for it in items if isinstance(it, QGraphicsPathItem)]
+        arrows = [it for it in items if isinstance(it, QGraphicsPolygonItem)]
+        texts = [it for it in items if isinstance(it, QGraphicsTextItem)]
+        assert len(paths) == 1
+        assert len(arrows) == 1
+        assert len(texts) == 1
+        assert texts[0].toPlainText() == "Condition = True"
+
+    def test_create_flow_arrow_manhattan_obstacle(self, qapp):
+        from PySide6.QtWidgets import QGraphicsPathItem, QGraphicsPolygonItem, QGraphicsTextItem
+        items = InformaticsTools.create_flow_arrow(
+            start=(100.0, 200.0),
+            end=(500.0, 200.0),
+            arrow_type="manhattan",
+            label="Detour",
+            obstacles=[(200.0, 150.0, 100.0, 100.0)],
+        )
+        assert len(items) == 3
+        paths = [it for it in items if isinstance(it, QGraphicsPathItem)]
+        arrows = [it for it in items if isinstance(it, QGraphicsPolygonItem)]
+        texts = [it for it in items if isinstance(it, QGraphicsTextItem)]
+        assert len(paths) == 1
+        assert len(arrows) == 1
+        assert len(texts) == 1
+        assert texts[0].toPlainText() == "Detour"
+
+
 
 # ─── 7. Tracking & Coordinate Double-Scaling Safety Tests ─────────────────────
 

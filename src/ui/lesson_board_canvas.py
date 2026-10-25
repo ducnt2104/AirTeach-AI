@@ -172,6 +172,9 @@ class LessonBoardCanvas(QGraphicsView):
     Z_PREVIEW    = 18.0
     Z_CURSOR     = 20.0
 
+    MAX_UNDO_DEPTH = 200
+    MAX_REDO_DEPTH = 100
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
 
@@ -425,6 +428,8 @@ class LessonBoardCanvas(QGraphicsView):
 
         self._strokes[stroke.stroke_id] = stroke
         self._undo_stack.append(stroke.stroke_id)
+        if len(self._undo_stack) > self.MAX_UNDO_DEPTH:
+            self._undo_stack.pop(0)
         self._redo_stack.clear()
         self.stroke_added.emit(stroke.stroke_id)
 
@@ -649,6 +654,8 @@ class LessonBoardCanvas(QGraphicsView):
                 self._scene.removeItem(item)
 
         self._redo_stack.append(stroke)
+        if len(self._redo_stack) > self.MAX_REDO_DEPTH:
+            self._redo_stack.pop(0)
         self.stroke_removed.emit(last_id)
         return True
 
