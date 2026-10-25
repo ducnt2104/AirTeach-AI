@@ -1003,6 +1003,11 @@ class MainWindow(QMainWindow):
         quantum_act.triggered.connect(self._on_toggle_quantum_tunneling)
         view_menu.addAction(quantum_act)
 
+        coriolis_act = QAction("🌪️ Vật lý Khí quyển: Hiệu ứng Coriolis & Gió địa chuyển", self)
+        coriolis_act.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        coriolis_act.triggered.connect(self._on_toggle_coriolis_earth)
+        view_menu.addAction(coriolis_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -3437,7 +3442,7 @@ class MainWindow(QMainWindow):
                                 self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#06b6d4", radius=9.0)
                                 self._finalize_hand_stroke(h.track_id)
                                 break
-                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "InteractiveSpecialRelativityItem", "InteractiveQuantumTunnelingItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
+                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "InteractiveSpecialRelativityItem", "InteractiveQuantumTunnelingItem", "InteractiveCoriolisEarthItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
 
                             if item.isVisible() and hasattr(item, "handle_air_tap"):
 
@@ -5272,6 +5277,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_quantum_tunneling()
         self._status.showMessage(
             f"Cơ học Lượng tử & Xuyên hầm: {'Hiển thị (Ctrl+Shift+Q)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_coriolis_earth(self) -> bool:
+        """Toggle interactive Coriolis Effect & Geostrophic Flow visualizer on LessonBoard."""
+        is_visible = self._scene.toggle_coriolis_earth()
+        self._status.showMessage(
+            f"Hiệu ứng Coriolis & Khí quyển: {'Hiển thị (Ctrl+Shift+C)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible

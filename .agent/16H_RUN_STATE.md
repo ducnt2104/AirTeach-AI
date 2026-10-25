@@ -868,9 +868,39 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 204: Atmospheric Physics: Coriolis Effect, Geostrophic Flow & Cyclonic Vorticity
+- **Atmospheric Coriolis & Geostrophic Flow Simulator (`src/ui/interactive_coriolis_earth.py`)**:
+  - Implemented `InteractiveCoriolisEarthItem(QGraphicsObject)` and `CoriolisPreset`.
+  - Authentic Geophysical Fluid Dynamics & Atmospheric Equations:
+    - Coriolis Acceleration in rotating reference frame: $\vec{a}_C = -2 (\vec{\Omega} \times \vec{v})$.
+    - Coriolis Parameter at latitude $\phi$: $f = 2 \Omega \sin\phi$.
+      - Northern Hemisphere ($\phi > 0 \implies f > 0$): Rightward deflection producing counterclockwise cyclonic inflow (bão xoáy thuận ngược chiều KĐH).
+      - Southern Hemisphere ($\phi < 0 \implies f < 0$): Leftward deflection producing clockwise cyclonic inflow (bão cùng chiều KĐH).
+      - Equator ($\phi = 0 \implies f = 0$): Zero Coriolis deflection (no tropical cyclones form within $5^\circ$ of equator).
+    - Geostrophic Wind Balance: $\vec{v}_g = \frac{1}{\rho f} (\hat{k} \times \nabla P)$ (wind flows parallel to isobars; Buys Ballot's Law).
+    - Ballistic Artillery Deflection on rotating globe: Comparison of straight inertial path vs rightward Coriolis drift.
+    - Foucault Pendulum Precession: Precession rate $\omega_F = \Omega \sin\phi$ ($15^\circ/\text{hour} \cdot \sin\phi$) and period $T = 24\text{ h} / |\sin\phi|$.
+  - 5 Curriculum Presets:
+    1. Northern Hemisphere Tropical Cyclone (Bão nhiệt đới Bắc Bán Cầu, $\phi = +21^\circ$ Hanoi).
+    2. Southern Hemisphere Cyclone (Bão nhiệt đới Nam Bán Cầu, $\phi = -21^\circ$).
+    3. Geostrophic Wind & Isobars (Gió địa chuyển, $\phi = +45^\circ$, balance between PGF and Coriolis force).
+    4. Ballistic Cannon Deflection (Độ lệch đạn đạo pháo binh trên quả địa cầu tự quay).
+    5. Foucault Pendulum Precession (Con lắc Foucault chứng minh Trái Đất tự quay, Paris $\phi = 48.8^\circ$).
+  - Particle Streamline Simulation: 36 dynamic air parcels with velocity field advection and lifetime recycling.
+  - Touchless webcam air gestures (air-tap on buttons, latitude slider, rotation speed slider), bimanual manipulation, canvas stamping, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._coriolis_earth_item`, `show_coriolis_earth`, `toggle_coriolis_earth`, `is_coriolis_earth_visible`, `get_coriolis_earth_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+C` ("Vật lý Khí quyển: Hiệu ứng Coriolis & Gió địa chuyển"), `@Slot() def _on_toggle_coriolis_earth`, and touchless air-tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_coriolis_earth.py` (15 unit tests, all passed in 8.48s).
+  - Total test suites raised from 138 to **139 test suites**.
+  - Total passing tests raised from 1,658 to **1,673 passed tests (100% pass rate across 139 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **138 Test Suites**
-- **Total Passing Tests**: **1,658 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **139 Test Suites**
+- **Total Passing Tests**: **1,673 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

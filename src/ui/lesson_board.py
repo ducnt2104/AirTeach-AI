@@ -295,6 +295,7 @@ class LessonBoard(QGraphicsScene):
         self._transformer_attention_item: Optional[QGraphicsItem] = None
         self._special_relativity_item: Optional[QGraphicsItem] = None
         self._quantum_tunneling_item: Optional[QGraphicsItem] = None
+        self._coriolis_earth_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1234,6 +1235,42 @@ class LessonBoard(QGraphicsScene):
     def get_quantum_tunneling_item(self) -> Optional[QGraphicsItem]:
         """Return interactive Quantum Tunneling visualizer instance if created."""
         return getattr(self, "_quantum_tunneling_item", None)
+
+    # ── Interactive Atmospheric Physics: Coriolis & Geostrophic Simulator ───────
+
+    def show_coriolis_earth(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive Coriolis Effect & Geostrophic Flow visualizer."""
+        if getattr(self, "_coriolis_earth_item", None) is None:
+            from src.ui.interactive_coriolis_earth import InteractiveCoriolisEarthItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - InteractiveCoriolisEarthItem.WIDTH / 2.0, 110.0)
+            self._coriolis_earth_item = InteractiveCoriolisEarthItem(pos=spawn_pos)
+            self.addItem(self._coriolis_earth_item)
+        self._coriolis_earth_item.setVisible(visible)
+        if visible and pos is not None:
+            self._coriolis_earth_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._coriolis_earth_item if visible else None
+
+    def toggle_coriolis_earth(self) -> bool:
+        """Toggle interactive Coriolis Effect visualizer visibility."""
+        if getattr(self, "_coriolis_earth_item", None) is None or not self._coriolis_earth_item.isVisible():
+            self.show_coriolis_earth(True)
+            return True
+        else:
+            self.show_coriolis_earth(False)
+            return False
+
+    def is_coriolis_earth_visible(self) -> bool:
+        """Return True if interactive Coriolis Effect visualizer is active on board."""
+        return getattr(self, "_coriolis_earth_item", None) is not None and self._coriolis_earth_item.isVisible()
+
+    def get_coriolis_earth_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive Coriolis Effect visualizer instance if created."""
+        return getattr(self, "_coriolis_earth_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6263,6 +6300,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_transformer_attention_item", None),
             getattr(self, "_special_relativity_item", None),
             getattr(self, "_quantum_tunneling_item", None),
+            getattr(self, "_coriolis_earth_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),
