@@ -297,6 +297,7 @@ class LessonBoard(QGraphicsScene):
         self._quantum_tunneling_item: Optional[QGraphicsItem] = None
         self._coriolis_earth_item: Optional[QGraphicsItem] = None
         self._acoustic_sonar_item: Optional[QGraphicsItem] = None
+        self._cloud_chamber_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1308,6 +1309,42 @@ class LessonBoard(QGraphicsScene):
     def get_acoustic_sonar_item(self) -> Optional[QGraphicsItem]:
         """Return interactive Acoustic Doppler visualizer instance if created."""
         return getattr(self, "_acoustic_sonar_item", None)
+
+    # ── Interactive Nuclear Physics & Cloud Chamber Simulator ──────────
+    def show_cloud_chamber(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive Wilson Cloud Chamber & Particle Tracks visualizer."""
+        if getattr(self, "_cloud_chamber_item", None) is None:
+            from src.ui.interactive_cloud_chamber import InteractiveCloudChamberItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 940.0 / 2.0, 110.0)
+            self._cloud_chamber_item = InteractiveCloudChamberItem(board=self, pos=spawn_pos)
+            self.addItem(self._cloud_chamber_item)
+
+        self._cloud_chamber_item.setVisible(visible)
+        if visible and pos is not None:
+            self._cloud_chamber_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._cloud_chamber_item if visible else None
+
+    def toggle_cloud_chamber(self) -> bool:
+        """Toggle interactive Wilson Cloud Chamber visualizer visibility."""
+        if getattr(self, "_cloud_chamber_item", None) is None or not self._cloud_chamber_item.isVisible():
+            self.show_cloud_chamber(True)
+            return True
+        else:
+            self.show_cloud_chamber(False)
+            return False
+
+    def is_cloud_chamber_visible(self) -> bool:
+        """Return True if interactive Wilson Cloud Chamber is active on board."""
+        return getattr(self, "_cloud_chamber_item", None) is not None and self._cloud_chamber_item.isVisible()
+
+    def get_cloud_chamber_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive Wilson Cloud Chamber instance if created."""
+        return getattr(self, "_cloud_chamber_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6338,7 +6375,8 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_special_relativity_item", None),
             getattr(self, "_quantum_tunneling_item", None),
             getattr(self, "_coriolis_earth_item", None),
-            getattr(self, "_acoustic_sonar_item", None),
+            getattr(self, "_acoustic_sonar_item", None),
+            getattr(self, "_cloud_chamber_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),

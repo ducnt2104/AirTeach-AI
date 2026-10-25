@@ -937,9 +937,44 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 206: Nuclear & Particle Physics: Wilson Cloud Chamber & Radioactive Ionization Tracks
+- **Nuclear Radiation & Particle Detector Simulator (`src/ui/interactive_cloud_chamber.py`)**:
+  - Implemented `InteractiveCloudChamberItem(QGraphicsObject)`, `IonTrack`, and `CloudChamberPreset`.
+  - Authentic Nuclear Radiation & Ionizing Particle Detection Mechanics (Charles Wilson, Nobel Prize 1927):
+    - Supersaturated alcohol vapor condensation ($S > 4$) onto positive and negative electron-ion pairs.
+    - Alpha Particle ($\alpha = {}^4_2\text{He}^{2+}$, $m \approx 3.727\text{ GeV}/c^2$, $q = +2e$, $E \approx 4\text{--}6\text{ MeV}$):
+      - Heavy, high Linear Energy Transfer ($\text{LET} \approx 100\text{ keV}/\mu\text{m}$), dense droplet column.
+      - Straight trajectory with Bragg peak ionization broadening near track termination and Rutherford end-of-range kicks.
+    - Beta Particle ($\beta^- = e^-$, $m \approx 511\text{ keV}/c^2$, $q = -1e$, $E \approx 0.1\text{--}1.5\text{ MeV}$):
+      - Low mass, high velocity, multiple Coulomb elastic scattering off gas atoms yielding thin, tortuous, meandering paths.
+    - Cosmic Ray Muon ($\mu^- / \mu^+$, $m \approx 105.7\text{ MeV}/c^2$, relativistic $\gamma \gg 1$, $p \approx 3\text{--}4\text{ GeV}/c$):
+      - High momentum rigidity, minimum ionizing particle (MIP), piercing straight line traversing entire cryogenic chamber.
+    - Lorentz Force & Magnetic Spectrometry:
+      - Applied perpendicular magnetic field $B_z \in [-0.5, +0.5]\text{ Tesla}$.
+      - Lorentz deflection: $\vec{F} = q (\vec{v} \times \vec{B})$, Larmor radius $R = \frac{p}{|q| B}$.
+      - Distinguishes positive charges ($\alpha, \beta^+$) from negative charges ($\beta^-, \mu^-$) by curvature sign.
+    - Radioactive Decay Kinetics & Counting Statistics:
+      - Rutherford & Soddy law $N(t) = N_0 e^{-\lambda t}$, live CPM (Counts Per Minute) & Becquerel activity metrics.
+  - 5 Curriculum Presets:
+    1. Alpha Emitter Americium-241 (Vệt alpha đậm đặc, thẳng, đạt đỉnh Bragg).
+    2. Beta Minus Strontium-90 (Vệt beta mảnh ngoằn ngoèo do tán xạ electron).
+    3. Cosmic Ray Muons (Tia vũ trụ muon năng lượng cao xuyên thủng buồng sương).
+    4. Lorentz Magnetic Spectrometer ($B = 0.35\text{ T}$, tách vệt theo điện tích và khối lượng $q/m$).
+    5. Radon Cascade Decay Chain (Chuỗi phân rã alpha kép đặc trưng $^{220}\text{Rn} \to {}^{216}\text{Po} \to {}^{212}\text{Pb}$).
+  - Touchless webcam air gestures (air-tap on buttons, magnetic field slider, CPM rate slider, supersaturation slider), bimanual manipulation, canvas stamping, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._cloud_chamber_item`, `show_cloud_chamber`, `toggle_cloud_chamber`, `is_cloud_chamber_visible`, `get_cloud_chamber_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+N` ("Vật lý Hạt nhân: Buồng sương Wilson & Vệt bức xạ"), `@Slot() def _on_toggle_cloud_chamber`, and touchless air-tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_cloud_chamber.py` (15 unit tests, all passed in 8.56s).
+  - Total test suites raised from 140 to **141 test suites**.
+  - Total passing tests raised from 1,690 to **1,705 passed tests (100% pass rate across 141 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **140 Test Suites**
-- **Total Passing Tests**: **1,690 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **141 Test Suites**
+- **Total Passing Tests**: **1,705 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

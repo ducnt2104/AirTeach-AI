@@ -1013,6 +1013,11 @@ class MainWindow(QMainWindow):
         acoustic_act.triggered.connect(self._on_toggle_acoustic_sonar)
         view_menu.addAction(acoustic_act)
 
+        cloud_chamber_act = QAction("☢️ Vật lý Hạt nhân: Buồng sương Wilson & Vệt bức xạ", self)
+        cloud_chamber_act.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        cloud_chamber_act.triggered.connect(self._on_toggle_cloud_chamber)
+        view_menu.addAction(cloud_chamber_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -3447,7 +3452,7 @@ class MainWindow(QMainWindow):
                                 self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#06b6d4", radius=9.0)
                                 self._finalize_hand_stroke(h.track_id)
                                 break
-                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "InteractiveSpecialRelativityItem", "InteractiveQuantumTunnelingItem", "InteractiveCoriolisEarthItem", "InteractiveAcousticSonarItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
+                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "InteractiveSpecialRelativityItem", "InteractiveQuantumTunnelingItem", "InteractiveCoriolisEarthItem", "InteractiveAcousticSonarItem", "InteractiveCloudChamberItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
 
                             if item.isVisible() and hasattr(item, "handle_air_tap"):
 
@@ -5302,6 +5307,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_acoustic_sonar()
         self._status.showMessage(
             f"Sóng âm Doppler & Sonar: {'Hiển thị (Ctrl+Shift+S)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_cloud_chamber(self) -> bool:
+        """Toggle interactive Wilson Cloud Chamber & Particle Tracks visualizer on LessonBoard."""
+        is_visible = self._scene.toggle_cloud_chamber()
+        self._status.showMessage(
+            f"Buồng sương Wilson & Hạt nhân: {'Hiển thị (Ctrl+Shift+N)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible
