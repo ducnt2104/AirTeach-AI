@@ -993,6 +993,11 @@ class MainWindow(QMainWindow):
         transformer_act.triggered.connect(self._on_toggle_transformer_attention)
         view_menu.addAction(transformer_act)
 
+        relativity_act = QAction("🌌 Thuyết Tương đối Hẹp & Giản đồ Minkowski (Einstein 1905)", self)
+        relativity_act.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        relativity_act.triggered.connect(self._on_toggle_special_relativity)
+        view_menu.addAction(relativity_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -3427,7 +3432,7 @@ class MainWindow(QMainWindow):
                                 self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#06b6d4", radius=9.0)
                                 self._finalize_hand_stroke(h.track_id)
                                 break
-                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
+                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "InteractiveSpecialRelativityItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
 
                             if item.isVisible() and hasattr(item, "handle_air_tap"):
 
@@ -5233,6 +5238,23 @@ class MainWindow(QMainWindow):
         self._status.showMessage(
 
             f"Transformer Self-Attention: {'Hiển thị (Ctrl+Shift+A)' if is_visible else 'Đã ẩn'}",
+            2000,
+
+        )
+
+        return is_visible
+
+    @Slot()
+
+    def _on_toggle_special_relativity(self) -> bool:
+
+        """Toggle interactive Special Relativity & Minkowski spacetime visualizer on LessonBoard."""
+
+        is_visible = self._scene.toggle_special_relativity()
+
+        self._status.showMessage(
+
+            f"Thuyết Tương đối Hẹp & Minkowski: {'Hiển thị (Ctrl+Shift+R)' if is_visible else 'Đã ẩn'}",
             2000,
 
         )

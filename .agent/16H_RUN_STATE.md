@@ -817,9 +817,31 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 202: Special Relativity: Minkowski Spacetime Diagram & Lorentz Engine
+- **Minkowski Spacetime & Lorentz Engine (`src/ui/interactive_special_relativity.py`)**:
+  - Implemented `InteractiveSpecialRelativityItem(QGraphicsObject)` and `RelativityPreset`.
+  - Authentic Special Relativity physics (Einstein 1905):
+    - Spacetime coordinates $(ct, x)$ in Lab Frame $S$ and Moving Frame $S'$.
+    - Lorentz Boost Transformation: $ct' = \gamma (ct - \beta x)$, $x' = \gamma (x - \beta ct)$ with $\beta = v/c \in (-0.99, 0.99)$, $\gamma = 1 / \sqrt{1 - \beta^2} \ge 1.0$.
+    - Invariant Spacetime Interval: $\Delta s^2 = c^2 \Delta t^2 - \Delta x^2 = c^2 (\Delta t')^2 - (\Delta x')^2$ (exact invariance verified).
+    - Spacetime Interval Classification: Timelike ($\Delta s^2 > 0$, proper time $\Delta \tau = \sqrt{\Delta s^2}/c$), Spacelike ($\Delta s^2 < 0$, proper length $\Delta \sigma = \sqrt{-\Delta s^2}$), Lightlike ($\Delta s^2 = 0$).
+    - Calibration hyperbolas $c^2 t^2 - x^2 = \pm 1$.
+    - Relativity of simultaneity: tilted $x'$-axis and $ct'$-axis at angle $\theta = \arctan(\beta)$ towards the light cone.
+    - 5 Curriculum Presets: Lorentz Grid, Twin Paradox, Simultaneity Train, Muon Decay, Light Cone Causality.
+    - Touchless webcam air gestures (air-tap on buttons and velocity slider), bimanual manipulation, canvas stamping, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `self._special_relativity_item`, `show_special_relativity`, `toggle_special_relativity`, `is_special_relativity_visible`, `get_special_relativity_item`, and exclusion in `get_items_in_rect`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+R` ("Thuyết Tương đối Hẹp & Giản đồ Minkowski"), `@Slot() def _on_toggle_special_relativity`, and air tap gesture routing.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_special_relativity.py` (13 unit tests, all passed in 8.07s).
+  - Total test suites raised from 136 to **137 test suites**.
+  - Total passing tests raised from 1,629 to **1,642 passed tests (100% pass rate across 137 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **136 Test Suites**
-- **Total Passing Tests**: **1,629 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **137 Test Suites**
+- **Total Passing Tests**: **1,642 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
