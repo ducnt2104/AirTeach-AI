@@ -303,6 +303,7 @@ class LessonBoard(QGraphicsScene):
         self._quantum_diffraction_item: Optional[QGraphicsItem] = None
         self._laval_nozzle_item: Optional[QGraphicsItem] = None
         self._ramachandran_plot_item: Optional[QGraphicsItem] = None
+        self._double_pendulum_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1534,6 +1535,43 @@ class LessonBoard(QGraphicsScene):
     def get_ramachandran_plot_item(self) -> Optional[QGraphicsItem]:
         """Return interactive Ramachandran Plot instance if created."""
         return getattr(self, "_ramachandran_plot_item", None)
+
+    # ── Interactive Nonlinear Dynamics & Double Pendulum Chaos Simulator ──
+    def show_double_pendulum(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive Double Pendulum & Chaos Theory visualizer."""
+        if getattr(self, "_double_pendulum_item", None) is None:
+            from src.ui.interactive_double_pendulum import InteractiveDoublePendulumItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - 920.0 / 2.0, 110.0)
+            self._double_pendulum_item = InteractiveDoublePendulumItem(board=self)
+            self._double_pendulum_item.setPos(spawn_pos[0], spawn_pos[1])
+            self.addItem(self._double_pendulum_item)
+
+        self._double_pendulum_item.setVisible(visible)
+        if visible and pos is not None:
+            self._double_pendulum_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._double_pendulum_item if visible else None
+
+    def toggle_double_pendulum(self) -> bool:
+        """Toggle interactive Double Pendulum & Chaos Theory simulator visibility."""
+        if getattr(self, "_double_pendulum_item", None) is None or not self._double_pendulum_item.isVisible():
+            self.show_double_pendulum(True)
+            return True
+        else:
+            self.show_double_pendulum(False)
+            return False
+
+    def is_double_pendulum_visible(self) -> bool:
+        """Return True if interactive Double Pendulum visualizer is active on board."""
+        return getattr(self, "_double_pendulum_item", None) is not None and self._double_pendulum_item.isVisible()
+
+    def get_double_pendulum_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive Double Pendulum instance if created."""
+        return getattr(self, "_double_pendulum_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6571,6 +6609,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_quantum_diffraction_item", None),
             getattr(self, "_laval_nozzle_item", None),
             getattr(self, "_ramachandran_plot_item", None),
+            getattr(self, "_double_pendulum_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),

@@ -1043,6 +1043,11 @@ class MainWindow(QMainWindow):
         ramachandran_plot_act.triggered.connect(self._on_toggle_ramachandran_plot)
         view_menu.addAction(ramachandran_plot_act)
 
+        double_pendulum_act = QAction("🌀 Động lực học phi tuyến & Hỗn loạn: Con lắc kép (Chaos Theory)", self)
+        double_pendulum_act.setShortcut(QKeySequence("Ctrl+Shift+4"))
+        double_pendulum_act.triggered.connect(self._on_toggle_double_pendulum)
+        view_menu.addAction(double_pendulum_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5392,6 +5397,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_ramachandran_plot()
         self._status.showMessage(
             f"Giản đồ Ramachandran: {'Hiển thị (Ctrl+Shift+3)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_double_pendulum(self) -> bool:
+        """Toggle interactive Double Pendulum & Chaos Theory on LessonBoard."""
+        is_visible = self._scene.toggle_double_pendulum()
+        self._status.showMessage(
+            f"Con lắc kép & Hỗn loạn: {'Hiển thị (Ctrl+Shift+4)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible
