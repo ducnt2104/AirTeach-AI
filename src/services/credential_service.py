@@ -85,6 +85,7 @@ class TeacherCredentialService:
     def _get_connection(self) -> sqlite3.Connection:
         import shutil
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = None
         try:
             conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=10.0)
             conn.row_factory = sqlite3.Row
@@ -97,6 +98,11 @@ class TeacherCredentialService:
                 raise sqlite3.DatabaseError(f"Integrity check failed: {res[0]}")
             return conn
         except (sqlite3.DatabaseError, sqlite3.OperationalError) as err:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             err_msg = str(err).lower()
             if "malformed" in err_msg or "corrupt" in err_msg or "integrity" in err_msg:
                 logger.error("Corrupted database detected at %s. Auto-recovering from pristine...", self.db_path)

@@ -226,3 +226,50 @@ class TestChemicalReactionCardItem:
         painter = QPainter(img)
         self.card.paint(painter, None, None)
         painter.end()
+
+    def test_handle_air_tap(self):
+        # 1. Tap on toggle expand button (x: 440, y: 20)
+        initial_expanded = self.card.is_expanded
+        consumed = self.card.handle_air_tap(QPointF(self.card.x() + 450.0, self.card.y() + 20.0))
+        assert consumed is True
+        assert self.card.is_expanded != initial_expanded
+
+        # 2. Tap inside card
+        consumed = self.card.handle_air_tap(QPointF(self.card.x() + 100.0, self.card.y() + 50.0))
+        assert consumed is True
+
+        # 3. Tap outside card
+        consumed = self.card.handle_air_tap(QPointF(self.card.x() - 100.0, self.card.y() - 100.0))
+        assert consumed is False
+
+
+class TestSmartInkReviewDialogChemicalIntegration:
+    """Verify dialog auto-balancing and reaction card confirmation."""
+
+    def test_dialog_auto_balances_chemical_equation(self, qapp):
+        from src.services.smart_ink_ocr import OcrResult
+        from src.ui.smart_ink_review_dialog import SmartInkReviewDialog
+
+        ocr_res = OcrResult(
+            text="Fe + HNO3 -> Fe(NO3)3 + NO + H2O",
+            latex=r"\text{Fe} + \text{HNO}_3 \rightarrow \text{Fe(NO}_3\text{)}_3 + \text{NO} + \text{H}_2\text{O}",
+            confidence=0.98,
+            is_formula=True,
+        )
+        dlg = SmartInkReviewDialog(ocr_res)
+        assert dlg._reaction_result is not None
+        assert dlg._reaction_result.is_balanced is True
+        assert "4 HNO3" in dlg._reaction_result.balanced_equation
+
+        # Check signals
+        emitted_reaction = []
+        emitted_text = []
+        dlg.reaction_confirmed.connect(lambda r, rep: emitted_reaction.append((r, rep)))
+        dlg.result_confirmed.connect(lambda t, rep: emitted_text.append((t, rep)))
+
+        dlg._on_accept()
+        assert len(emitted_reaction) == 1
+        assert emitted_reaction[0][0].is_balanced is True
+        assert emitted_reaction[0][1] is True
+        assert len(emitted_text) == 1
+

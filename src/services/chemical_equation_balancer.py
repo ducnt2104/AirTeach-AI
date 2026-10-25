@@ -89,6 +89,24 @@ class ChemicalReactionResult:
     error_message: Optional[str] = None
     execution_time_ms: float = 0.0
 
+    @property
+    def is_balanced(self) -> bool:
+        """Alias for success indicating valid stoichiometric balancing."""
+        return self.success and self.mass_conservation_verified
+
+    @property
+    def balanced_equation(self) -> str:
+        """Alias for balanced_equation_text."""
+        return self.balanced_equation_text
+
+    @property
+    def reactants_mass(self) -> float:
+        return self.total_reactant_mass
+
+    @property
+    def products_mass(self) -> float:
+        return self.total_product_mass
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "success": self.success,
@@ -217,10 +235,18 @@ class ChemicalEquationBalancer:
         t0 = time.perf_counter()
         raw = equation_str.strip()
 
+        # Clean LaTeX notation if present (e.g. \text{Fe} + \text{HNO}_3 \rightarrow ...)
+        cleaned = raw.replace(r"\longrightarrow", "->").replace(r"\rightarrow", "->").replace(r"\to", "->")
+        cleaned = cleaned.replace(r"\rightleftharpoons", "->").replace(r"\leftrightarrow", "->")
+        cleaned = re.sub(r"\\(?:text|mathrm|mathbf)\{([^}]+)\}", r"\1", cleaned)
+        cleaned = re.sub(r"_\{(\d+)\}", r"\1", cleaned)
+        cleaned = re.sub(r"_(\d+)", r"\1", cleaned)
+        cleaned = cleaned.replace("{", "").replace("}", "").replace("\\", "")
+
         # Split reactants and products by reaction arrow
         arrow_match = None
-        for arrow in ("->", "-->", "=>", "=", r"\rightarrow", r"\longrightarrow"):
-            if arrow in raw:
+        for arrow in ("->", "-->", "=>", "="):
+            if arrow in cleaned:
                 arrow_match = arrow
                 break
 
@@ -232,7 +258,7 @@ class ChemicalEquationBalancer:
                 execution_time_ms=(time.perf_counter() - t0) * 1000.0,
             )
 
-        react_part, prod_part = raw.split(arrow_match, 1)
+        react_part, prod_part = cleaned.split(arrow_match, 1)
 
         def split_species(part: str) -> list[str]:
             items = []

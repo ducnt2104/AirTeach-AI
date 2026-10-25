@@ -36,6 +36,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.services.chemical_equation_balancer import (
+    ChemicalEquationBalancer,
+    ChemicalReactionResult,
+)
 from src.services.smart_ink_ocr import LaTeXRenderer, MathTextRenderer, OcrResult
 from src.services.symbolic_math import MathDerivationResult, SymbolicMathEngine
 
@@ -53,6 +57,8 @@ class SmartInkReviewDialog(QDialog):
     result_confirmed = Signal(str, bool)
     # Emits (MathDerivationResult, should_replace_ink: bool)
     derivation_confirmed = Signal(object, bool)
+    # Emits (ChemicalReactionResult, should_replace_ink: bool)
+    reaction_confirmed = Signal(object, bool)
 
     def __init__(
         self,
@@ -69,6 +75,8 @@ class SmartInkReviewDialog(QDialog):
         self._crop_image_bgr = crop_image_bgr
         self._math_engine = SymbolicMathEngine()
         self._derivation_result: Optional[MathDerivationResult] = None
+        self._chem_balancer = ChemicalEquationBalancer()
+        self._reaction_result: Optional[ChemicalReactionResult] = None
 
         self._build_ui()
         self._update_math_preview()
@@ -200,6 +208,11 @@ class SmartInkReviewDialog(QDialog):
             btn_simp.clicked.connect(lambda: self._run_symbolic_derivation("simplify"))
             top_bar.addWidget(btn_simp)
 
+            btn_chem = QPushButton("⚗ Cân bằng Hóa")
+            btn_chem.setStyleSheet("background: #854d0e; color: #fde047; border: 1px solid #ca8a04; padding: 4px 8px; border-radius: 4px;")
+            btn_chem.clicked.connect(self._run_chemical_balancing)
+            top_bar.addWidget(btn_chem)
+
             math_layout.addLayout(top_bar)
 
             # Solution display
@@ -289,6 +302,43 @@ class SmartInkReviewDialog(QDialog):
         # Text fallback if math rendering fails
         self._preview_lbl.setText(code)
 
+    def _run_chemical_balancing(self) -> None:
+        """Balance chemical equation and compute stoichiometric mass conservation."""
+        if not hasattr(self, "_math_sol_lbl"):
+            return
+
+        code = self._text_edit.text().strip()
+        if not code:
+            self._math_sol_lbl.setText("Không có phương trình để cân bằng.")
+            self._math_steps_lbl.setText("")
+            self._reaction_result = None
+            return
+
+        # Normalize LaTeX arrows to standard arrows
+        cleaned = (
+            code.replace(r"\longrightarrow", "->")
+            .replace(r"\rightarrow", "->")
+            .replace(r"\to", "->")
+        )
+        res = self._chem_balancer.balance(cleaned)
+        self._reaction_result = res
+        self._derivation_result = None
+
+        if res.is_balanced:
+            self._math_sol_lbl.setText(f"✓ Cân bằng: {res.balanced_equation}")
+            self._math_steps_lbl.setText(
+                f"Bảo toàn khối lượng: {res.reactants_mass:.2f} u = {res.products_mass:.2f} u. "
+                f"{len(res.steps)} bước suy luận nghiệm nguyên ma trận."
+            )
+            if self._chk_insert_card is not None:
+                self._chk_insert_card.setText("Kèm thẻ phản ứng hóa học (Chemical Reaction Card) lên bảng")
+                self._chk_insert_card.setEnabled(True)
+        else:
+            self._math_sol_lbl.setText(f"⚠ {res.error_message or 'Không thể cân bằng hóa học'}")
+            self._math_steps_lbl.setText("Kiểm tra lại công thức chất (VD: KMnO4 + HCl -> KCl + MnCl2 + Cl2 + H2O).")
+            if self._chk_insert_card is not None:
+                self._chk_insert_card.setEnabled(False)
+
     def _run_symbolic_derivation(self, operation: str = "auto") -> None:
         """Run the symbolic math engine on the current formula string."""
         if not hasattr(self, "_math_sol_lbl"):
@@ -299,10 +349,18 @@ class SmartInkReviewDialog(QDialog):
             self._math_sol_lbl.setText("Không có công thức để giải.")
             self._math_steps_lbl.setText("")
             self._derivation_result = None
+            self._reaction_result = None
             return
+
+        # Check if formula contains chemical reaction arrows
+        if operation == "auto" and any(arr in code for arr in ["->", "-->", r"\to", r"\rightarrow", r"\longrightarrow"]):
+            self._run_chemical_balancing()
+            if self._reaction_result is not None and self._reaction_result.is_balanced:
+                return
 
         res = self._math_engine.evaluate_auto(code, operation)
         self._derivation_result = res
+        self._reaction_result = None
 
         if res.success:
             sol_disp = res.solution_raw or res.solution_latex
@@ -313,6 +371,7 @@ class SmartInkReviewDialog(QDialog):
             else:
                 self._math_steps_lbl.setText("Rút gọn trực tiếp.")
             if self._chk_insert_card is not None:
+                self._chk_insert_card.setText("Kèm thẻ lời giải chi tiết (Math Derivation Card) lên bảng giảng dạy")
                 self._chk_insert_card.setEnabled(True)
         else:
             self._math_sol_lbl.setText(f"⚠ {res.error_message or 'Không thể giải tự động'}")
@@ -324,8 +383,16 @@ class SmartInkReviewDialog(QDialog):
         code = self._text_edit.text().strip()
         replace = self._radio_replace.isChecked()
 
-        # Emit derivation result if active and checked
+        # Emit reaction result if active and checked
         if (
+            self._chk_insert_card is not None
+            and self._chk_insert_card.isChecked()
+            and self._reaction_result is not None
+            and self._reaction_result.is_balanced
+        ):
+            self.reaction_confirmed.emit(self._reaction_result, replace)
+        # Emit derivation result if active and checked
+        elif (
             self._chk_insert_card is not None
             and self._chk_insert_card.isChecked()
             and self._derivation_result is not None

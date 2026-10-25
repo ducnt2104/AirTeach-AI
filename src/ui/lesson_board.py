@@ -292,6 +292,7 @@ class LessonBoard(QGraphicsScene):
 
         # Interactive Function Graph Plotter & Tangent Line Inspector
         self._function_plotter_item: Optional[QGraphicsItem] = None
+        self._transformer_attention_item: Optional[QGraphicsItem] = None
 
         # Interactive Physics Vector Force Decomposer & Inclined Plane
         self._incline_tool_item: Optional[QGraphicsItem] = None
@@ -1127,6 +1128,40 @@ class LessonBoard(QGraphicsScene):
     def get_function_plotter_item(self) -> Optional[QGraphicsItem]:
         """Return interactive function plotter instance if created."""
         return self._function_plotter_item
+
+    def show_transformer_attention(
+        self,
+        visible: bool = True,
+        pos: Optional[tuple[float, float]] = None,
+    ) -> Optional[QGraphicsItem]:
+        """Show or hide the interactive Transformer multi-head self-attention visualizer."""
+        if getattr(self, "_transformer_attention_item", None) is None:
+            from src.ui.interactive_transformer_attention import InteractiveTransformerAttentionItem
+            spawn_pos = pos if pos is not None else (BOARD_WIDTH / 2.0 - InteractiveTransformerAttentionItem.WIDTH / 2.0, 120.0)
+            self._transformer_attention_item = InteractiveTransformerAttentionItem(pos=spawn_pos)
+            self.addItem(self._transformer_attention_item)
+        self._transformer_attention_item.setVisible(visible)
+        if visible and pos is not None:
+            self._transformer_attention_item.setPos(pos[0], pos[1])
+        self.update()
+        return self._transformer_attention_item if visible else None
+
+    def toggle_transformer_attention(self) -> bool:
+        """Toggle interactive Transformer self-attention visualizer visibility."""
+        if getattr(self, "_transformer_attention_item", None) is None or not self._transformer_attention_item.isVisible():
+            self.show_transformer_attention(True)
+            return True
+        else:
+            self.show_transformer_attention(False)
+            return False
+
+    def is_transformer_attention_visible(self) -> bool:
+        """Return True if interactive Transformer visualizer is active on board."""
+        return getattr(self, "_transformer_attention_item", None) is not None and self._transformer_attention_item.isVisible()
+
+    def get_transformer_attention_item(self) -> Optional[QGraphicsItem]:
+        """Return interactive Transformer visualizer instance if created."""
+        return getattr(self, "_transformer_attention_item", None)
 
     # ── Interactive Physics Vector Force Decomposer & Inclined Plane ───────────
 
@@ -6153,6 +6188,7 @@ class LessonBoard(QGraphicsScene):
             getattr(self, "_angle_tool_item", None),
             getattr(self, "_triangle_tool_item", None),
             getattr(self, "_function_plotter_item", None),
+            getattr(self, "_transformer_attention_item", None),
             getattr(self, "_incline_tool_item", None),
             getattr(self, "_optics_refraction_item", None),
             getattr(self, "_standing_wave_item", None),

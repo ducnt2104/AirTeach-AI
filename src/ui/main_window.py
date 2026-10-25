@@ -988,6 +988,11 @@ class MainWindow(QMainWindow):
         optics_act.triggered.connect(self._on_toggle_optics_refraction)
         view_menu.addAction(optics_act)
 
+        transformer_act = QAction("🤖 Mô phỏng Transformer Attention & Multi-Head (Vaswani et al.)", self)
+        transformer_act.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        transformer_act.triggered.connect(self._on_toggle_transformer_attention)
+        view_menu.addAction(transformer_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -3422,6 +3427,22 @@ class MainWindow(QMainWindow):
                                 self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#06b6d4", radius=9.0)
                                 self._finalize_hand_stroke(h.track_id)
                                 break
+                        elif item.__class__.__name__ in ("InteractiveTransformerAttentionItem", "ChemicalReactionCardItem", "MathDerivationCardItem"):
+
+                            if item.isVisible() and hasattr(item, "handle_air_tap"):
+
+                                if item.handle_air_tap(QPointF(bx, by), board=self._scene):
+
+                                    item_consumed_tap = True
+
+                                    tapped_hand_ids.add(h.track_id)
+
+                                    self._scene.move_laser(bx, by, visible=True, hand_id=h.track_id, color="#38bdf8", radius=9.0)
+
+                                    self._finalize_hand_stroke(h.track_id)
+
+                                    break
+
                         elif item.__class__.__name__ == "InteractiveOpticsRefractionItem":
                             if item.isVisible() and hasattr(item, "handle_air_tap"):
                                 if item.handle_air_tap(QPointF(bx, by), board=self._scene):
@@ -3526,7 +3547,7 @@ class MainWindow(QMainWindow):
                     itm for itm in cand_items
                     if itm not in (getattr(self._scene, "_background_item", None), getattr(self._scene, "_bg_item", None), getattr(self._scene, "_grid_item", None))
                     and not getattr(itm, "_is_stroke_item", False)
-                    and (hasattr(itm, "rotate_by") or hasattr(itm, "air_click_at") or type(itm).__name__.startswith("Interactive") or type(itm).__name__.startswith("Virtual"))
+                    and (hasattr(itm, "rotate_by") or hasattr(itm, "air_click_at") or type(itm).__name__.startswith("Interactive") or type(itm).__name__.startswith("Virtual") or type(itm).__name__.endswith("CardItem"))
                 ]
                 if (self._bimanual_manipulator.is_manipulating() or stem_cands) and both_m_pinched:
                     t_stem = self._bimanual_manipulator.process_hands(
@@ -4206,7 +4227,43 @@ class MainWindow(QMainWindow):
                 logger.warning("Failed to add MathDerivationCardItem: %s", exc)
 
         dlg.result_confirmed.connect(_on_confirmed)
+        def _on_reaction_confirmed(react_res, replace_ink: bool):
+
+            try:
+
+                from src.ui.chemical_reaction_card import ChemicalReactionCardItem  # noqa: PLC0415
+
+                card = ChemicalReactionCardItem(react_res)
+
+                card.setPos(x + 20.0, y + 80.0)
+
+                self._scene.addItem(card)
+
+                card.setData(1, {
+
+                    "text": react_res.balanced_equation_text,
+
+                    "latex": react_res.balanced_equation_latex,
+
+                    "is_formula": True,
+
+                    "is_chemical_card": True,
+
+                    "conf": 1.0,
+
+                })
+
+                self._add_stem_item_to_current_page(card)
+
+                self._status.showMessage("Đã chèn thẻ phản ứng hóa học lên bảng.", 3000)
+            except Exception as exc:
+
+                logger.warning("Failed to add ChemicalReactionCardItem: %s", exc)
+
+
         dlg.derivation_confirmed.connect(_on_derivation_confirmed)
+
+        dlg.reaction_confirmed.connect(_on_reaction_confirmed)
         dlg.exec()
 
     def _on_manual_ocr(self) -> None:
@@ -5165,6 +5222,24 @@ class MainWindow(QMainWindow):
         return is_visible
 
     @Slot()
+    @Slot()
+
+    def _on_toggle_transformer_attention(self) -> bool:
+
+        """Toggle interactive Transformer multi-head self-attention visualizer on LessonBoard."""
+
+        is_visible = self._scene.toggle_transformer_attention()
+
+        self._status.showMessage(
+
+            f"Transformer Self-Attention: {'Hiển thị (Ctrl+Shift+A)' if is_visible else 'Đã ẩn'}",
+            2000,
+
+        )
+
+        return is_visible
+
+
     def _on_toggle_function_plotter(self) -> bool:
         """Toggle interactive function graph plotter & tangent inspector on LessonBoard."""
         is_visible = self._scene.toggle_function_plotter()

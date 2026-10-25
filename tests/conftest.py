@@ -14,7 +14,7 @@ PRISTINE_DB = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dat
 def verify_or_restore_db():
     if os.path.exists(PROFILES_DB):
         try:
-            conn = sqlite3.connect(PROFILES_DB)
+            conn = sqlite3.connect(PROFILES_DB, timeout=5.0)
             cur = conn.cursor()
             cur.execute("PRAGMA integrity_check;")
             res = cur.fetchall()
@@ -22,8 +22,18 @@ def verify_or_restore_db():
             if not res or res[0][0] != "ok":
                 raise sqlite3.DatabaseError("Corrupt")
         except Exception:
+            for ext in ("-wal", "-shm"):
+                wal_f = PROFILES_DB + ext
+                if os.path.exists(wal_f):
+                    try:
+                        os.remove(wal_f)
+                    except Exception:
+                        pass
             if os.path.exists(PRISTINE_DB):
-                shutil.copy2(PRISTINE_DB, PROFILES_DB)
+                try:
+                    shutil.copy2(PRISTINE_DB, PROFILES_DB)
+                except Exception:
+                    pass
     elif os.path.exists(PRISTINE_DB):
         shutil.copy2(PRISTINE_DB, PROFILES_DB)
 
@@ -31,5 +41,11 @@ def verify_or_restore_db():
 @pytest.fixture(scope="session", autouse=True)
 def ensure_db_integrity():
     verify_or_restore_db()
+    yield
+    verify_or_restore_db()
+
+
+@pytest.fixture(autouse=True)
+def per_test_db_guard():
     yield
     verify_or_restore_db()

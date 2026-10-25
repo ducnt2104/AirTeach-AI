@@ -773,9 +773,53 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 200: Interactive Transformer Self-Attention & Multi-Head Visualizer
+- **Interactive Transformer Multi-Head Self-Attention Visualizer (`src/ui/interactive_transformer_attention.py`)**:
+  - Implemented `InteractiveTransformerAttentionItem(QGraphicsObject)` and `TransformerPreset`.
+  - Authentic scaled dot-product attention mathematics (Vaswani et al., 2017):
+    - $\text{Attention}(Q, K, V) = \text{Softmax}(Q K^T / (\tau \sqrt{d_k}) + M) V$.
+    - Sinusoidal positional embeddings and learned deterministic projection matrices ($d_{\text{model}}=32, d_k=16$).
+  - 4 Multi-Head Attention projections with distinct semantic specializations (Sky Blue, Amber, Purple, Emerald) + All-Heads average.
+  - Dual Architecture Modes:
+    - Bidirectional Encoder (BERT-style) with full pairwise attention.
+    - Autoregressive Causal Decoder (GPT-style) with upper-triangular masking ($M_{ij} = -10^9$ for $j > i$).
+  - Dual Interactive Visualizations:
+    - $T \times T$ Viridis Attention Heatmap with percentage tooltips and token inspection.
+    - Bipartite Token Ribbon Arcs with cubic Bézier curves connecting query tokens to key tokens.
+  - Softmax Temperature Scaling ($\tau \in [0.2, 5.0]$) and Shannon attention entropy metric $H_i = -\sum A_{ij} \log_2(A_{ij})$.
+  - 5 Curriculum Presets: Pronoun Coreference, Vietnamese Syntax, Parallel Clause, Arithmetic Logic, Code AST.
+  - Touchless air gesture controls via `handle_air_tap`, bimanual multi-hand scale/rotate/move, canvas stamping, and JSON serialization (`to_dict` / `from_dict`).
+- **LessonBoard & MainWindow Integration**:
+  - `LessonBoard`: Added `show_transformer_attention`, `toggle_transformer_attention`, `is_transformer_attention_visible`, `get_transformer_attention_item`.
+  - `MainWindow`: Added View menu action `Ctrl+Shift+A` ("Mô phỏng Transformer Attention & Multi-Head"), air tap gesture routing, and bimanual item tracking.
+- **Test Suite Verification**:
+  - Dedicated test suite `tests/test_interactive_transformer_attention.py` (15 unit tests, all passed in 2.12s).
+  - Total test suites raised to **136 test suites**.
+
+---
+
+### Milestone 201: Smart Ink Chemistry & Math Derivation Closed Loop
+- **Smart Ink Review Dialog Chemistry Auto-Balancing (`src/ui/smart_ink_review_dialog.py`)**:
+  - Integrated `ChemicalEquationBalancer` into handwriting review workspace.
+  - Automatic detection of chemical equations from recognized text and $\LaTeX$ (`->`, `\to`, `\rightarrow`, species formulas).
+  - 1-click `⚗ Cân bằng Hóa` button displaying balanced equation with integer coefficients and Law of Conservation of Mass proof.
+  - Added `reaction_confirmed = Signal(object, bool)` emitting `(ChemicalReactionResult, replace_ink)`.
+- **MainWindow Chemical Reaction Card Placement (`src/ui/main_window.py`)**:
+  - Connected `dlg.reaction_confirmed` in `_on_ocr_done` to instantiate `ChemicalReactionCardItem` and place on `LessonBoard`.
+  - Registered cards with `_add_stem_item_to_current_page(card)` for page switching and persistence.
+  - Extended bimanual manipulator candidate filter to include `*CardItem` classes.
+  - Added touchless air gesture tapping (`handle_air_tap`) to `ChemicalReactionCardItem` and `MathDerivationCardItem`.
+- **Database Concurrency & Integrity Hardening (`src/services/credential_service.py`, `tests/conftest.py`)**:
+  - Added explicit connection closing before recovery in `TeacherCredentialService._get_connection()` to prevent file handle locking on Windows.
+  - Added per-test database integrity guard fixture `per_test_db_guard` in `tests/conftest.py` ensuring zero SQLite WAL pollution across test suites.
+- **Master Verification**:
+  - Total passing tests raised from 1,612 to **1,629 passed tests (100% pass rate across 136 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **135 Test Suites**
-- **Total Passing Tests**: **1,612 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **136 Test Suites**
+- **Total Passing Tests**: **1,629 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.

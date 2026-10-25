@@ -176,6 +176,32 @@ class ChemicalReactionCardItem(QGraphicsObject):
 
         super().mousePressEvent(event)
 
+    def handle_air_tap(self, scene_pos: QPointF, board: Optional[Any] = None) -> bool:
+        """Process touchless air tap gesture from webcam tracking."""
+        pos = self.mapFromScene(scene_pos)
+        if not self.boundingRect().contains(pos):
+            return False
+
+        # 1. Close button
+        if (self._width - 34.0) <= pos.x() <= (self._width - 10.0) and 8.0 <= pos.y() <= 34.0:
+            self.card_closed.emit(self)
+            if self.scene():
+                self.scene().removeItem(self)
+            return True
+
+        # 2. Toggle expand button
+        if (self._width - 68.0) <= pos.x() <= (self._width - 40.0) and 8.0 <= pos.y() <= 34.0:
+            self.toggle_expanded()
+            return True
+
+        # 3. Collapse/expand prompt click
+        if self._result.steps and not self._is_expanded:
+            if self._mass_bar_rect.bottom() <= pos.y() <= self._total_height:
+                self.toggle_expanded()
+                return True
+
+        return True
+
     # ── Painting ──────────────────────────────────────────────────────────────
 
     def paint(
