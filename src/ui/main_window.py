@@ -4187,7 +4187,26 @@ class MainWindow(QMainWindow):
                 self._add_stem_item_to_current_page(new_item)
             self._status.showMessage("Đã chèn nội dung nhận dạng lên bảng.", 3000)
 
+        def _on_derivation_confirmed(deriv_res, replace_ink: bool):
+            try:
+                from src.ui.math_derivation_card import MathDerivationCardItem  # noqa: PLC0415
+                card = MathDerivationCardItem(deriv_res)
+                card.setPos(x + 20.0, y + 80.0)
+                self._scene.addItem(card)
+                card.setData(1, {
+                    "text": deriv_res.solution_raw,
+                    "latex": deriv_res.solution_latex,
+                    "is_formula": True,
+                    "is_derivation_card": True,
+                    "conf": 1.0,
+                })
+                self._add_stem_item_to_current_page(card)
+                self._status.showMessage(f"Đã chèn thẻ lời giải ({deriv_res.operation.upper()}) lên bảng.", 3000)
+            except Exception as exc:
+                logger.warning("Failed to add MathDerivationCardItem: %s", exc)
+
         dlg.result_confirmed.connect(_on_confirmed)
+        dlg.derivation_confirmed.connect(_on_derivation_confirmed)
         dlg.exec()
 
     def _on_manual_ocr(self) -> None:

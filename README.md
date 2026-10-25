@@ -5,7 +5,7 @@
 [![PySide6](https://img.shields.io/badge/GUI-PySide6%20Qt6-brightgreen.svg)](https://www.qt.io/)
 [![Computer Vision](https://img.shields.io/badge/CV-OpenCV%20%2B%20MediaPipe-orange.svg)](https://opencv.org/)
 [![AI Assistant](https://img.shields.io/badge/AI-Google%20Gemini%20API-4285F4.svg)](https://aistudio.google.com/)
-[![Tests](https://img.shields.io/badge/Tests-1%2C572%20passed%20(111%20suites)-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-1%2C592%20passed%20(112%20suites)-success.svg)](tests/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue.svg)](https://github.com/ducnt2104/AirTeach-AI)
 [![License](https://img.shields.io/badge/License-Apache%202.0%20%2F%20LGPLv3-lightgrey.svg)](LICENSE)
 
@@ -229,10 +229,10 @@ graph TD
 
 ## 🧪 Đảm bảo chất lượng & Kiểm thử tự động (Test Suite)
 
-Hệ thống được bảo vệ bởi **1,572 bài test tự động** vượt qua 100% trong **111 file test suites**:
+Hệ thống được bảo vệ bởi **1,592 bài test tự động** vượt qua 100% trong **112 file test suites**:
 
 ```bash
-# Chạy toàn bộ 1,572 bài test ở chế độ headless (CI/CD)
+# Chạy toàn bộ 1,592 bài test ở chế độ headless (CI/CD)
 pytest -q
 
 # Kiểm tra tình trạng sẵn sàng của hệ thống và trọng số mô hình AI

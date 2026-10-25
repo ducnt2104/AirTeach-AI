@@ -682,9 +682,40 @@ ormalize_vietnamese_ocr_text)**:
 
 ---
 
+### Milestone 197: Smart Ink Symbolic Formula Evaluation & Pedagogical Derivation Cards
+- **Offline Symbolic Math Engine (src/services/symbolic_math.py)**:
+  - Implemented SymbolicMathEngine, MathDerivationResult, DerivationStep, MathOperationType.
+  - Robust LaTeX to Python expression converter:
+    - Normalizes LaTeX fractions (\\frac, \\dfrac), radicals (\\sqrt{x}, \\sqrt[n]{x}), exponents, trigonometric functions/powers (\\sin^2(x)), logarithms, and implicit multiplications (2x, 3(x+1)).
+    - Automatic primary variable detection (x, t, y, z...).
+  - Pedagogical equation solving:
+    - Linear equations: standard form, constants isolation, coefficient division, exact solution set.
+    - Quadratic equations: standard form, discriminant calculation $\\Delta = b^2 - 4ac$, trichotomy analysis ($\\Delta > 0$, $\\Delta = 0$, $\\Delta < 0$ with complex conjugate roots), and exact radical formulas.
+    - General polynomial, transcendental, and system solving via SymPy.
+  - Symbolic Calculus & Simplification:
+    - Differentiation: term-by-term power rule, sum rule, product rule, and trigonometric differentiation with pedagogical steps.
+    - Integration: anti-derivative formulation with $+ C$ constant of integration and Newton-Leibniz evaluation (b) - F(a)$ for definite integrals.
+    - Simplification & Factorization: trigonometric identity reduction, common denominator grouping, and exact rational/decimal evaluation.
+- **Interactive Math Derivation Card (src/ui/math_derivation_card.py)**:
+  - Implemented MathDerivationCardItem(QGraphicsObject):
+    - Dark glassmorphic design (#0f172a), operation pills (Emerald, Amber, Purple, Sky Blue), and prominent emerald solution highlight box.
+    - Crisp LaTeX rendering via matplotlib.mathtext into high-DPI cached QPixmaps for 60 FPS redraws without figure overhead.
+    - Interactive touchless and mouse controls: expandable/collapsible step breakdown, close button, and canvas dragging.
+    - Full JSON serialization (	o_dict / rom_dict) for .airteach packages and replay synchronization.
+- **Review Dialog & Main Window Integration (src/ui/smart_ink_review_dialog.py, src/ui/main_window.py)**:
+  - Integrated 1-click math solver panel with operation buttons: Auto, Solve, Diff, Integrate, Simplify.
+  - Added derivation_confirmed = Signal(object, bool).
+  - MainWindow automatically creates and places MathDerivationCardItem on LessonBoard adjacent to recognized formulas and tracks it in _page_stem_items.
+- **Test Suite Verification**:
+  - Created dedicated test suite 	ests/test_symbolic_math_evaluation.py (20 unit tests, all passed in 3.48s).
+  - Total test suites raised from 111 to **112 test suites**.
+  - Total passing tests raised from 1,572 to **1,592 passed tests (100% pass rate across 112 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **111 Test Suites**
-- **Total Passing Tests**: **1,572 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **112 Test Suites**
+- **Total Passing Tests**: **1,592 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
