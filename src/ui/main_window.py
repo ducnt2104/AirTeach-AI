@@ -1078,6 +1078,11 @@ class MainWindow(QMainWindow):
         gw_act.triggered.connect(self._on_toggle_gravitational_waves)
         view_menu.addAction(gw_act)
 
+        qc_act = QAction("⚛ Tin học lượng tử: Mạch Qubit, Quả cầu Bloch & Dịch chuyển lượng tử", self)
+        qc_act.setShortcut(QKeySequence("Ctrl+Alt+Shift+A"))
+        qc_act.triggered.connect(self._on_toggle_quantum_circuit)
+        view_menu.addAction(qc_act)
+
         wave_act = QAction("🌊 Sóng cơ & Sóng dừng (Standing Wave Simulator)", self)
         wave_act.setShortcut(QKeySequence("Ctrl+Shift+W"))
         wave_act.triggered.connect(self._on_toggle_standing_wave)
@@ -5497,6 +5502,16 @@ class MainWindow(QMainWindow):
         is_visible = self._scene.toggle_gravitational_waves()
         self._status.showMessage(
             f"Sóng hấp dẫn & Giao thoa kế LIGO: {'Hiển thị (Ctrl+Shift+0)' if is_visible else 'Đã ẩn'}",
+            2000,
+        )
+        return is_visible
+
+    @Slot()
+    def _on_toggle_quantum_circuit(self) -> bool:
+        """Toggle interactive Quantum Circuit & Bloch Spheres on LessonBoard."""
+        is_visible = self._scene.toggle_quantum_circuit()
+        self._status.showMessage(
+            f"Mạch Qubit & Quả cầu Bloch: {'Hiển thị (Ctrl+Alt+Shift+A)' if is_visible else 'Đã ẩn'}",
             2000,
         )
         return is_visible
