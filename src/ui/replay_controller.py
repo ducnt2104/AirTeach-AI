@@ -696,35 +696,114 @@ class ReplayController(QWidget):
 
                 stroke._path_item.setVisible(True)
 
+                dur = max(1.0, stroke_end - stroke_start)
+
+                progress = min(1.0, max(0.0, (abs_target - stroke_start) / dur))
+
+            
+
                 if stroke.segments:
 
-                    dur = max(1.0, stroke_end - stroke_start)
+                    n_segs = len(stroke.segments)
 
-                    progress = min(1.0, max(0.0, (abs_target - stroke_start) / dur))
+                    val = progress * n_segs
 
-                    num_segs = max(1, int(math.ceil(len(stroke.segments) * progress)))
+                    k = int(math.floor(val))
 
-                    active_segs = stroke.segments[:num_segs]
+                    u = val - k
 
-
+            
 
                     partial_path = QPainterPath()
 
-                    partial_path.moveTo(active_segs[0].p0[0], active_segs[0].p0[1])
+                    p_start = stroke.segments[0].p0
 
-                    for seg in active_segs:
+                    partial_path.moveTo(float(p_start[0]), float(p_start[1]))
+
+            
+
+                    # 1. Full prior segments
+
+                    for seg_idx in range(min(k, n_segs)):
+
+                        seg = stroke.segments[seg_idx]
 
                         partial_path.cubicTo(
 
-                            seg.p1[0], seg.p1[1],
+                            float(seg.p1[0]), float(seg.p1[1]),
 
-                            seg.p2[0], seg.p2[1],
+                            float(seg.p2[0]), float(seg.p2[1]),
 
-                            seg.p3[0], seg.p3[1],
+                            float(seg.p3[0]), float(seg.p3[1]),
 
                         )
 
+            
+
+                    # 2. De Casteljau subdivision of active segment
+
+                    if k < n_segs and u > 1e-4:
+
+                        curr_seg = stroke.segments[k]
+
+                        cp0 = curr_seg.p0
+
+                        cp1 = curr_seg.p1
+
+                        cp2 = curr_seg.p2
+
+                        cp3 = curr_seg.p3
+
+            
+
+                        p01 = (1.0 - u) * cp0 + u * cp1
+
+                        p12 = (1.0 - u) * cp1 + u * cp2
+
+                        p23 = (1.0 - u) * cp2 + u * cp3
+
+            
+
+                        p012 = (1.0 - u) * p01 + u * p12
+
+                        p123 = (1.0 - u) * p12 + u * p23
+
+            
+
+                        p0123 = (1.0 - u) * p012 + u * p123
+
+            
+
+                        partial_path.cubicTo(
+
+                            float(p01[0]), float(p01[1]),
+
+                            float(p012[0]), float(p012[1]),
+
+                            float(p0123[0]), float(p0123[1]),
+
+                        )
+
+            
+
                     stroke._path_item.setPath(partial_path)
+
+                elif hasattr(stroke, "points") and stroke.points:
+
+                    pts = [p for p in stroke.points if getattr(p, "t_ms", 0.0) <= abs_target]
+
+                    if len(pts) >= 2:
+
+                        partial_path = QPainterPath()
+
+                        partial_path.moveTo(float(pts[0].x), float(pts[0].y))
+
+                        for pt in pts[1:]:
+
+                            partial_path.lineTo(float(pt.x), float(pt.y))
+
+                        stroke._path_item.setPath(partial_path)
+
 
 
 

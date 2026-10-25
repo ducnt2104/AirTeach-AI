@@ -337,6 +337,40 @@ class TestReplayController:
         assert ctrl._current_time_ms == 0.0
         assert not ctrl._is_playing
 
+    def test_scrubbing_subdivides_bezier_smoothly(self, qapp):
+        """Scrubbing to 50% must subdivide cubic Bezier curve exactly at u = 0.5 using de Casteljau."""
+        from PySide6.QtWidgets import QGraphicsPathItem
+        canvas = LessonBoardCanvas()
+        ctrl = ReplayController()
+        ctrl.set_canvas(canvas)
+
+        seg = BezierSegment(
+            p0=np.array([0.0, 0.0]),
+            p1=np.array([0.0, 100.0]),
+            p2=np.array([100.0, 100.0]),
+            p3=np.array([100.0, 0.0]),
+        )
+        stroke = InkStroke(
+            stroke_id="test_subdivide",
+            segments=[seg],
+            widths=[2.5],
+            timestamps_ms=[0.0, 500.0, 1000.0],
+        )
+        path_item = QGraphicsPathItem()
+        canvas._scene.addItem(path_item)
+        stroke._path_item = path_item
+
+        ctrl.load_strokes([stroke])
+        ctrl._apply_timestamp_to_canvas(500.0)
+
+        path = path_item.path()
+        assert not path.isEmpty()
+        assert path.elementCount() >= 4
+
+        end_pt = path.currentPosition()
+        assert end_pt.x() == pytest.approx(50.0, abs=1e-2)
+        assert end_pt.y() == pytest.approx(75.0, abs=1e-2)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 6. SidePanelsWidget Tests
