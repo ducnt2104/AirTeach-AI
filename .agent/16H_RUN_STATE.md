@@ -742,9 +742,40 @@ ight, midpoint, 	rapezoid) with configurable rectangle count $ for classroom vis
 
 ---
 
+### Milestone 199: Chemical Equation Balancing & Stoichiometric Conservation Engine
+- **Chemical Equation Balancer & Stoichiometric Conservation Engine (src/services/chemical_equation_balancer.py)**:
+  - Implemented ChemicalEquationBalancer, ChemicalReactionResult, ChemicalSpecies, parse_chemical_formula.
+  - Comprehensive chemical formula parser:
+    - Parses simple species (H2O, CO2), polyatomic ions with nested parentheses and brackets (Ca3(PO4)2, [Fe(CN)6]4-), and crystal hydrates (CuSO4.5H2O).
+    - Exact molar masses calculated from authentic standard IUPAC atomic weights.
+  - Linear algebra integer balancing:
+    - Sets up the element conservation matrix  \vec{x} = \vec{0}$ across all participating atomic species.
+    - Computes nullspace using exact rational arithmetic and scales to the minimal positive integer vector via LCM of denominators.
+    - Verified against synthesis, decomposition, displacement, combustion, and complex redox reactions ($\\text{KMnO}_4 + \\text{HCl}$, $\\text{Fe} + \\text{HNO}_3$, $\\text{Cu} + \\text{H}_2\\text{SO}_4$).
+  - Pedagogical derivation and conservation proof:
+    - Step 1: Element census across reactants and products.
+    - Step 2: Conservation matrix formulation.
+    - Step 3: Minimal integer stoichiometric coefficients.
+    - Step 4: Law of Conservation of Mass proof ($\\sum M_{\\text{reactants}} = \\sum M_{\\text{products}}$).
+  - Stoichiometric calculator:
+    - Given any reactant or product quantity (mass in grams, moles, or STP gas liters), computes complete molar and mass transformations and theoretical yields.
+- **Interactive Chemical Reaction Card (src/ui/chemical_reaction_card.py)**:
+  - Implemented ChemicalReactionCardItem(QGraphicsObject):
+    - Dark glassmorphic design (#0f172a), amber chemistry badge (#f59e0b), prominent balanced equation with colored coefficients.
+    - Mass conservation verification bar (✓ Bảo toàn khối lượng tuyệt đối: Σ M = ... g/mol).
+    - Expandable derivation steps with element balance breakdown.
+    - Interactive controls: draggable on canvas, toggle collapse/expand, close card.
+    - Full JSON serialization (	o_dict / rom_dict) for .airteach lesson packaging.
+- **Test Suite Verification**:
+  - Dedicated test suite 	ests/test_chemical_equation_balancer.py (14 unit tests, all passed in 2.31s).
+  - Total test suites raised from 134 to **135 test suites**.
+  - Total passing tests raised from 1,598 to **1,612 passed tests (100% pass rate across 135 test suites)**.
+
+---
+
 ## 3. MASTER VERIFICATION METRICS (FINAL ZERO-FAILURE AUDIT)
-- **Total Automated Test Suites**: **112 Test Suites**
-- **Total Passing Tests**: **1,598 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
+- **Total Automated Test Suites**: **135 Test Suites**
+- **Total Passing Tests**: **1,612 Automated Tests (100% PASSED, 0 FAILURES, 0 REGRESSIONS)**
 - **System Self-Check (`main.py --check`)**: **100% PASSED**
   - ONNX models (`face_detection_yunet`, `face_recognition_sface`, `hand_landmarker.task`) verified with SHA-256 integrity.
   - SQLite profile store and facial recognition pipeline verified.
