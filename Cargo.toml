@@ -1,0 +1,67 @@
+[package]
+name = "airteach_ai"
+version = "2.0.0"
+edition = "2021"
+authors = ["AirTeach AI Engineering Team"]
+description = "AirTeach AI — Production-Grade Touchless Dual-Hand Smartboard, Audio Recorder & Multimodal Gemini Co-Pilot"
+build = "build.rs"
+
+[[bin]]
+name = "airteach_ai"
+path = "src/main.rs"
+
+[dependencies]
+# GUI & Hardware-Accelerated Rendering (wgpu: DirectX 12 / Vulkan)
+eframe = { version = "0.29", default-features = false, features = ["wgpu", "default_fonts"] }
+egui = "0.29"
+egui_extras = { version = "0.29", features = ["all_loaders"] }
+
+# Real Camera Capture (MediaFoundation backend for Windows)
+nokhwa = { version = "0.10", default-features = false, features = ["input-msmf"] }
+
+# Real Microphone Audio Capture & WAV Encoding
+cpal = "0.15"
+hound = "3.5"
+
+# Local ONNX Runtime Inference (DirectML / CPU execution providers)
+ort = { version = "2.0.0-rc.9", default-features = false, features = ["load-dynamic", "ndarray", "directml"] }
+ndarray = "0.16"
+
+# Image Processing, PNG Encoding & Camera Sharpness
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp"] }
+fast_image_resize = { version = "4.2", features = ["image"] }
+
+# Async Runtime & Streaming HTTP Client (Google Gemini API + ONNX Model Downloader)
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "native-tls"] }
+futures-util = "0.3"
+
+# Local Security & Encrypted Storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+
+# Document Rendering (PDF Slide Viewing)
+pdfium-render = { version = "0.8", features = ["thread_safe", "image_025"] }
+
+# High-Performance Lock-Free Concurrency & Utilities
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rfd = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

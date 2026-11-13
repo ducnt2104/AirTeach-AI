@@ -1,0 +1,9 @@
+[target.x86_64-pc-windows-gnu]
+linker = "C:\\Program Files\\CodeBlocks\\MinGW\\bin\\gcc.exe"
+ar = "C:\\Program Files\\CodeBlocks\\MinGW\\bin\\ar.exe"
+rustflags = [
+    "-C", "link-arg=-static-libgcc",
+    "-C", "link-arg=-Wl,-Bstatic",
+    "-C", "link-arg=-lpthread",
+    "-C", "link-arg=-Wl,-Bdynamic",
+]

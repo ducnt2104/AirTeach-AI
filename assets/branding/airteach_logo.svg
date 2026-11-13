@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="airteachLogoTitle">
+  <title id="airteachLogoTitle">AirTeach AI Logo — DNT - Victer</title>
+  <defs>
+    <linearGradient id="boardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="55%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#312E81"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#06B6D4"/>
+      <stop offset="55%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#6366F1"/>
+    </linearGradient>
+    <linearGradient id="handGrad" x1="20%" y1="100%" x2="80%" y2="0%">
+      <stop offset="0%" stop-color="#0891B2"/>
+      <stop offset="65%" stop-color="#22D3EE"/>
+      <stop offset="100%" stop-color="#F8FAFC"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Smartboard rounded square badge -->
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#boardGrad)" stroke="url(#accentGrad)" stroke-width="3.5"/>
+
+  <!-- Subtle interactive board grid frame inside -->
+  <rect x="20" y="20" width="88" height="60" rx="10" fill="none" stroke="#334155" stroke-width="1.8" stroke-dasharray="4 4" opacity="0.8"/>
+
+  <!-- Touchless optical tracking waves radiating from index fingertip -->
+  <path d="M 64 26 A 16 16 0 0 1 80 42" fill="none" stroke="#06B6D4" stroke-width="3" stroke-linecap="round" opacity="0.95"/>
+  <path d="M 48 42 A 16 16 0 0 1 64 26" fill="none" stroke="#38BDF8" stroke-width="3" stroke-linecap="round" opacity="0.95"/>
+  <path d="M 64 17 A 25 25 0 0 1 89 42" fill="none" stroke="#6366F1" stroke-width="2.5" stroke-linecap="round" opacity="0.75"/>
+  <path d="M 39 42 A 25 25 0 0 1 64 17" fill="none" stroke="#818CF8" stroke-width="2.5" stroke-linecap="round" opacity="0.75"/>
+
+  <!-- Stylized Touchless Gesture Hand (wrist + palm + raised index finger) -->
+  <path d="M 48 106 L 48 76 C 48 71 52 67 56 67 L 56 44 C 56 39 60 36 64 36 C 68 36 72 39 72 44 L 72 62 C 77 62 81 66 81 71 L 81 74 C 85 74 88 78 88 83 L 88 94 C 88 102 80 108 71 108 L 54 108 C 50 108 48 107 48 106 Z" fill="url(#handGrad)"/>
+
+  <!-- Tactile thumb fold -->
+  <path d="M 48 87 C 41 85 37 78 40 72 C 42 68 47 68 51 73 L 56 80" fill="none" stroke="#E0F2FE" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Finger focal optical tip & AI constellation spark -->
+  <circle cx="64" cy="42" r="5" fill="#FDE047"/>
+  <path d="M 94 26 L 96 31 L 101 33 L 96 35 L 94 40 L 92 35 L 87 33 L 92 31 Z" fill="#FDE047"/>
+</svg>

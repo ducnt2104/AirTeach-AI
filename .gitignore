@@ -1,0 +1,40 @@
+# Rust build outputs & native Windows binaries
+/target/
+*.exe
+*.dll
+*.pdb
+*.lib
+**/*.rs.bk
+
+# Downloaded runtime AI weights (compile-time placeholders in assets/models/ remain tracked)
+/models/
+
+# Local user databases, sessions, face vectors, recordings & temp slides
+/data/
+/recordings/
+/temp_slides/
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.wav
+*.npy
+*.env
+.env.*
+secrets/
+
+# Python caches & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# OS & IDE noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
