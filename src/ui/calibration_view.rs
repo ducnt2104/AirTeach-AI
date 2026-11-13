@@ -344,10 +344,10 @@ pub fn render_calibration_modal(app: &mut AirTeachApp, ctx: &egui::Context) {
                         });
 
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Ngưỡng SFace 128-D:").small().color(palette.text_secondary));
+                            ui.label(RichText::new("Ngưỡng ArcFace / SFace:").small().color(palette.text_secondary));
                             if ui
                                 .add(
-                                    egui::Slider::new(&mut app.config.sface_match_threshold, 0.50..=0.58)
+                                    egui::Slider::new(&mut app.config.sface_match_threshold, 0.42..=0.68)
                                         .step_by(0.01),
                                 )
                                 .changed()

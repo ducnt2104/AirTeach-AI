@@ -54,7 +54,7 @@ AirTeach AI uses a high-contrast dark studio palette optimized for classroom pro
 4. **Right Gemini AI Dock (`Fixed Width: 330px`, Collapsible)**:
    - Compact API Key row (auto-collapses into `[Đổi API Key]` once saved).
    - 3 Pedagogical Action Buttons: `[1. Giải & Chữa Bài Trên Bảng]`, `[2. Tóm Tắt & Tạo Trắc Nghiệm]`, `[3. Hỏi Đáp Sư Phạm]`.
-   - Clean scrollable AI response area (`gemini-2.5-flash`).
+   - Clean scrollable AI response area (`gemini-3.5-flash` with Structured JSON Output + SQLite cache + offline fallback).
 5. **Bottom Drawing Dock (`Height: 54px`, Background `#0F172A`)**:
    - `[Phân Tích Vùng]` | `[Bút vẽ]` | `[Tẩy]` | `[Laser]` | `[Nắn hình: TẮT/BẬT]` | 6 circular color buttons (`22x22px`) + thickness slider (`2px - 14px`) | `[Hoàn tác (Undo)]` | `[Làm lại (Redo)]` | `[Xóa Bảng]`.
 
@@ -62,13 +62,13 @@ AirTeach AI uses a high-contrast dark studio palette optimized for classroom pro
 
 ## 4. Component & File Organization
 
-- **Rust Native Portable Executable (`AirTeach-AI.exe`)**:
-  - `src/main.rs` & `src/app.rs`: Application entry point, state machine, and `eframe`/`wgpu` loop.
+- **Rust Native Desktop Shell (`AirTeach-AI.exe`) + Python CV Sidecar (`cv_engine/`)**:
+  - `src/main.rs` & `src/app.rs`: Application entry point, state machine, and `eframe`/`wgpu` 60 FPS loop.
   - `src/ui/auth_view.rs`: Two-Tab Security Gate (`TAB 1: ĐĂNG KÝ TÀI KHOẢN MỚI` -> `TAB 2: ĐĂNG NHẬP`).
   - `src/ui/toolbar_view.rs`: Single `46px` Header Bar and `54px` Bottom Drawing Dock.
   - `src/ui/canvas_view.rs`: `270px` Left Camera Dock + Center Smartboard Canvas.
-  - `src/ui/chat_view.rs`: `330px` Right Gemini 2.5 Flash Pedagogical Assistant Dock.
-  - `src/core/camera.rs`, `src/core/hand_tracker.rs`, `src/core/gestures.rs`: Backlight-resilient camera enhancement (`Gamma 0.6` + `CLAHE`), MediaPipe 21-point hand tracking (`confidence = 0.55`), and finger gesture FSM.
-  - `scripts/mediapipe_hand_worker.py`: Persistent headless MediaPipe co-processor.
+  - `src/ui/chat_view.rs`: `330px` Right Gemini 3.5 Flash Pedagogical Assistant Dock.
+  - `src/core/camera.rs`, `src/core/hand_tracker.rs`, `src/core/gestures.rs`: Backlight-resilient camera enhancement (`mean_luma`/`p5`/`p95` diagnostics + Bilateral Denoise + Adaptive Gamma + CLAHE + USM + Laplacian Quality Gate), MediaPipe 21-point hand tracking (`min_detection_confidence=0.6`, `min_tracking_confidence=0.7`), 3D bone joint-angle gesture classification, One-Euro Filter, and Gesture FSM (`IDLE -> CANDIDATE -> ACTIVE -> GRACE_PERIOD -> IDLE`).
+  - `cv_engine/` (`preprocessing.py`, `hand_gesture.py`, `face_id.py`, `sidecar_worker.py`) & `scripts/mediapipe_hand_worker.py`: Dedicated Python CV sidecar running CIE LAB exposure adaptation, ROI Dynamic Zoom Crop (`384x384` `INTER_CUBIC` when hand `< 8%` frame), 3D vector joint-angle classification, 5-Point `112x112` affine face alignment, and 512-D ArcFace / 128-D SFace multi-template verification.
 - **PySide6 Desktop Implementation (`main.py`)**:
-  - Self-contained PySide6 + OpenCV + MediaPipe + `google-genai` studio implementation mirroring the exact same 4-Module architecture and persistent `data/users_db.json` + `data/face_embeddings/<username>.npy` storage.
+  - Self-contained PySide6 + OpenCV + MediaPipe + `cv_engine` + `google-genai` (`gemini-3.5-flash`) studio implementation using local storage (`data/users_db.json` + `data/face_embeddings/<username>.npy`).

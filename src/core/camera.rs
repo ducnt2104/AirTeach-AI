@@ -102,6 +102,8 @@ impl LightingAdaptationMode {
 pub struct FrameDiagnostics {
     pub lighting_mode: LightingAdaptationMode,
     pub mean_luma: f32,
+    pub p5_luma: f32,
+    pub p95_luma: f32,
     pub underexposed_ratio: f32,
     pub overexposed_ratio: f32,
     pub sharpness_score: f32,
@@ -162,10 +164,11 @@ pub fn enhance_frame_adaptive_with_diagnostics(
         blur_buf.resize(num_pixels, 0);
     }
 
-    // Step 1: Real-time Histogram & Luminance Diagnostics
+    // Step 1: Real-time Histogram & Luminance Diagnostics (mean_luma, p5, p95)
     let mut sum_y = 0u64;
     let mut under_count = 0u64;
     let mut over_count = 0u64;
+    let mut raw_hist = [0u32; 256];
     for i in 0..num_pixels {
         let idx = i * 4;
         let r = rgba[idx] as u32;
@@ -173,6 +176,7 @@ pub fn enhance_frame_adaptive_with_diagnostics(
         let b = rgba[idx + 2] as u32;
         let y = ((77 * r + 150 * g + 29 * b) >> 8) as u8;
         luma_buf[i] = y;
+        raw_hist[y as usize] += 1;
         sum_y += y as u64;
         if y < 50 {
             under_count += 1;
@@ -181,13 +185,31 @@ pub fn enhance_frame_adaptive_with_diagnostics(
         }
     }
 
+    let p5_target = ((num_pixels as u64 * 5) / 100).max(1) as u32;
+    let p95_target = ((num_pixels as u64 * 95) / 100).max(1) as u32;
+    let mut cum = 0u32;
+    let mut p5_luma = 0.0_f32;
+    let mut p95_luma = 255.0_f32;
+    let mut found_p5 = false;
+    for (bin, &cnt) in raw_hist.iter().enumerate() {
+        cum += cnt;
+        if !found_p5 && cum >= p5_target {
+            p5_luma = bin as f32;
+            found_p5 = true;
+        }
+        if cum >= p95_target {
+            p95_luma = bin as f32;
+            break;
+        }
+    }
+
     let mean_luma = sum_y as f32 / num_pixels as f32;
     let underexposed_ratio = under_count as f32 / num_pixels as f32;
     let overexposed_ratio = over_count as f32 / num_pixels as f32;
 
-    let lighting_mode = if mean_luma < 92.0 || underexposed_ratio > 0.35 {
+    let lighting_mode = if mean_luma < 70.0 || mean_luma < 92.0 || underexposed_ratio > 0.35 {
         LightingAdaptationMode::LowLightBoost
-    } else if overexposed_ratio > 0.14 || mean_luma > 175.0 {
+    } else if p95_luma > 235.0 || overexposed_ratio > 0.14 || mean_luma > 175.0 {
         LightingAdaptationMode::GlareSuppression
     } else {
         LightingAdaptationMode::Normal
@@ -198,14 +220,22 @@ pub fn enhance_frame_adaptive_with_diagnostics(
         let mut tone_lut = [0u8; 256];
         match lighting_mode {
             LightingAdaptationMode::LowLightBoost => {
-                let gamma = if mean_luma < 62.0 { 0.60_f32 } else { 0.76_f32 };
+                let gamma = if mean_luma < 70.0 {
+                    (0.52 + 0.36 * (mean_luma / 70.0).clamp(0.0, 1.0)).clamp(0.52, 0.88)
+                } else {
+                    0.78_f32
+                };
                 for (i, slot) in tone_lut.iter_mut().enumerate() {
                     let v = (i as f32 / 255.0).powf(gamma) * 255.0;
                     *slot = v.round().clamp(0.0, 255.0) as u8;
                 }
             }
             LightingAdaptationMode::GlareSuppression => {
-                let gamma = if mean_luma > 198.0 { 1.28_f32 } else { 1.15_f32 };
+                let gamma = if mean_luma > 198.0 || p95_luma > 235.0 {
+                    1.28_f32
+                } else {
+                    1.15_f32
+                };
                 for (i, slot) in tone_lut.iter_mut().enumerate() {
                     let knee = if i > 195 {
                         195.0 + (i - 195) as f32 * 0.42
@@ -407,6 +437,8 @@ pub fn enhance_frame_adaptive_with_diagnostics(
     FrameDiagnostics {
         lighting_mode,
         mean_luma,
+        p5_luma,
+        p95_luma,
         underexposed_ratio,
         overexposed_ratio,
         sharpness_score,
@@ -1040,8 +1072,13 @@ impl CameraSubsystem {
                 }
             }
 
+            let raw_for_cv = if using_hardware {
+                Some(rgba_work_buf.clone())
+            } else {
+                None
+            };
             let raw_snapshot = if using_hardware && calibration_preview {
-                Some(Arc::new(rgba_work_buf.clone()))
+                raw_for_cv.as_ref().map(|buf| Arc::new(buf.clone()))
             } else {
                 None
             };
@@ -1077,9 +1114,10 @@ impl CameraSubsystem {
                 };
 
             // Async CV frame-skipping dispatch: NEVER block the camera loop on MediaPipe inference!
+            // Pass un-enhanced raw camera frame to Python sidecar (`cv_engine`) so LAB preprocessing runs cleanly once.
             if using_hardware && cv_gate.try_begin() {
                 let job = CvAsyncJob {
-                    rgba_bytes: rgba_work_buf.clone(),
+                    rgba_bytes: raw_for_cv.unwrap_or_else(|| rgba_work_buf.clone()),
                     width: out_w,
                     height: out_h,
                     face_bbox_norm: skin_face_bbox,

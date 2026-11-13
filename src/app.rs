@@ -837,8 +837,23 @@ impl AirTeachApp {
             );
             if let Some(bbox) = pkt.face_bbox_norm {
                 if pkt.quality_gate_passed {
-                    // Prefer 128-D aligned SFace embedding (`models/mobilefacenet.onnx`); fallback to 512-D
-                    if let Some(sface) = pkt.two_hand_frame.detected_face_emb {
+                    // Prefer 512-D 5-Point Affine-Aligned ArcFace embedding (`cv_engine`) or 128-D SFace embedding
+                    let enrolled_is_128d = self
+                        .enrolled_face_templates
+                        .first()
+                        .map(|t| t.len() == SFACE_EMBEDDING_DIM)
+                        .unwrap_or(false);
+                    if enrolled_is_128d {
+                        if let Some(sface) = pkt.two_hand_frame.detected_face_emb {
+                            self.last_live_face_vec = sface.0.to_vec();
+                        } else if let Some(arc512) = pkt.two_hand_frame.detected_face_emb_512 {
+                            self.last_live_face_embedding = arc512.0;
+                            self.last_live_face_vec = arc512.0.to_vec();
+                        }
+                    } else if let Some(arc512) = pkt.two_hand_frame.detected_face_emb_512 {
+                        self.last_live_face_embedding = arc512.0;
+                        self.last_live_face_vec = arc512.0.to_vec();
+                    } else if let Some(sface) = pkt.two_hand_frame.detected_face_emb {
                         self.last_live_face_vec = sface.0.to_vec();
                     } else {
                         self.last_live_face_embedding =
@@ -857,12 +872,10 @@ impl AirTeachApp {
                         && self.signin_face_mode
                         && !self.registered_users.is_empty()
                     {
-                        let active_thresh = if self.last_live_face_vec.len() == SFACE_EMBEDDING_DIM
-                            || self
-                                .enrolled_face_templates
-                                .first()
-                                .map(|t| t.len() == SFACE_EMBEDDING_DIM)
-                                .unwrap_or(false)
+                        let active_thresh = if pkt.two_hand_frame.detected_face_emb_512.is_some()
+                            || pkt.two_hand_frame.detected_face_emb.is_some()
+                            || self.last_live_face_vec.len() == SFACE_EMBEDDING_DIM
+                            || enrolled_is_128d
                         {
                             self.config.sface_match_threshold
                         } else {

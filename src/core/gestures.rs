@@ -101,9 +101,68 @@ pub fn compute_palm_scale(lm: &[Landmark3D; 21]) -> f32 {
     lm[WRIST].dist_3d(lm[MIDDLE_MCP]).max(1e-4)
 }
 
+/// Palm-normalized Pinch Ratio `dist(LM 4, LM 8) / dist(LM 0, LM 9)`.
+#[inline]
+pub fn compute_pinch_ratio(lm: &[Landmark3D; 21]) -> f32 {
+    lm[THUMB_TIP].dist_3d(lm[INDEX_TIP]) / compute_palm_scale(lm)
+}
+
+#[inline]
+pub fn bone_vec_3d(from: Landmark3D, to: Landmark3D) -> [f32; 3] {
+    [to.x - from.x, to.y - from.y, to.z - from.z]
+}
+
+#[inline]
+pub fn vec3_norm(v: [f32; 3]) -> f32 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-6)
+}
+
+#[inline]
+pub fn vec3_dot(u: [f32; 3], v: [f32; 3]) -> f32 {
+    u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
+}
+
+#[inline]
+pub fn vec3_cross(u: [f32; 3], v: [f32; 3]) -> [f32; 3] {
+    [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ]
+}
+
+/// 3D inter-bone joint angle in degrees: `arccos(dot(u, v) / (|u| * |v|)).to_degrees()`.
+/// `0 deg` = straight bone chain; `> 55 deg` = flexed/curled joint.
+#[inline]
+pub fn joint_angle_3d_deg(u: [f32; 3], v: [f32; 3]) -> f32 {
+    let cos_theta = (vec3_dot(u, v) / (vec3_norm(u) * vec3_norm(v))).clamp(-1.0, 1.0);
+    cos_theta.acos().to_degrees()
+}
+
+/// Return `(pip_angle_deg, dip_angle_deg, overall_angle_deg)` for a 4-joint finger chain
+/// (`MCP -> PIP -> DIP -> TIP`) using 3D `arccos(dot(u, v) / (|u||v|))`.
+#[inline]
+pub fn finger_joint_angles_deg(
+    lm: &[Landmark3D; 21],
+    mcp_idx: usize,
+    pip_idx: usize,
+    dip_idx: usize,
+    tip_idx: usize,
+) -> (f32, f32, f32) {
+    let u1 = bone_vec_3d(lm[mcp_idx], lm[pip_idx]);
+    let u2 = bone_vec_3d(lm[pip_idx], lm[dip_idx]);
+    let u3 = bone_vec_3d(lm[dip_idx], lm[tip_idx]);
+    let u_overall = bone_vec_3d(lm[pip_idx], lm[tip_idx]);
+    (
+        joint_angle_3d_deg(u1, u2),
+        joint_angle_3d_deg(u2, u3),
+        joint_angle_3d_deg(u1, u_overall),
+    )
+}
+
 /// 3D Z-aware, scale- & rotation-invariant finger extension metric combining:
+/// - 3D inter-bone flexion angles `arccos(dot(u, v) / (|u||v|))` across `MCP-PIP-DIP-TIP`
 /// - 3D wrist radial ratio (`dist_3d(WRIST, TIP) / dist_3d(WRIST, PIP)`)
-/// - 3D multi-bone dot-product joint angles (`MCP->PIP · PIP->DIP · DIP->TIP`)
 /// - Palm-scaled 3D forward reach with asymmetric hysteresis (`was_extended`).
 #[inline]
 pub fn is_finger_extended_hysteresis(
@@ -115,81 +174,65 @@ pub fn is_finger_extended_hysteresis(
     was_extended: bool,
 ) -> bool {
     let wrist = lm[WRIST];
-    let mcp = lm[mcp_idx];
-    let pip = lm[pip_idx];
     let dip_idx = (tip_idx.saturating_sub(1)).max(pip_idx);
-    let dip = lm[dip_idx];
-    let tip = lm[tip_idx];
-
-    let r_pip = wrist.dist_3d(pip) / palm_scale;
-    let r_tip = wrist.dist_3d(tip) / palm_scale;
+    let r_pip = wrist.dist_3d(lm[pip_idx]) / palm_scale;
+    let r_tip = wrist.dist_3d(lm[tip_idx]) / palm_scale;
     let radial_ratio = r_tip / r_pip.max(0.15);
 
-    // Full 3D direction vectors for MCP->PIP, PIP->DIP, and DIP->TIP bone segments
-    let v1x = pip.x - mcp.x;
-    let v1y = pip.y - mcp.y;
-    let v1z = pip.z - mcp.z;
-    let len1 = (v1x * v1x + v1y * v1y + v1z * v1z).sqrt().max(1e-5);
-
-    let v2x = dip.x - pip.x;
-    let v2y = dip.y - pip.y;
-    let v2z = dip.z - pip.z;
-    let len2 = (v2x * v2x + v2y * v2y + v2z * v2z).sqrt().max(1e-5);
-
-    let v3x = tip.x - dip.x;
-    let v3y = tip.y - dip.y;
-    let v3z = tip.z - dip.z;
-    let len3 = (v3x * v3x + v3y * v3y + v3z * v3z).sqrt().max(1e-5);
-
-    let ox = tip.x - pip.x;
-    let oy = tip.y - pip.y;
-    let oz = tip.z - pip.z;
-    let len_overall = (ox * ox + oy * oy + oz * oz).sqrt().max(1e-5);
-
-    let cos_pip = (v1x * v2x + v1y * v2y + v1z * v2z) / (len1 * len2);
-    let cos_dip = (v2x * v3x + v2y * v3y + v2z * v3z) / (len2 * len3);
-    let cos_overall = (v1x * ox + v1y * oy + v1z * oz) / (len1 * len_overall);
-    let cos_min_chain = cos_pip.min(cos_dip).max(cos_overall * 0.9);
-    let forward_reach = wrist.dist_3d(tip) / palm_scale;
+    let (pip_deg, dip_deg, overall_deg) =
+        finger_joint_angles_deg(lm, mcp_idx, pip_idx, dip_idx, tip_idx);
+    let max_chain_deg = pip_deg.max(dip_deg).min(overall_deg * 1.15);
+    let forward_reach = r_tip;
 
     if was_extended {
         // Hysteresis hold band: tolerates slight natural jitter & 3D tilt without flickering out
-        radial_ratio > 1.05 && cos_min_chain > 0.22 && cos_overall > 0.28 && forward_reach > 1.05
+        radial_ratio > 1.05 && max_chain_deg < 77.0 && overall_deg < 73.5 && forward_reach > 1.05
     } else {
         // Strict enter band: clearly straightened along full 3D bone chain & pointing outward
-        radial_ratio > 1.15 && cos_min_chain > 0.45 && cos_overall > 0.50 && forward_reach > 1.24
+        radial_ratio > 1.15 && max_chain_deg < 63.5 && overall_deg < 60.0 && forward_reach > 1.24
     }
 }
 
-/// 3D rotation- and scale-invariant thumb extension metric using CMC->MCP->IP->TIP dot product & spread.
+/// Compute 3D thumb abduction angle relative to the palm plane (`cross(LM5 - LM0, LM17 - LM0)`),
+/// inter-bone IP flexion angle (`arccos(dot(u, v) / (|u||v|))`), and palm-normalized spread.
+#[inline]
+pub fn thumb_palm_plane_abduction_deg(
+    lm: &[Landmark3D; 21],
+    palm_scale: f32,
+) -> (f32, f32, f32) {
+    let v_index = bone_vec_3d(lm[WRIST], lm[INDEX_MCP]);
+    let v_pinky = bone_vec_3d(lm[WRIST], lm[PINKY_MCP]);
+    let palm_normal = vec3_cross(v_index, v_pinky);
+    let v_thumb = bone_vec_3d(lm[THUMB_MCP], lm[THUMB_TIP]);
+
+    let in_plane_abduction_deg = joint_angle_3d_deg(v_thumb, v_index);
+    let sin_elev = (vec3_dot(v_thumb, palm_normal).abs()
+        / (vec3_norm(v_thumb) * vec3_norm(palm_normal)))
+    .clamp(0.0, 1.0);
+    let palm_plane_elev_deg = sin_elev.asin().to_degrees();
+    let abduction_deg = in_plane_abduction_deg.max(palm_plane_elev_deg);
+
+    let u_cmc_mcp = bone_vec_3d(lm[THUMB_CMC], lm[THUMB_MCP]);
+    let u_ip_tip = bone_vec_3d(lm[THUMB_IP], lm[THUMB_TIP]);
+    let ip_flexion_deg = joint_angle_3d_deg(u_cmc_mcp, u_ip_tip);
+    let spread_index = lm[THUMB_TIP].dist_3d(lm[INDEX_MCP]) / palm_scale;
+    (abduction_deg, ip_flexion_deg, spread_index)
+}
+
+/// 3D rotation- and scale-invariant thumb extension metric using palm-plane abduction & joint angle.
 #[inline]
 pub fn is_thumb_extended_hysteresis(
     lm: &[Landmark3D; 21],
     palm_scale: f32,
     was_extended: bool,
 ) -> bool {
-    let cmc = lm[THUMB_CMC];
-    let mcp = lm[THUMB_MCP];
-    let ip = lm[THUMB_IP];
-    let tip = lm[THUMB_TIP];
-
-    let v1x = mcp.x - cmc.x;
-    let v1y = mcp.y - cmc.y;
-    let v1z = mcp.z - cmc.z;
-    let len1 = (v1x * v1x + v1y * v1y + v1z * v1z).sqrt().max(1e-5);
-
-    let v2x = tip.x - ip.x;
-    let v2y = tip.y - ip.y;
-    let v2z = tip.z - ip.z;
-    let len2 = (v2x * v2x + v2y * v2y + v2z * v2z).sqrt().max(1e-5);
-
-    let cos_thumb = (v1x * v2x + v1y * v2y + v1z * v2z) / (len1 * len2);
-    let spread_index = tip.dist_3d(lm[INDEX_MCP]) / palm_scale;
+    let (abduction_deg, ip_flexion_deg, spread_index) =
+        thumb_palm_plane_abduction_deg(lm, palm_scale);
 
     if was_extended {
-        cos_thumb > 0.30 && spread_index > 0.36
+        ip_flexion_deg < 72.5 && spread_index > 0.36 && abduction_deg > 12.0
     } else {
-        cos_thumb > 0.48 && spread_index > 0.46
+        ip_flexion_deg < 61.5 && spread_index > 0.46 && abduction_deg > 16.0
     }
 }
 
@@ -879,5 +922,45 @@ mod tests {
             RightGesture::DrawStroke,
             "3D Z-aware dot products must classify Draw pose even when pitched 45 deg in depth"
         );
+    }
+
+    #[test]
+    fn test_180_deg_inverted_hand_and_pinch_ratio_3d_vectors() {
+        let mut inverted = HandLandmarks::from_pose_preset(
+            Handedness::Right,
+            0.5,
+            0.5,
+            1.0,
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
+        // Invert hand 180 degrees upside-down (where naive Y-coordinate checks fail)
+        for lm in &mut inverted.landmarks {
+            lm.x = 1.0 - lm.x;
+            lm.y = 1.0 - lm.y;
+        }
+        assert_eq!(
+            classify_right_hand_raw(&inverted).0,
+            RightGesture::DrawStroke,
+            "180-deg inverted hand must still classify as DrawStroke via 3D arccos joint angles"
+        );
+
+        let open_hand = HandLandmarks::from_pose_preset(
+            Handedness::Right,
+            0.5,
+            0.5,
+            1.0,
+            false,
+            true,
+            true,
+            true,
+            true,
+        );
+        let palm_s = compute_palm_scale(&open_hand.landmarks);
+        assert!(is_thumb_extended_hysteresis(&open_hand.landmarks, palm_s, false));
+        assert!(compute_pinch_ratio(&open_hand.landmarks) > 0.45);
     }
 }

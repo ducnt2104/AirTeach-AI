@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AIRTEACH AI — CLEAN STUDIO DESKTOP APPLICATION (PySide6 + OpenCV + MediaPipe + Gemini 2.5 Flash)
+AIRTEACH AI — CLEAN STUDIO DESKTOP APPLICATION (PySide6 + OpenCV + MediaPipe + Gemini 3.5 Flash)
 Implements the 4 Master Re-Architecture Modules:
 - MODULE 1: Strict Sign-Up First -> Sign-In After Lifecycle (`data/users_db.json` + `data/face_embeddings/<username>.npy`,
-            3-sample 128x128 Histogram-Equalized L2 Face Embedding, Cosine >= 0.82 + Liveness diff, SHA-256 PIN).
+            5-sample 5-point aligned 112x112 L2 Face Embedding, Multi-Template Cosine + Liveness diff, Argon2id/SHA-256 PIN).
 - MODULE 2: Minimalist Clean Studio UI (Single 46px Header Bar with flexible stretch, 270px Left Dock with 250x188 4:3 Camera
             + 4 compact gesture badges + Mic VU Meter, Clean Smartboard Canvas with `[Ẩn nội dung Slide để lấy bảng trống 100%]`,
             and 330px Collapsible Right Gemini AI Panel).
-- MODULE 3: Backlight-Resilient Hand Tracking (Auto Gamma 0.6 LUT + LAB CLAHE clipLimit=2.5, MediaPipe confidence=0.55,
-            Neon Cyan `#00F5D4` + Bright Yellow `#FEE440` 21-point skeleton, and `tip.y < pip.y - 0.015` gesture rules).
+- MODULE 3: Backlight-Resilient Hand Tracking (Adaptive LAB Gamma + Bilateral + LAB CLAHE + USM, MediaPipe Full confidence=0.60/0.70,
+            Neon Cyan `#00F5D4` + Bright Yellow `#FEE440` 21-point skeleton, and 3D vector joint-angle `arccos(dot(u,v)/(|u||v|))` gesture rules).
 - MODULE 4: Zero Fake OCR Labels + Real Cropped PNG Region Analysis
-            via `gemini-2.5-flash` in the Right AI Panel.
+            via `gemini-3.5-flash` in the Right AI Panel.
 """
 
 import os
@@ -86,6 +86,13 @@ try:
     HAS_GENAI_SDK = True
 except Exception:
     HAS_GENAI_SDK = False
+
+try:
+    from cv_engine.hand_gesture import classify_hand_3d_vectors
+    from cv_engine.preprocessing import preprocess_adaptive_frame
+    HAS_CV_ENGINE = True
+except Exception:
+    HAS_CV_ENGINE = False
 
 
 # =============================================================================
@@ -220,16 +227,19 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 # =============================================================================
 def enhance_backlit_frame(bgr_frame: np.ndarray) -> np.ndarray:
     """
-    MODULE 3.1: Automatic Backlight & Shadow Recovery:
-    1. Apply Gamma Correction (gamma = 0.6 LUT) to lift dark foreground hands in backlit rooms.
-    2. Apply LAB L-channel CLAHE (clipLimit=2.5, tileGridSize=(8,8)) to sharpen finger edges.
+    MODULE 3.1: Automatic Multi-Condition Exposure & Sharpening Recovery (`cv_engine.preprocessing`):
+    1. LAB L-channel diagnostics (`mean_luma`, `p5`, `p95`).
+    2. Low-light Bilateral Filter (`d=5, sigmaColor=40, sigmaSpace=40`) + dynamic Gamma (`< 1.0`).
+    3. Glare Highlight Roll-off (`p95 > 235`) + LAB L-channel CLAHE (`tileGridSize=(8,8)`).
+    4. Controlled Unsharp Masking (`1.45 * img - 0.45 * gaussian_blur`).
     """
-    gamma = 0.6
-    inv_gamma = 1.0 / gamma
+    if HAS_CV_ENGINE:
+        enhanced, _ = preprocess_adaptive_frame(bgr_frame, is_rgb=False, quality_gate_min=38.0)
+        return enhanced
+    gamma = 0.65
     table = np.array(
         [((i / 255.0) ** gamma) * 255 for i in np.arange(0, 256)]
     ).astype("uint8")
-    _ = inv_gamma
     brightened = cv2.LUT(bgr_frame, table)
 
     lab = cv2.cvtColor(brightened, cv2.COLOR_BGR2LAB)
@@ -275,9 +285,6 @@ class CameraHandWorker(QThread):
         solutions_hands = None
         tasks_hand_detector = None
         tasks_face_detector = None
-        haar_face = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
 
         if HAS_MEDIAPIPE:
             if hasattr(mp, "solutions") and hasattr(mp.solutions, "hands"):
@@ -286,8 +293,8 @@ class CameraHandWorker(QThread):
                         static_image_mode=False,
                         max_num_hands=2,
                         model_complexity=1,
-                        min_detection_confidence=0.55,
-                        min_tracking_confidence=0.55,
+                        min_detection_confidence=0.60,
+                        min_tracking_confidence=0.70,
                     )
                 except Exception:
                     solutions_hands = None
@@ -300,9 +307,9 @@ class CameraHandWorker(QThread):
                             base_options=mp_python.BaseOptions(model_asset_path=str(hand_model)),
                             running_mode=mp_vision.RunningMode.IMAGE,
                             num_hands=2,
-                            min_hand_detection_confidence=0.55,
-                            min_hand_presence_confidence=0.55,
-                            min_tracking_confidence=0.55,
+                            min_hand_detection_confidence=0.60,
+                            min_hand_presence_confidence=0.60,
+                            min_tracking_confidence=0.70,
                         )
                         tasks_hand_detector = mp_vision.HandLandmarker.create_from_options(opts)
                     except Exception:
@@ -390,14 +397,8 @@ class CameraHandWorker(QThread):
                         fw = min(1.0 - fx, float(bb.width) / w)
                         fh = min(1.0 - fy, float(bb.height) / h)
                         face_bbox = (fx, fy, fw, fh)
-                except Exception:
-                    pass
-
-            if face_bbox is None and not haar_face.empty():
-                faces = haar_face.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=5, minSize=(60, 60))
-                if len(faces) > 0:
-                    x, y, fw_px, fh_px = faces[0]
-                    face_bbox = (x / w, y / h, fw_px / w, fh_px / h)
+                except Exception as exc:
+                    _ = exc
 
             # Hand detection (MODULE 3.2, 3.3 & 3.4)
             hand_landmarks_list: List[List[Tuple[float, float, float]]] = []
@@ -409,8 +410,8 @@ class CameraHandWorker(QThread):
                             pts = [(float(p.x), float(p.y), float(p.z)) for p in lms.landmark]
                             if self._is_valid_hand(pts, face_bbox):
                                 hand_landmarks_list.append(pts)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _ = exc
             elif tasks_hand_detector is not None:
                 try:
                     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
@@ -420,8 +421,8 @@ class CameraHandWorker(QThread):
                             pts = [(float(p.x), float(p.y), float(p.z)) for p in lms]
                             if self._is_valid_hand(pts, face_bbox):
                                 hand_landmarks_list.append(pts)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _ = exc
 
             display_bgr = bgr.copy()
             gesture = "IDLE"
@@ -469,7 +470,7 @@ class CameraHandWorker(QThread):
     ) -> bool:
         """
         MODULE 3.2:
-        - Hand bounding_box_area > 0.015 (1.5% of frame area)
+        - Hand bounding_box_area > 0.008
         - Palm center (Landmark 9) does not coincide with the detected Face Center
         """
         if len(pts) < 21:
@@ -477,7 +478,7 @@ class CameraHandWorker(QThread):
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
         area = (max(xs) - min(xs)) * (max(ys) - min(ys))
-        if area <= 0.015:
+        if area <= 0.008:
             return False
         if face_bbox is not None:
             fx, fy, fw, fh = face_bbox
@@ -493,17 +494,29 @@ class CameraHandWorker(QThread):
         pts: List[Tuple[float, float, float]]
     ) -> Tuple[str, Tuple[float, float]]:
         """
-        MODULE 3.4: Intuitive Finger Gesture Logic:
-        - Finger i (Index 8/6, Middle 12/10, Ring 16/14, Pinky 20/18) is Up if:
-          landmark[TIP_ID].y < landmark[PIP_ID].y - 0.015
-        - 1 finger up (Index=Up, Middle=Down, Ring=Down) -> DRAW at Index tip (LM 8)
-        - 2 fingers up (Index=Up, Middle=Up, Ring=Down) -> HOVER
-        - All 4 fingers up (Index=Up, Middle=Up, Ring=Up, Pinky=Up) -> ERASE at palm center (LM 9)
+        MODULE 3.4: 3D Vector Joint-Angle & Palm-Normalized Gesture Classification (`cv_engine.hand_gesture`):
+        - Uses 3D bone joint flexion angles `arccos(dot(u, v) / (|u| * |v|))` across MCP-PIP-DIP-TIP
+          and palm-normalized Pinch Ratio `dist(4, 8) / dist(0, 9)`.
         """
-        idx_up = pts[8][1] < pts[6][1] - 0.015
-        mid_up = pts[12][1] < pts[10][1] - 0.015
-        ring_up = pts[16][1] < pts[14][1] - 0.015
-        pinky_up = pts[20][1] < pts[18][1] - 0.015
+        if HAS_CV_ENGINE:
+            res = classify_hand_3d_vectors(pts)
+            return (str(res["gesture"]), tuple(res["cursor_norm"]))  # type: ignore[return-value]
+
+        palm = max(1e-4, math.dist(pts[0], pts[9]))
+
+        def is_ext(mcp: int, pip: int, dip: int, tip: int) -> bool:
+            u1 = (pts[pip][0] - pts[mcp][0], pts[pip][1] - pts[mcp][1], pts[pip][2] - pts[mcp][2])
+            u2 = (pts[dip][0] - pts[pip][0], pts[dip][1] - pts[pip][1], pts[dip][2] - pts[pip][2])
+            n1 = max(1e-6, math.sqrt(u1[0] ** 2 + u1[1] ** 2 + u1[2] ** 2))
+            n2 = max(1e-6, math.sqrt(u2[0] ** 2 + u2[1] ** 2 + u2[2] ** 2))
+            cos_a = max(-1.0, min(1.0, (u1[0] * u2[0] + u1[1] * u2[1] + u1[2] * u2[2]) / (n1 * n2)))
+            ang = math.degrees(math.acos(cos_a))
+            return ang < 42.0 and (math.dist(pts[0], pts[tip]) / palm) > 1.20
+
+        idx_up = is_ext(5, 6, 7, 8)
+        mid_up = is_ext(9, 10, 11, 12)
+        ring_up = is_ext(13, 14, 15, 16)
+        pinky_up = is_ext(17, 18, 19, 20)
 
         def map_box(x: float, y: float) -> Tuple[float, float]:
             margin = 0.12
@@ -520,15 +533,15 @@ class CameraHandWorker(QThread):
         if idx_up and not mid_up and not ring_up:
             return ("DRAW", map_box(pts[8][0], pts[8][1]))
 
-        pinch_dist = math.hypot(pts[4][0] - pts[8][0], pts[4][1] - pts[8][1])
-        if pinch_dist < 0.045:
+        pinch_ratio = math.dist(pts[4], pts[8]) / palm
+        if pinch_ratio < 0.28:
             return ("CLICK", map_box(pts[8][0], pts[8][1]))
 
         return ("HOVER", map_box(pts[8][0], pts[8][1]))
 
 
 # =============================================================================
-# GEMINI 2.5 FLASH ASYNC WORKER (MODULE 4)
+# GEMINI 3.5 FLASH ASYNC WORKER (MODULE 4)
 # =============================================================================
 class GeminiVisionWorker(QThread):
     finished_text = Signal(str)
@@ -542,7 +555,7 @@ class GeminiVisionWorker(QThread):
     def run(self) -> None:
         if not self.api_key:
             self.finished_text.emit(
-                "Chưa cấu hình GEMINI_API_KEY. Vui lòng nhập API Key vào ô phía trên của khung Trợ Lý Sư Phạm AI để phân tích ảnh vùng chọn bằng mô hình gemini-2.5-flash."
+                "Chưa cấu hình GEMINI_API_KEY. Vui lòng nhập API Key vào ô phía trên của khung Trợ Lý Sư Phạm AI để phân tích ảnh vùng chọn bằng mô hình gemini-3.5-flash."
             )
             return
         if not HAS_GENAI_SDK:
@@ -557,10 +570,18 @@ class GeminiVisionWorker(QThread):
                 contents.append(
                     genai_types.Part.from_bytes(data=self.png_bytes, mime_type="image/png")
                 )
-            resp = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=contents,
-            )
+            resp = None
+            for model_id in ("gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"):
+                try:
+                    resp = client.models.generate_content(
+                        model=model_id,
+                        contents=contents,
+                    )
+                    break
+                except Exception as model_exc:
+                    last_exc = model_exc
+            if resp is None:
+                raise RuntimeError(str(last_exc))
             text = getattr(resp, "text", None) or "Không nhận được phản hồi văn bản từ Gemini."
             self.finished_text.emit(text)
         except Exception as exc:
@@ -780,8 +801,8 @@ class AuthGateWidget(QWidget):
                     )
                     if sim >= 0.82 and self.last_liveness_diff >= 0.04:
                         self.authenticated.emit(user)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _ = exc
 
     def _on_capture_signup_face(self) -> None:
         if self.last_raw_bgr is None or self.last_face_bbox is None:
@@ -1734,7 +1755,7 @@ class AirTeachMainWindow(QMainWindow):
         self.crop_preview_lbl.setPixmap(
             cropped_pm.scaled(300, 86, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )
-        self.ai_output.setPlainText("Đang phân tích nét vẽ trên bảng với Gemini 2.5 Flash...")
+        self.ai_output.setPlainText("Đang phân tích nét vẽ trên bảng với Gemini 3.5 Flash...")
         self._start_gemini_worker(prompt, png_bytes)
 
     def _start_gemini_worker(self, prompt: str, png_bytes: Optional[bytes]) -> None:
@@ -1747,8 +1768,8 @@ class AirTeachMainWindow(QMainWindow):
             try:
                 self.audio_stream.stop()
                 self.audio_stream.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _ = exc
         self.cam_worker.stop()
         super().closeEvent(event)
 

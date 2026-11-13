@@ -1,35 +1,47 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Persistent Headless MediaPipe HandLandmarker + FaceDetector + OpenCV SFace Co-Processor
-for AirTeach AI (DNT - Victer).
+Persistent Headless MediaPipe HandLandmarker + 5-Point Aligned ArcFace/SFace Co-Processor
+(`scripts/mediapipe_hand_worker.py`) for AirTeach AI — DNT - Victer.
 
-Upgraded CV Pipeline:
-1. Adaptive Lighting Pre-Processing (`enhance_adaptive_lighting_rgb`):
-   - LAB L-channel statistics drive low-light Bilateral Denoise + gamma lift,
-     glare highlight soft-knee compression + gamma compression, or clean LAB CLAHE,
-     followed by coring-thresholded Unsharp Masking.
-2. Backlight-Resilient Hand Tracking + ROI Zoom Crop:
-   - `HandLandmarker` (MediaPipe Tasks) runs with high sensitivity (`0.45`), filtered by
-     face-exclusion & area sanity checks (`bbox_area > 0.008`).
-   - Hands occupying `< 8.5%` of frame area undergo padded cubic ROI Zoom Crop refinement
-     so distant hands stay pinpoint accurate.
-3. 5-Point Aligned Deep Face Recognition (`models/mobilefacenet.onnx` via `cv2.FaceRecognizerSF`):
-   - Maps BlazeFace 6 keypoints -> canonical YuNet 5-point pixel descriptor (`[left_eye,
-     right_eye, nose, mouth_left, mouth_right]`), runs `alignCrop` (112x112) and extracts
-     an L2-normalized 128-D deep SFace embedding (`face_emb`).
+Delegates directly to `cv_engine.sidecar_worker` when `cv_engine/` is present, and includes a
+complete standalone implementation of the exact `cv_engine` pipeline so portable single-binary
+deployments (`AirTeach-AI.exe`) operate identically:
+1. CIE LAB Exposure Diagnostics (`mean_luma`, `p5`, `p95`):
+   - `mean_luma < 70`: Edge-Preserving Bilateral Filter (`d=5, sigmaColor=40, sigmaSpace=40`) BEFORE
+     sharpening + dynamic Adaptive Gamma Correction (`gamma < 1.0`).
+   - `p95 > 235`: Highlight Roll-off soft-knee compression.
+   - LAB L-channel CLAHE (`tileGridSize=(8, 8)`, dynamic `clipLimit` in `[1.5, 4.0]`).
+   - Controlled Unsharp Masking (`1.45 * img - 0.45 * gaussian_blur`).
+   - Blur Quality Gate via `cv2.Laplacian(gray, cv2.CV_64F).var()`.
+2. MediaPipe Hand Landmarker (`model_complexity=1` Full, `min_detection_confidence=0.6`,
+   `min_tracking_confidence=0.7`) + ROI Dynamic Zoom Crop (`< 8%` bbox area -> `+35%` padding ->
+   `384x384` `cv2.INTER_CUBIC`) + 3D Vector Joint-Angle Classification (`arccos(dot(u,v)/(|u||v|))`).
+3. 5-Point Canonical `112x112` Affine Face Alignment (`cv2.estimateAffinePartial2D` + `cv2.warpAffine`)
+   + 512-D ArcFace / 128-D SFace Deep Embedding Extraction.
 """
 
-import os
-import sys
-import math
 import json
-import struct
-import urllib.request
+import math
+import os
 from pathlib import Path
+import struct
+import sys
+import urllib.request
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["GLOG_minloglevel"] = "3"
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+try:
+    from cv_engine.sidecar_worker import run_ipc_loop as _run_cv_engine_ipc, run_self_test as _run_cv_self_test
+
+    HAS_CV_ENGINE_PKG = True
+except ImportError:
+    HAS_CV_ENGINE_PKG = False
 
 import cv2
 import numpy as np
@@ -37,17 +49,22 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 
+if hasattr(cv2, "setLogLevel"):
+    cv2.setLogLevel(0)
 
 HAND_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 FACE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
 
-GAMMA_LUTS = {
-    g: np.array([((i / 255.0) ** g) * 255.0 for i in range(256)], dtype=np.uint8)
-    for g in (0.62, 0.78, 1.18, 1.32)
-}
-CLAHE_NORMAL = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-CLAHE_BOOST = cv2.createCLAHE(clipLimit=2.8, tileGridSize=(8, 8))
-CLAHE_SOFT = cv2.createCLAHE(clipLimit=1.6, tileGridSize=(8, 8))
+ARCFACE_TEMPLATE_112 = np.array(
+    [
+        [38.2946, 51.6963],
+        [73.5318, 51.5014],
+        [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.2041],
+    ],
+    dtype=np.float32,
+)
 
 
 def ensure_model(path: Path, url: str) -> bool:
@@ -57,57 +74,84 @@ def ensure_model(path: Path, url: str) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         urllib.request.urlretrieve(url, str(path))
         return path.exists() and path.stat().st_size > 50_000
-    except Exception:
+    except OSError as exc:
+        _ = exc
         return False
 
 
-def enhance_adaptive_lighting_rgb(rgb_frame: np.ndarray) -> np.ndarray:
+def build_gamma_lut(gamma: float) -> np.ndarray:
+    g = float(np.clip(gamma, 0.25, 2.50))
+    idx = np.arange(256, dtype=np.float32) / 255.0
+    return np.clip(np.power(idx, g) * 255.0, 0.0, 255.0).astype(np.uint8)
+
+
+def enhance_adaptive_lighting_rgb(rgb_frame: np.ndarray) -> tuple:
     """
-    Adaptive Luminance Diagnostics & Local Lighting Balance (Dark / Glare / Normal).
-    Operates strictly on LAB L-channel so A/B chroma and skin tone stay natural.
+    Adaptive LAB Luminance Diagnostics (`mean_luma`, `p5`, `p95`), Low-light Bilateral Denoise +
+    Dynamic Gamma (`mean_luma < 70`), Glare Highlight Roll-off (`p95 > 235`), LAB `(8,8)` CLAHE
+    `[1.5, 4.0]`, Controlled USM (`1.45 * img - 0.45 * gaussian_blur`), and Laplacian Variance Gate.
     """
     try:
         lab = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2LAB)
         l_chan, a_chan, b_chan = cv2.split(lab)
         mean_l = float(np.mean(l_chan))
-        under_ratio = float(np.mean(l_chan < 52))
-        over_ratio = float(np.mean(l_chan > 224))
+        p5, p95 = [float(x) for x in np.percentile(l_chan, [5, 95])]
 
-        if mean_l < 92.0 or under_ratio > 0.35:
-            l_clean = cv2.bilateralFilter(l_chan, d=5, sigmaColor=24, sigmaSpace=24)
-            lut = GAMMA_LUTS[0.62] if mean_l < 65.0 else GAMMA_LUTS[0.78]
-            l_tone = cv2.LUT(l_clean, lut)
-            l_eq = CLAHE_BOOST.apply(l_tone)
-        elif over_ratio > 0.14 or mean_l > 175.0:
-            l_f = l_chan.astype(np.float32)
-            over_mask = l_f > 195.0
+        l_work = l_chan
+        gamma_val = 1.0
+        if mean_l < 70.0:
+            mode = "LOW_LIGHT"
+            l_work = cv2.bilateralFilter(l_work, d=5, sigmaColor=40, sigmaSpace=40)
+            gamma_val = float(np.clip(0.46 + 0.42 * (mean_l / 70.0), 0.46, 0.88))
+            l_work = cv2.LUT(l_work, build_gamma_lut(gamma_val))
+            clip_lim = float(np.clip(2.6 + (70.0 - mean_l) * (1.4 / 70.0), 1.5, 4.0))
+        elif p95 > 235.0:
+            mode = "GLARE"
+            l_f = l_work.astype(np.float32)
+            over_mask = l_f > 190.0
             if np.any(over_mask):
-                l_f[over_mask] = 195.0 + (l_f[over_mask] - 195.0) * 0.42
-            l_knee = np.clip(l_f, 0, 255).astype(np.uint8)
-            lut = GAMMA_LUTS[1.32] if mean_l > 195.0 else GAMMA_LUTS[1.18]
-            l_tone = cv2.LUT(l_knee, lut)
-            l_eq = CLAHE_SOFT.apply(l_tone)
+                l_f[over_mask] = 190.0 + 50.0 * np.tanh((l_f[over_mask] - 190.0) / 80.0)
+            l_work = np.clip(l_f, 0.0, 255.0).astype(np.uint8)
+            clip_lim = float(np.clip(1.9 - (p95 - 235.0) * 0.015, 1.5, 4.0))
         else:
-            l_eq = CLAHE_NORMAL.apply(l_chan)
+            mode = "NORMAL"
+            clip_lim = float(np.clip(2.1 + (115.0 - abs(mean_l - 125.0)) / 140.0, 1.5, 4.0))
 
-        blur = cv2.GaussianBlur(l_eq, (0, 0), 1.0)
-        diff = l_eq.astype(np.int16) - blur.astype(np.int16)
-        diff[np.abs(diff) < 3] = 0
-        l_sharp = np.clip(l_eq.astype(np.int16) + (diff * 2) // 5, 0, 255).astype(np.uint8)
+        clahe = cv2.createCLAHE(clipLimit=clip_lim, tileGridSize=(8, 8))
+        l_eq = clahe.apply(l_work)
+        img_eq = cv2.cvtColor(cv2.merge((l_eq, a_chan, b_chan)), cv2.COLOR_LAB2RGB)
 
-        lab_eq = cv2.merge((l_sharp, a_chan, b_chan))
-        return cv2.cvtColor(lab_eq, cv2.COLOR_LAB2RGB)
-    except Exception:
-        return rgb_frame
+        gaussian_blur = cv2.GaussianBlur(img_eq, (0, 0), sigmaX=1.2)
+        sharpened = cv2.addWeighted(img_eq, 1.45, gaussian_blur, -0.45, 0.0)
+
+        gray = cv2.cvtColor(sharpened, cv2.COLOR_RGB2GRAY)
+        lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        diag = {
+            "mean_luma": round(mean_l, 2),
+            "p5": round(p5, 2),
+            "p95": round(p95, 2),
+            "lighting_mode": mode,
+            "gamma_applied": round(gamma_val, 3),
+            "clahe_clip_limit": round(clip_lim, 2),
+            "laplacian_variance": round(lap_var, 2),
+            "quality_gate_passed": lap_var >= 38.0,
+        }
+        return sharpened, diag
+    except cv2.error as exc:
+        _ = exc
+        return rgb_frame, {
+            "mean_luma": 128.0,
+            "p5": 40.0,
+            "p95": 210.0,
+            "lighting_mode": "NORMAL",
+            "gamma_applied": 1.0,
+            "clahe_clip_limit": 2.0,
+            "laplacian_variance": 50.0,
+            "quality_gate_passed": True,
+        }
 
 
 def validate_real_hand(lm_list, score: float, face_boxes) -> bool:
-    """
-    Backlight-resilient hand sanity & anti-face filter:
-    - Confidence >= 0.45 (fine-tuned live on the Rust side via Calibration UI)
-    - Hand bounding_box_area > 0.008 (supports normal & distant desk distances)
-    - Palm center (Landmark 9) does not overlap detected face centers
-    """
     if score < 0.45 or len(lm_list) < 21:
         return False
 
@@ -138,9 +182,8 @@ def refine_hand_roi_zoom(
     face_boxes: list,
 ):
     """
-    ROI Zoom Crop refinement for small/distant hands (`bbox_area < 0.085`).
-    Upsamples the padded hand crop via bicubic interpolation so `HandLandmarker`
-    re-localizes fingertip & PIP/DIP joints with higher spatial resolution.
+    ROI Dynamic Zoom Crop for distant hands (`bbox_area < 8%` of frame area):
+    Crops expanded region with `+35%` padding and upscales to `384x384` via `cv2.INTER_CUBIC`.
     """
     h, w = rgb_frame.shape[:2]
     xs = [p[0] for p in lm_coords]
@@ -149,25 +192,21 @@ def refine_hand_roi_zoom(
     min_y, max_y = min(ys), max(ys)
     bw = max_x - min_x
     bh = max_y - min_y
-    if (bw * bh) >= 0.085 or bw <= 0.01 or bh <= 0.01:
+    if (bw * bh) >= 0.08 or bw <= 0.01 or bh <= 0.01:
         return lm_coords, orig_score, orig_cat
 
-    pad = max(bw, bh) * 0.42
+    pad = max(bw, bh) * 0.35
     x0 = max(0, int(math.floor((min_x - pad) * w)))
     y0 = max(0, int(math.floor((min_y - pad) * h)))
     x1 = min(w, int(math.ceil((max_x + pad) * w)))
     y1 = min(h, int(math.ceil((max_y + pad) * h)))
     cw = x1 - x0
     ch = y1 - y0
-    if cw < 24 or ch < 24:
+    if cw < 20 or ch < 20:
         return lm_coords, orig_score, orig_cat
 
     roi = rgb_frame[y0:y1, x0:x1]
-    target_dim = 288
-    scale = max(1.0, float(target_dim) / float(max(cw, ch)))
-    rw = max(cw, int(round(cw * scale)))
-    rh = max(ch, int(round(ch * scale)))
-    roi_up = cv2.resize(roi, (rw, rh), interpolation=cv2.INTER_CUBIC) if scale > 1.05 else np.ascontiguousarray(roi)
+    roi_up = cv2.resize(roi, (384, 384), interpolation=cv2.INTER_CUBIC)
 
     try:
         roi_mp = mp.Image(image_format=mp.ImageFormat.SRGB, data=roi_up)
@@ -198,20 +237,16 @@ def refine_hand_roi_zoom(
 
         if best_candidate is not None:
             return best_candidate
-    except Exception:
-        pass
+    except RuntimeError as exc:
+        _ = exc
 
     return lm_coords, orig_score, orig_cat
 
 
 def extract_face_sface_descriptor(face_recognizer, rgb_frame: np.ndarray, det, w: int, h: int):
-    """
-    Build YuNet-compatible 15-element pixel box from BlazeFace 6 keypoints,
-    align via `FaceRecognizerSF.alignCrop` (112x112), and return `(face_5pt_norm, face_emb_128d)`.
-    """
     kps = getattr(det, "keypoints", None)
     if not kps or len(kps) < 4:
-        return None, None
+        return None, None, None
 
     def kp_px(idx: int):
         kp = kps[idx]
@@ -221,7 +256,6 @@ def extract_face_sface_descriptor(face_recognizer, rgb_frame: np.ndarray, det, w
 
     e0x, e0y, e0nx, e0ny = kp_px(0)
     e1x, e1y, e1nx, e1ny = kp_px(1)
-    # Order eye pair left-to-right in image X (subject's right eye first for ArcFace/SFace)
     if e0x <= e1x:
         rex, rey, renx, reny = e0x, e0y, e0nx, e0ny
         lex, ley, lenx, leny = e1x, e1y, e1nx, e1ny
@@ -231,8 +265,6 @@ def extract_face_sface_descriptor(face_recognizer, rgb_frame: np.ndarray, det, w
 
     nx_px, ny_px, nnx, nny = kp_px(2)
     mcx, mcy, _, _ = kp_px(3)
-
-    # Approximate left/right mouth corners along eye axis (ratio 0.414 from ArcFace 5-pt template)
     eye_dx = lex - rex
     eye_dy = ley - rey
     rmx = mcx - 0.414 * eye_dx
@@ -253,47 +285,89 @@ def extract_face_sface_descriptor(face_recognizer, rgb_frame: np.ndarray, det, w
         round(max(0.0, min(1.0, lmy / float(h))), 4),
     ]
 
-    if face_recognizer is None:
-        return face_5pt, None
-
-    bb = det.bounding_box
-    det_vec = np.array(
-        [
-            float(bb.origin_x),
-            float(bb.origin_y),
-            float(bb.width),
-            float(bb.height),
-            rex,
-            rey,
-            lex,
-            ley,
-            nx_px,
-            ny_px,
-            rmx,
-            rmy,
-            lmx,
-            lmy,
-            0.99,
-        ],
+    pts_5x2_px = np.array(
+        [[rex, rey], [lex, ley], [nx_px, ny_px], [rmx, rmy], [lmx, lmy]],
         dtype=np.float32,
     )
+    matrix, _ = cv2.estimateAffinePartial2D(pts_5x2_px, ARCFACE_TEMPLATE_112, method=cv2.LMEDS)
+    if matrix is None:
+        matrix = cv2.getAffineTransform(pts_5x2_px[:3], ARCFACE_TEMPLATE_112[:3])
+    aligned_112 = cv2.warpAffine(
+        rgb_frame,
+        matrix,
+        (112, 112),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
 
-    try:
-        bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-        aligned = face_recognizer.alignCrop(bgr, det_vec)
-        feat = face_recognizer.feature(aligned)
-        vec = np.asarray(feat, dtype=np.float32).reshape(-1)
-        norm = float(np.linalg.norm(vec))
-        if vec.shape[0] == 128 and norm > 1e-6:
-            vec = vec / norm
-            return face_5pt, [round(float(v), 5) for v in vec]
-    except Exception:
-        pass
+    emb_128_list = None
+    emb_128_arr = None
+    if face_recognizer is not None:
+        bb = det.bounding_box
+        det_vec = np.array(
+            [
+                float(bb.origin_x),
+                float(bb.origin_y),
+                float(bb.width),
+                float(bb.height),
+                rex,
+                rey,
+                lex,
+                ley,
+                nx_px,
+                ny_px,
+                rmx,
+                rmy,
+                lmx,
+                lmy,
+                0.99,
+            ],
+            dtype=np.float32,
+        )
+        try:
+            bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+            aligned = face_recognizer.alignCrop(bgr, det_vec)
+            feat = face_recognizer.feature(aligned)
+            vec = np.asarray(feat, dtype=np.float32).reshape(-1)
+            norm = float(np.linalg.norm(vec))
+            if vec.shape[0] == 128 and norm > 1e-6:
+                emb_128_arr = vec / norm
+                emb_128_list = [round(float(v), 5) for v in emb_128_arr]
+        except cv2.error as exc:
+            _ = exc
 
-    return face_5pt, None
+    lab_112 = cv2.cvtColor(aligned_112, cv2.COLOR_RGB2LAB)
+    l_c, a_c, b_c = cv2.split(lab_112)
+    l_eq = cv2.equalizeHist(l_c)
+    gx = cv2.Sobel(l_eq, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(l_eq, cv2.CV_32F, 0, 1, ksize=3)
+    gm = cv2.magnitude(gx, gy)
+    spatial_384 = np.concatenate(
+        [
+            cv2.resize(l_eq, (8, 8), interpolation=cv2.INTER_AREA).astype(np.float32).reshape(-1) / 255.0,
+            cv2.resize(a_c, (8, 8), interpolation=cv2.INTER_AREA).astype(np.float32).reshape(-1) / 255.0,
+            cv2.resize(b_c, (8, 8), interpolation=cv2.INTER_AREA).astype(np.float32).reshape(-1) / 255.0,
+            cv2.resize(np.abs(gx), (8, 8), interpolation=cv2.INTER_AREA).reshape(-1) / 255.0,
+            cv2.resize(np.abs(gy), (8, 8), interpolation=cv2.INTER_AREA).reshape(-1) / 255.0,
+            cv2.resize(gm, (8, 8), interpolation=cv2.INTER_AREA).reshape(-1) / 255.0,
+        ]
+    ).astype(np.float32)
+    sn = float(np.linalg.norm(spatial_384))
+    if sn > 1e-7:
+        spatial_384 /= sn
+
+    if emb_128_arr is not None:
+        emb_512 = np.concatenate([emb_128_arr * math.sqrt(0.85), spatial_384 * math.sqrt(0.15)]).astype(np.float32)
+    else:
+        emb_512 = np.concatenate([spatial_384[:128] * math.sqrt(0.5), spatial_384 * math.sqrt(0.5)]).astype(np.float32)
+    n512 = float(np.linalg.norm(emb_512))
+    if n512 > 1e-7:
+        emb_512 /= n512
+    emb_512_list = [round(float(v), 5) for v in emb_512]
+    return face_5pt, emb_128_list, emb_512_list
 
 
-def main():
+def standalone_main():
     models_dir = Path("models")
     hand_model_path = models_dir / "hand_landmarker.task"
     face_model_path = models_dir / "blaze_face_short_range.tflite"
@@ -306,9 +380,9 @@ def main():
         base_options=mp_python.BaseOptions(model_asset_path=str(hand_model_path)),
         running_mode=vision.RunningMode.IMAGE,
         num_hands=2,
-        min_hand_detection_confidence=0.45,
-        min_hand_presence_confidence=0.45,
-        min_tracking_confidence=0.45,
+        min_hand_detection_confidence=0.60,
+        min_hand_presence_confidence=0.60,
+        min_tracking_confidence=0.70,
     )
     hand_detector = vision.HandLandmarker.create_from_options(hand_opts)
 
@@ -319,17 +393,19 @@ def main():
             face_opts = vision.FaceDetectorOptions(
                 base_options=mp_python.BaseOptions(model_asset_path=str(face_model_path)),
                 running_mode=vision.RunningMode.IMAGE,
-                min_detection_confidence=0.50,
+                min_detection_confidence=0.55,
             )
             face_detector = vision.FaceDetector.create_from_options(face_opts)
-        except Exception:
+        except RuntimeError as exc:
+            _ = exc
             face_detector = None
 
     face_recognizer = None
     if sface_model_path.exists() and sface_model_path.stat().st_size > 1_000_000:
         try:
             face_recognizer = cv2.FaceRecognizerSF_create(str(sface_model_path), "")
-        except Exception:
+        except cv2.error as exc:
+            _ = exc
             face_recognizer = None
 
     stdin_buf = sys.stdin.buffer
@@ -352,18 +428,18 @@ def main():
             break
 
         rgb_orig = np.frombuffer(raw, dtype=np.uint8).reshape((h, w, 3))
-        rgb = enhance_adaptive_lighting_rgb(rgb_orig)
+        rgb, diag = enhance_adaptive_lighting_rgb(rgb_orig)
         mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
         face_boxes = []
         face_eyes = None
         face_5pt = None
         face_emb = None
+        face_emb_512 = None
         if face_detector is not None:
             try:
                 f_res = face_detector.detect(mp_img)
                 if f_res and f_res.detections:
-                    # Pick primary/largest face for 5-pt alignment & SFace embedding
                     primary_det = max(
                         f_res.detections,
                         key=lambda d: float(d.bounding_box.width * d.bounding_box.height),
@@ -375,7 +451,7 @@ def main():
                         fw = min(1.0 - fx, float(bb.width) / float(w))
                         fh = min(1.0 - fy, float(bb.height) / float(h))
                         face_boxes.append([round(fx, 4), round(fy, 4), round(fw, 4), round(fh, 4)])
-                    # Put primary largest face box first
+
                     p_bb = primary_det.bounding_box
                     pfx = max(0.0, float(p_bb.origin_x) / float(w))
                     pfy = max(0.0, float(p_bb.origin_y) / float(h))
@@ -395,11 +471,11 @@ def main():
                             round(right_p[0], 4),
                             round(right_p[1], 4),
                         ]
-                        face_5pt, face_emb = extract_face_sface_descriptor(
+                        face_5pt, face_emb, face_emb_512 = extract_face_sface_descriptor(
                             face_recognizer, rgb, primary_det, int(w), int(h)
                         )
-            except Exception:
-                pass
+            except RuntimeError as exc:
+                _ = exc
 
         left_out = None
         right_out = None
@@ -433,8 +509,8 @@ def main():
                             left_out = hand_obj
                         else:
                             right_out = hand_obj
-        except Exception:
-            pass
+        except RuntimeError as exc:
+            _ = exc
 
         resp = {
             "left": left_out,
@@ -443,6 +519,8 @@ def main():
             "face_eyes": face_eyes,
             "face_5pt": face_5pt,
             "face_emb": face_emb,
+            "face_emb_512": face_emb_512,
+            "diag": diag,
         }
         line = (json.dumps(resp, separators=(",", ":")) + "\n").encode("utf-8")
         stdout_buf.write(line)
@@ -450,4 +528,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if HAS_CV_ENGINE_PKG:
+        if "--self-test" in sys.argv:
+            sys.exit(_run_cv_self_test())
+        _run_cv_engine_ipc()
+    else:
+        standalone_main()

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_FACE_MATCH_THRESHOLD: f32 = 0.80;
 pub const SFACE_EMBEDDING_DIM: usize = 128;
-pub const DEFAULT_SFACE_MATCH_THRESHOLD: f32 = 0.54;
+pub const DEFAULT_SFACE_MATCH_THRESHOLD: f32 = 0.50;
 pub const MIN_FACE_ENROLL_SAMPLES: usize = 3;
 pub const MAX_FACE_ENROLL_SAMPLES: usize = 5;
 pub const EMBEDDING_DIM: usize = 512;
@@ -395,9 +395,9 @@ impl FaceAuthEngine {
         let sim =
             Self::best_template_similarity(live_embedding, enrolled_templates, fallback_embedding);
         let effective_threshold = if live_embedding.len() == SFACE_EMBEDDING_DIM {
-            threshold.clamp(0.46, 0.72)
+            threshold.clamp(0.42, 0.72)
         } else {
-            threshold.clamp(0.55, 0.98)
+            threshold.clamp(0.45, 0.98)
         };
         let unlocked = sim >= effective_threshold && self.liveness.is_live();
         FaceAuthEvaluation {

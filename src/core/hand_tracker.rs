@@ -323,7 +323,34 @@ impl<'de> Deserialize<'de> for SFaceEmbedding {
     }
 }
 
-/// Output of a single frame's two-hand tracking pass + optional MediaPipe face box, 5-pt alignment & 128-D SFace embedding.
+/// Fixed-size 512-D ArcFace / InsightFace 5-point aligned embedding supporting `Copy` + `Serde`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArcFace512Embedding(pub [f32; 512]);
+
+impl Default for ArcFace512Embedding {
+    fn default() -> Self {
+        Self([0.0_f32; 512])
+    }
+}
+
+impl Serialize for ArcFace512Embedding {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.as_slice().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ArcFace512Embedding {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let vec = Vec::<f32>::deserialize(deserializer)?;
+        let mut arr = [0.0_f32; 512];
+        for (dst, src) in arr.iter_mut().zip(vec.iter()) {
+            *dst = *src;
+        }
+        Ok(Self(arr))
+    }
+}
+
+/// Output of a single frame's two-hand tracking pass + optional MediaPipe face box, 5-pt alignment & 128-D/512-D embeddings.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct TwoHandFrame {
     pub left_hand: Option<HandLandmarks>,
@@ -332,6 +359,7 @@ pub struct TwoHandFrame {
     pub detected_face_eyes: Option<[f32; 4]>,
     pub detected_face_5pt: Option<[f32; 10]>,
     pub detected_face_emb: Option<SFaceEmbedding>,
+    pub detected_face_emb_512: Option<ArcFace512Embedding>,
     pub inference_ms: f32,
     pub using_onnx_session: bool,
 }
@@ -353,6 +381,8 @@ struct WorkerResponseJson {
     face_5pt: Option<Vec<f32>>,
     #[serde(default)]
     face_emb: Option<Vec<f32>>,
+    #[serde(default)]
+    face_emb_512: Option<Vec<f32>>,
 }
 
 #[derive(Default)]
@@ -363,6 +393,7 @@ struct WorkerDetectResult {
     face_eyes: Option<[f32; 4]>,
     face_5pt: Option<[f32; 10]>,
     face_emb: Option<SFaceEmbedding>,
+    face_emb_512: Option<ArcFace512Embedding>,
 }
 
 struct MediaPipeSubprocessBridge {
@@ -374,12 +405,19 @@ struct MediaPipeSubprocessBridge {
 
 impl MediaPipeSubprocessBridge {
     fn try_spawn() -> Option<Self> {
-        let script_path = Path::new("scripts/mediapipe_hand_worker.py");
+        let fallback_script = Path::new("scripts/mediapipe_hand_worker.py");
         let _ = std::fs::create_dir_all("scripts");
-        let _ = std::fs::write(script_path, MEDIAPIPE_WORKER_SCRIPT);
+        let _ = std::fs::write(fallback_script, MEDIAPIPE_WORKER_SCRIPT);
+
+        let sidecar_script = Path::new("cv_engine/sidecar_worker.py");
+        let entry_script = if sidecar_script.exists() {
+            sidecar_script
+        } else {
+            fallback_script
+        };
 
         let mut cmd = Command::new("python");
-        cmd.arg(script_path)
+        cmd.arg(entry_script)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -560,6 +598,19 @@ impl MediaPipeSubprocessBridge {
             }
             None
         });
+        let face_emb_512 = parsed.face_emb_512.and_then(|v| {
+            if v.len() == 512 && v.iter().all(|x| x.is_finite()) {
+                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > 1e-6 {
+                    let mut arr = [0.0_f32; 512];
+                    for (dst, src) in arr.iter_mut().zip(v.iter()) {
+                        *dst = *src / norm;
+                    }
+                    return Some(ArcFace512Embedding(arr));
+                }
+            }
+            None
+        });
 
         Some(WorkerDetectResult {
             left,
@@ -568,6 +619,7 @@ impl MediaPipeSubprocessBridge {
             face_eyes: parsed.face_eyes,
             face_5pt,
             face_emb,
+            face_emb_512,
         })
     }
 }
@@ -710,6 +762,7 @@ impl TwoHandTracker {
                 detected_face_eyes: None,
                 detected_face_5pt: None,
                 detected_face_emb: None,
+                detected_face_emb_512: None,
                 inference_ms: start.elapsed().as_secs_f32() * 1000.0,
                 using_onnx_session: true,
             };
@@ -726,6 +779,7 @@ impl TwoHandTracker {
         let mut detected_face_eyes = None;
         let mut detected_face_5pt = None;
         let mut detected_face_emb = None;
+        let mut detected_face_emb_512 = None;
         let mut active = false;
 
         let min_conf = self.hand_min_confidence;
@@ -739,6 +793,7 @@ impl TwoHandTracker {
                 detected_face_eyes = res.face_eyes;
                 detected_face_5pt = res.face_5pt;
                 detected_face_emb = res.face_emb;
+                detected_face_emb_512 = res.face_emb_512;
                 active = true;
             } else {
                 self.mp_bridge = None;
@@ -769,6 +824,7 @@ impl TwoHandTracker {
             detected_face_eyes,
             detected_face_5pt,
             detected_face_emb,
+            detected_face_emb_512,
             inference_ms: start.elapsed().as_secs_f32() * 1000.0,
             using_onnx_session: active,
         }

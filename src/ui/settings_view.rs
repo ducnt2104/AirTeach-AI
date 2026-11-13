@@ -469,10 +469,10 @@ pub fn render_settings_view(app: &mut AirTeachApp, ctx: &egui::Context) {
                         }
 
                         ui.separator();
-                        ui.label("SFace 128-D (Multi-Template):");
+                        ui.label("ArcFace 512-D / SFace (Multi-Template):");
                         if ui
                             .add(
-                                egui::Slider::new(&mut app.config.sface_match_threshold, 0.50..=0.58)
+                                egui::Slider::new(&mut app.config.sface_match_threshold, 0.42..=0.68)
                                     .step_by(0.01),
                             )
                             .changed()
