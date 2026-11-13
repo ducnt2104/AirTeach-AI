@@ -47,6 +47,31 @@ pub mod landmark_idx {
     pub const PINKY_TIP: usize = 20;
 }
 
+/// Standard 21 MediaPipe bone pairs connecting adjacent 3D hand landmarks.
+pub const HAND_CONNECTIONS: [(usize, usize); 21] = [
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 4),
+    (0, 5),
+    (5, 6),
+    (6, 7),
+    (7, 8),
+    (5, 9),
+    (9, 10),
+    (10, 11),
+    (11, 12),
+    (9, 13),
+    (13, 14),
+    (14, 15),
+    (15, 16),
+    (13, 17),
+    (0, 17),
+    (17, 18),
+    (18, 19),
+    (19, 20),
+];
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Landmark3D {
     pub x: f32,
@@ -68,6 +93,12 @@ impl Landmark3D {
     #[inline]
     pub fn dist_2d(self, other: Self) -> f32 {
         ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
+    }
+
+    #[inline]
+    pub fn dist_3d(self, other: Self) -> f32 {
+        ((self.x - other.x).powi(2) + (self.y - other.y).powi(2) + (self.z - other.z).powi(2))
+            .sqrt()
     }
 }
 
@@ -96,11 +127,19 @@ impl Default for HandLandmarks {
 
 impl HandLandmarks {
     /// Backlight-Resilient Hand Validator (`MODULE 3.2`):
-    /// - Rule 1: `confidence >= 0.50` (lowered from 0.80 so backlit/tilted hands are never dropped)
-    /// - Rule 2: `bounding_box_area > 0.015` (`1.5%` of frame area)
+    /// - Rule 1: `confidence >= min_conf` (default `0.50`, tunable `0.40..=0.85` in Calibration)
+    /// - Rule 2: `bounding_box_area > 0.008` (supports normal & distant hands via ROI Zoom Crop)
     /// - Rule 3: Palm center (`LM 9`) must not coincide with the detected Face Center
     pub fn is_anatomically_valid(&self, face_bbox: Option<[f32; 4]>) -> bool {
-        if self.confidence < 0.50 {
+        self.is_anatomically_valid_with_threshold(face_bbox, 0.50)
+    }
+
+    pub fn is_anatomically_valid_with_threshold(
+        &self,
+        face_bbox: Option<[f32; 4]>,
+        min_conf: f32,
+    ) -> bool {
+        if self.confidence < min_conf.clamp(0.40, 0.85) {
             return false;
         }
 
@@ -115,7 +154,7 @@ impl HandLandmarks {
             max_y = max_y.max(lm.y);
         }
         let bounding_box_area = (max_x - min_x).max(0.0) * (max_y - min_y).max(0.0);
-        if bounding_box_area <= 0.015 {
+        if bounding_box_area <= 0.008 {
             return false;
         }
 
@@ -257,13 +296,42 @@ impl HandLandmarks {
     }
 }
 
-/// Output of a single frame's two-hand tracking pass + optional MediaPipe face box & eye keypoints.
+/// Fixed-size 128-D deep SFace embedding (`models/mobilefacenet.onnx`) supporting `Copy` + `Serde`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SFaceEmbedding(pub [f32; 128]);
+
+impl Default for SFaceEmbedding {
+    fn default() -> Self {
+        Self([0.0_f32; 128])
+    }
+}
+
+impl Serialize for SFaceEmbedding {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.as_slice().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SFaceEmbedding {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let vec = Vec::<f32>::deserialize(deserializer)?;
+        let mut arr = [0.0_f32; 128];
+        for (dst, src) in arr.iter_mut().zip(vec.iter()) {
+            *dst = *src;
+        }
+        Ok(Self(arr))
+    }
+}
+
+/// Output of a single frame's two-hand tracking pass + optional MediaPipe face box, 5-pt alignment & 128-D SFace embedding.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct TwoHandFrame {
     pub left_hand: Option<HandLandmarks>,
     pub right_hand: Option<HandLandmarks>,
     pub detected_face_bbox: Option<[f32; 4]>,
     pub detected_face_eyes: Option<[f32; 4]>,
+    pub detected_face_5pt: Option<[f32; 10]>,
+    pub detected_face_emb: Option<SFaceEmbedding>,
     pub inference_ms: f32,
     pub using_onnx_session: bool,
 }
@@ -281,6 +349,20 @@ struct WorkerResponseJson {
     face: Option<[f32; 4]>,
     #[serde(default)]
     face_eyes: Option<[f32; 4]>,
+    #[serde(default)]
+    face_5pt: Option<Vec<f32>>,
+    #[serde(default)]
+    face_emb: Option<Vec<f32>>,
+}
+
+#[derive(Default)]
+struct WorkerDetectResult {
+    left: Option<HandLandmarks>,
+    right: Option<HandLandmarks>,
+    face_bbox: Option<[f32; 4]>,
+    face_eyes: Option<[f32; 4]>,
+    face_5pt: Option<[f32; 10]>,
+    face_emb: Option<SFaceEmbedding>,
 }
 
 struct MediaPipeSubprocessBridge {
@@ -324,8 +406,26 @@ impl MediaPipeSubprocessBridge {
             child,
             stdin,
             stdout: reader,
-            rgb_buf: vec![0u8; 8 + 320 * 240 * 3],
+            rgb_buf: vec![0u8; 8 + 640 * 480 * 3],
         })
+    }
+
+    fn compute_ipc_dimensions(width: u32, height: u32) -> (u32, u32) {
+        if width >= 640 && height >= 480 && width <= 960 && height <= 720 {
+            return (width, height);
+        }
+        let scale_up = if width < 640 || height < 480 {
+            (640.0 / width.max(1) as f32).max(480.0 / height.max(1) as f32)
+        } else {
+            1.0
+        };
+        let w_up = width as f32 * scale_up;
+        let h_up = height as f32 * scale_up;
+        let scale_down = (960.0 / w_up).min(720.0 / h_up).min(1.0);
+        (
+            ((w_up * scale_down).round() as u32).clamp(640, 960),
+            ((h_up * scale_down).round() as u32).clamp(480, 720),
+        )
     }
 
     fn detect_frame(
@@ -334,32 +434,73 @@ impl MediaPipeSubprocessBridge {
         width: u32,
         height: u32,
         external_face_bbox: Option<[f32; 4]>,
-    ) -> Option<(
-        Option<HandLandmarks>,
-        Option<HandLandmarks>,
-        Option<[f32; 4]>,
-        Option<[f32; 4]>,
-    )> {
-        const DST_W: u32 = 320;
-        const DST_H: u32 = 240;
+        min_hand_confidence: f32,
+    ) -> Option<WorkerDetectResult> {
         if width == 0 || height == 0 || rgba.len() < (width * height * 4) as usize {
-            return Some((None, None, None, None));
+            return Some(WorkerDetectResult::default());
+        }
+
+        let (dst_w, dst_h) = Self::compute_ipc_dimensions(width, height);
+        let needed_len = 8 + (dst_w as usize) * (dst_h as usize) * 3;
+        if self.rgb_buf.len() != needed_len {
+            self.rgb_buf.resize(needed_len, 0);
         }
 
         self.rgb_buf[0..4].copy_from_slice(b"MPHF");
-        self.rgb_buf[4..6].copy_from_slice(&(DST_W as u16).to_le_bytes());
-        self.rgb_buf[6..8].copy_from_slice(&(DST_H as u16).to_le_bytes());
+        self.rgb_buf[4..6].copy_from_slice(&(dst_w as u16).to_le_bytes());
+        self.rgb_buf[6..8].copy_from_slice(&(dst_h as u16).to_le_bytes());
 
-        let mut dst_idx = 8usize;
-        for y in 0..DST_H {
-            let sy = ((y * height) / DST_H).min(height - 1);
-            for x in 0..DST_W {
-                let sx = ((x * width) / DST_W).min(width - 1);
-                let src_idx = ((sy * width + sx) * 4) as usize;
-                self.rgb_buf[dst_idx] = rgba[src_idx];
-                self.rgb_buf[dst_idx + 1] = rgba[src_idx + 1];
-                self.rgb_buf[dst_idx + 2] = rgba[src_idx + 2];
+        if dst_w == width && dst_h == height {
+            // Fast direct RGBA -> RGB copy with zero downscale loss
+            let mut dst_idx = 8usize;
+            for px in rgba.chunks_exact(4).take((width * height) as usize) {
+                self.rgb_buf[dst_idx] = px[0];
+                self.rgb_buf[dst_idx + 1] = px[1];
+                self.rgb_buf[dst_idx + 2] = px[2];
                 dst_idx += 3;
+            }
+        } else {
+            // Smooth bilinear resampling instead of nearest-neighbor aliasing
+            let w_max = (width - 1) as f32;
+            let h_max = (height - 1) as f32;
+            let x_ratio = if dst_w > 1 { w_max / (dst_w - 1) as f32 } else { 0.0 };
+            let y_ratio = if dst_h > 1 { h_max / (dst_h - 1) as f32 } else { 0.0 };
+            let stride = (width as usize) * 4;
+            let mut dst_idx = 8usize;
+
+            for y in 0..dst_h {
+                let fy = (y as f32 * y_ratio).clamp(0.0, h_max);
+                let y0 = fy.floor() as usize;
+                let y1 = (y0 + 1).min(height as usize - 1);
+                let wy = fy - y0 as f32;
+                let row0 = y0 * stride;
+                let row1 = y1 * stride;
+
+                for x in 0..dst_w {
+                    let fx = (x as f32 * x_ratio).clamp(0.0, w_max);
+                    let x0 = fx.floor() as usize;
+                    let x1 = (x0 + 1).min(width as usize - 1);
+                    let wx = fx - x0 as f32;
+
+                    let w00 = (1.0 - wx) * (1.0 - wy);
+                    let w10 = wx * (1.0 - wy);
+                    let w01 = (1.0 - wx) * wy;
+                    let w11 = wx * wy;
+
+                    let i00 = row0 + x0 * 4;
+                    let i10 = row0 + x1 * 4;
+                    let i01 = row1 + x0 * 4;
+                    let i11 = row1 + x1 * 4;
+
+                    for c in 0..3 {
+                        let val = rgba[i00 + c] as f32 * w00
+                            + rgba[i10 + c] as f32 * w10
+                            + rgba[i01 + c] as f32 * w01
+                            + rgba[i11 + c] as f32 * w11;
+                        self.rgb_buf[dst_idx + c] = val.round().clamp(0.0, 255.0) as u8;
+                    }
+                    dst_idx += 3;
+                }
             }
         }
 
@@ -388,16 +529,46 @@ impl MediaPipeSubprocessBridge {
                 confidence: wh.score,
                 landmarks,
             };
-            if hand.is_anatomically_valid(effective_face) {
+            if hand.is_anatomically_valid_with_threshold(effective_face, min_hand_confidence) {
                 Some(hand)
             } else {
                 None
             }
         };
 
-        let left_hand = parsed.left.and_then(|h| parse_hand(h, Handedness::Left));
-        let right_hand = parsed.right.and_then(|h| parse_hand(h, Handedness::Right));
-        Some((left_hand, right_hand, parsed.face, parsed.face_eyes))
+        let left = parsed.left.and_then(|h| parse_hand(h, Handedness::Left));
+        let right = parsed.right.and_then(|h| parse_hand(h, Handedness::Right));
+        let face_5pt = parsed.face_5pt.and_then(|v| {
+            if v.len() == 10 && v.iter().all(|x| x.is_finite()) {
+                let mut arr = [0.0_f32; 10];
+                arr.copy_from_slice(&v);
+                Some(arr)
+            } else {
+                None
+            }
+        });
+        let face_emb = parsed.face_emb.and_then(|v| {
+            if v.len() == 128 && v.iter().all(|x| x.is_finite()) {
+                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > 1e-6 {
+                    let mut arr = [0.0_f32; 128];
+                    for (dst, src) in arr.iter_mut().zip(v.iter()) {
+                        *dst = *src / norm;
+                    }
+                    return Some(SFaceEmbedding(arr));
+                }
+            }
+            None
+        });
+
+        Some(WorkerDetectResult {
+            left,
+            right,
+            face_bbox: parsed.face,
+            face_eyes: parsed.face_eyes,
+            face_5pt,
+            face_emb,
+        })
     }
 }
 
@@ -476,6 +647,7 @@ pub struct TwoHandTracker {
     last_respawn_attempt: Instant,
     epoch: Instant,
     last_face_bbox: Option<[f32; 4]>,
+    hand_min_confidence: f32,
     left_smoother: SingleHandLandmarkSmoother,
     right_smoother: SingleHandLandmarkSmoother,
 }
@@ -484,11 +656,17 @@ impl TwoHandTracker {
     pub fn new() -> Self {
         let mp_bridge = MediaPipeSubprocessBridge::try_spawn();
         let now = Instant::now();
+        let env_conf = std::env::var("AIRTEACH_HAND_MIN_CONFIDENCE")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.50)
+            .clamp(0.40, 0.85);
         Self {
             mp_bridge,
             last_respawn_attempt: now,
             epoch: now,
             last_face_bbox: None,
+            hand_min_confidence: env_conf,
             left_smoother: SingleHandLandmarkSmoother::new(1.5, 0.04, 1.0),
             right_smoother: SingleHandLandmarkSmoother::new(1.5, 0.04, 1.0),
         }
@@ -497,6 +675,10 @@ impl TwoHandTracker {
     pub fn set_smoothing_params(&mut self, min_cutoff: f32, beta: f32, d_cutoff: f32) {
         self.left_smoother.update_params(min_cutoff, beta, d_cutoff);
         self.right_smoother.update_params(min_cutoff, beta, d_cutoff);
+    }
+
+    pub fn set_hand_confidence_min(&mut self, min_conf: f32) {
+        self.hand_min_confidence = min_conf.clamp(0.40, 0.85);
     }
 
     pub fn is_onnx_loaded(&self) -> bool {
@@ -526,6 +708,8 @@ impl TwoHandTracker {
                 right_hand: smoothed_right,
                 detected_face_bbox: None,
                 detected_face_eyes: None,
+                detected_face_5pt: None,
+                detected_face_emb: None,
                 inference_ms: start.elapsed().as_secs_f32() * 1000.0,
                 using_onnx_session: true,
             };
@@ -540,16 +724,21 @@ impl TwoHandTracker {
         let mut right_hand = None;
         let mut detected_face_bbox = None;
         let mut detected_face_eyes = None;
+        let mut detected_face_5pt = None;
+        let mut detected_face_emb = None;
         let mut active = false;
 
+        let min_conf = self.hand_min_confidence;
         if let Some(ref mut bridge) = self.mp_bridge {
-            if let Some((lh, rh, fb, fe)) =
-                bridge.detect_frame(rgba, width, height, self.last_face_bbox)
+            if let Some(res) =
+                bridge.detect_frame(rgba, width, height, self.last_face_bbox, min_conf)
             {
-                left_hand = lh.map(|h| self.left_smoother.smooth(h, t_sec));
-                right_hand = rh.map(|h| self.right_smoother.smooth(h, t_sec));
-                detected_face_bbox = fb;
-                detected_face_eyes = fe;
+                left_hand = res.left.map(|h| self.left_smoother.smooth(h, t_sec));
+                right_hand = res.right.map(|h| self.right_smoother.smooth(h, t_sec));
+                detected_face_bbox = res.face_bbox;
+                detected_face_eyes = res.face_eyes;
+                detected_face_5pt = res.face_5pt;
+                detected_face_emb = res.face_emb;
                 active = true;
             } else {
                 self.mp_bridge = None;
@@ -578,6 +767,8 @@ impl TwoHandTracker {
             right_hand,
             detected_face_bbox,
             detected_face_eyes,
+            detected_face_5pt,
+            detected_face_emb,
             inference_ms: start.elapsed().as_secs_f32() * 1000.0,
             using_onnx_session: active,
         }
@@ -632,5 +823,26 @@ mod tests {
                 raw_diffs[j]
             );
         }
+    }
+
+    #[test]
+    fn test_landmark_dist_3d_and_ipc_resolution_floor() {
+        let a = Landmark3D::new(0.0, 0.0, 0.0);
+        let b = Landmark3D::new(0.3, 0.4, 0.5);
+        assert!((a.dist_3d(b) - (0.09 + 0.16 + 0.25_f32).sqrt()).abs() < 1e-5);
+
+        // Low-res inputs must be upscaled to >= 640x480; 640x480 stays verbatim; 1280x720 keeps 16:9 >= 640x480
+        assert_eq!(MediaPipeSubprocessBridge::compute_ipc_dimensions(320, 240), (640, 480));
+        assert_eq!(MediaPipeSubprocessBridge::compute_ipc_dimensions(640, 480), (640, 480));
+        let (w_hd, h_hd) = MediaPipeSubprocessBridge::compute_ipc_dimensions(1280, 720);
+        assert!(w_hd >= 640 && h_hd >= 480);
+
+        let mut emb = SFaceEmbedding::default();
+        emb.0[0] = 0.75;
+        emb.0[127] = -0.25;
+        let json = serde_json::to_string(&emb).expect("serialize 128-D embedding");
+        let back: SFaceEmbedding = serde_json::from_str(&json).expect("deserialize 128-D embedding");
+        assert!((back.0[0] - 0.75).abs() < 1e-6);
+        assert!((back.0[127] + 0.25).abs() < 1e-6);
     }
 }

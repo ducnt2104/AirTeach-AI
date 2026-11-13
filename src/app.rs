@@ -13,7 +13,7 @@
 
 use crate::ai::face_auth::{
     FaceAuthEngine, UserAccount, DEFAULT_FACE_MATCH_THRESHOLD, EMBEDDING_DIM,
-    ENROLL_ANGLE_PROMPTS, MAX_FACE_ENROLL_SAMPLES, MIN_FACE_ENROLL_SAMPLES,
+    ENROLL_ANGLE_PROMPTS, MAX_FACE_ENROLL_SAMPLES, MIN_FACE_ENROLL_SAMPLES, SFACE_EMBEDDING_DIM,
 };
 use crate::ai::gemini_chat::{
     ChatMessage, ChatStreamEvent, GeminiChatClient, PedagogicalAnalysisMode, SubjectAssistantMode,
@@ -25,7 +25,7 @@ use crate::ai::rag_engine::SlideRagIndex;
 use crate::ai::stem_knowledge::StemKnowledgeEngine;
 use crate::ai::subtitles_engine::{LiveSubtitlesEngine, TranscriptSegmentEvent};
 use crate::core::audio_recorder::{AudioRecorder, RecordingState};
-use crate::core::camera::{CameraSubsystem, LightingAdaptationMode};
+use crate::core::camera::{CameraControlCmd, CameraSubsystem, LightingAdaptationMode};
 use crate::core::gestures::{
     DualHandGestureState, GestureDebounceFsm, LeftGesture, RightGesture, RightTransitionEvent,
 };
@@ -36,7 +36,9 @@ use crate::ui::toolbar_view::{
     ALERT_ROSE, BG_DARK, BORDER_SLATE, PRIMARY_INDIGO, SECONDARY_TEAL, SURFACE_DARK, TEXT_LIGHT,
     TEXT_MUTED,
 };
-use crate::ui::{auth_view, canvas_view, chat_view, settings_view, toolbar_view, welcome_view};
+use crate::ui::{
+    auth_view, calibration_view, canvas_view, chat_view, settings_view, toolbar_view, welcome_view,
+};
 use crate::utils::document_loader::{DocumentLoader, SlidePage};
 use crate::utils::model_downloader::ModelDownloader;
 use crate::utils::storage::{
@@ -109,6 +111,9 @@ pub struct AirTeachApp {
     pub active_camera_index: u32,
     pub camera_color_image: ColorImage,
     pub camera_texture: Option<TextureHandle>,
+    pub camera_raw_color_image: ColorImage,
+    pub camera_raw_texture: Option<TextureHandle>,
+    pub calibration_modal_open: bool,
     pub camera_fps: f32,
     pub camera_sharpness: f32,
     pub camera_lighting_mode: LightingAdaptationMode,
@@ -122,6 +127,7 @@ pub struct AirTeachApp {
     pub camera_resolution_label: String,
     pub last_two_hand_frame: TwoHandFrame,
     pub last_face_eyes_norm: Option<[f32; 4]>,
+    pub last_face_5pt_norm: Option<[f32; 10]>,
     pub hud_right_trail: VecDeque<[f32; 2]>,
     pub about_modal_open: bool,
 
@@ -147,14 +153,16 @@ pub struct AirTeachApp {
     pub signup_username: String,
     pub signup_pin: String,
     pub signup_pin_confirm: String,
-    pub signup_face_samples: Vec<[f32; EMBEDDING_DIM]>,
+    pub signup_face_samples: Vec<Vec<f32>>,
     pub signup_status_msg: String,
     pub logged_in_user_id: Option<String>,
     pub logged_in_teacher_name: String,
     pub logged_in_username: String,
     pub slide_card_visible: bool,
     pub enrolled_face_embedding: Vec<f32>,
+    pub enrolled_face_templates: Vec<Vec<f32>>,
     pub last_live_face_embedding: [f32; EMBEDDING_DIM],
+    pub last_live_face_vec: Vec<f32>,
     pub last_face_bbox_norm: Option<[f32; 4]>,
     pub last_face_similarity: f32,
     pub auto_face_unlock_enabled: bool,
@@ -242,6 +250,10 @@ impl AirTeachApp {
             .first()
             .map(|u| u.face_embedding.clone())
             .unwrap_or_default();
+        let mut enrolled_face_templates = registered_users
+            .first()
+            .map(|u| u.face_templates.clone())
+            .unwrap_or_default();
         let mut initial_screen = AppScreen::Welcome;
 
         if !registered_users.is_empty() {
@@ -250,6 +262,7 @@ impl AirTeachApp {
                 logged_in_teacher_name = active_user.display_name.clone();
                 logged_in_username = active_user.username.clone();
                 enrolled_face_embedding = active_user.face_embedding.clone();
+                enrolled_face_templates = active_user.face_templates.clone();
                 initial_screen = AppScreen::Dashboard;
             }
         }
@@ -274,6 +287,21 @@ impl AirTeachApp {
             config.hud_grid_px,
             false,
         );
+        let _ = camera.cmd_tx.try_send(CameraControlCmd::SetSharpnessConfig {
+            enable_clahe: config.enable_clahe,
+            clahe_clip_limit: config.clahe_clip_limit,
+            unsharp_amount: config.unsharp_amount,
+        });
+        let _ = camera
+            .cmd_tx
+            .try_send(CameraControlCmd::SetQualityGateThreshold(
+                config.quality_gate_min_sharpness,
+            ));
+        let _ = camera
+            .cmd_tx
+            .try_send(CameraControlCmd::SetHandConfidenceThreshold(
+                config.hand_confidence_min,
+            ));
 
         // Initialize Real Microphone Audio Recorder (cpal + hound)
         let audio_recorder = AudioRecorder::new();
@@ -354,6 +382,8 @@ impl AirTeachApp {
 
         let cold_start_ms = launch_instant.elapsed().as_secs_f32() * 1000.0;
         let zero_live_emb = [0.0_f32; EMBEDDING_DIM];
+        let mut gesture_fsm = GestureDebounceFsm::production();
+        gesture_fsm.set_hold_frames(config.gesture_hold_frames);
 
         Self {
             screen: initial_screen,
@@ -367,6 +397,9 @@ impl AirTeachApp {
             active_camera_index,
             camera_color_image: ColorImage::new([640, 360], BG_DARK),
             camera_texture: None,
+            camera_raw_color_image: ColorImage::new([640, 360], BG_DARK),
+            camera_raw_texture: None,
+            calibration_modal_open: false,
             camera_fps: 0.0,
             camera_sharpness: 0.0,
             camera_lighting_mode: LightingAdaptationMode::Normal,
@@ -380,6 +413,7 @@ impl AirTeachApp {
             camera_resolution_label: "Standby".to_string(),
             last_two_hand_frame: TwoHandFrame::default(),
             last_face_eyes_norm: None,
+            last_face_5pt_norm: None,
             hud_right_trail: VecDeque::with_capacity(18),
             about_modal_open: false,
             audio_recorder,
@@ -408,13 +442,15 @@ impl AirTeachApp {
             logged_in_username,
             slide_card_visible: true,
             enrolled_face_embedding,
+            enrolled_face_templates,
             last_live_face_embedding: zero_live_emb,
+            last_live_face_vec: Vec::new(),
             last_face_bbox_norm: None,
             last_face_similarity: 0.0,
             auto_face_unlock_enabled: true,
             pin_input_buffer: String::new(),
             auth_error_msg: String::new(),
-            gesture_fsm: GestureDebounceFsm::production(),
+            gesture_fsm,
             gesture_state: DualHandGestureState {
                 left_gesture: LeftGesture::Idle,
                 right_gesture: RightGesture::Idle,
@@ -710,6 +746,7 @@ impl AirTeachApp {
         self.last_two_hand_frame = pkt.two_hand_frame;
         self.last_face_bbox_norm = pkt.face_bbox_norm;
         self.last_face_eyes_norm = pkt.face_eyes_norm;
+        self.last_face_5pt_norm = pkt.two_hand_frame.detected_face_5pt;
 
         if let Some(ref rh) = self.last_two_hand_frame.right_hand {
             let tip = rh.landmarks[8];
@@ -755,7 +792,44 @@ impl AirTeachApp {
             }
         }
 
-        if self.screen == AppScreen::Auth && self.camera_using_hardware {
+        if self.calibration_modal_open {
+            if let Some(ref raw_bytes) = pkt.raw_rgba_bytes {
+                if self.camera_raw_color_image.size != [w, h]
+                    || self.camera_raw_color_image.pixels.len() != num_px
+                {
+                    self.camera_raw_color_image = ColorImage::new([w, h], BG_DARK);
+                }
+                if raw_bytes.len() >= num_px * 4 {
+                    for (dst, src) in self
+                        .camera_raw_color_image
+                        .pixels
+                        .iter_mut()
+                        .zip(raw_bytes.chunks_exact(4))
+                    {
+                        *dst = Color32::from_rgba_unmultiplied(src[0], src[1], src[2], src[3]);
+                    }
+                }
+                match self.camera_raw_texture {
+                    Some(ref mut tex) => {
+                        tex.set(
+                            self.camera_raw_color_image.clone(),
+                            egui::TextureOptions::LINEAR,
+                        );
+                    }
+                    None => {
+                        self.camera_raw_texture = Some(ctx.load_texture(
+                            "airteach_camera_raw_preview",
+                            self.camera_raw_color_image.clone(),
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                }
+            }
+        }
+
+        if (self.screen == AppScreen::Auth || self.calibration_modal_open)
+            && self.camera_using_hardware
+        {
             self.face_auth.update_liveness_with_ear(
                 pkt.face_blink_detected,
                 pkt.face_motion_score,
@@ -763,24 +837,44 @@ impl AirTeachApp {
             );
             if let Some(bbox) = pkt.face_bbox_norm {
                 if pkt.quality_gate_passed {
-                    self.last_live_face_embedding =
-                        self.face_auth.extract_512d_aligned_embedding(
-                            &pkt.rgba_bytes,
-                            pkt.width,
-                            pkt.height,
-                            bbox,
-                            pkt.face_eyes_norm,
-                        );
-                    if !self.auth_tab_is_signup
+                    // Prefer 128-D aligned SFace embedding (`models/mobilefacenet.onnx`); fallback to 512-D
+                    if let Some(sface) = pkt.two_hand_frame.detected_face_emb {
+                        self.last_live_face_vec = sface.0.to_vec();
+                    } else {
+                        self.last_live_face_embedding =
+                            self.face_auth.extract_512d_aligned_embedding(
+                                &pkt.rgba_bytes,
+                                pkt.width,
+                                pkt.height,
+                                bbox,
+                                pkt.face_eyes_norm,
+                            );
+                        self.last_live_face_vec = self.last_live_face_embedding.to_vec();
+                    }
+
+                    if self.screen == AppScreen::Auth
+                        && !self.auth_tab_is_signup
                         && self.signin_face_mode
                         && !self.registered_users.is_empty()
                     {
-                        let eval = self.face_auth.evaluate_unlock_with_threshold(
-                            &self.last_live_face_embedding,
+                        let active_thresh = if self.last_live_face_vec.len() == SFACE_EMBEDDING_DIM
+                            || self
+                                .enrolled_face_templates
+                                .first()
+                                .map(|t| t.len() == SFACE_EMBEDDING_DIM)
+                                .unwrap_or(false)
+                        {
+                            self.config.sface_match_threshold
+                        } else {
+                            self.config.face_match_threshold
+                        };
+                        let eval = self.face_auth.evaluate_unlock_multi_template(
+                            &self.last_live_face_vec,
+                            &self.enrolled_face_templates,
                             &self.enrolled_face_embedding,
                             pkt.face_blink_detected,
                             pkt.face_motion_score,
-                            self.config.face_match_threshold,
+                            active_thresh,
                         );
                         self.last_face_similarity = eval.cosine_similarity;
                         if self.auto_face_unlock_enabled && eval.unlocked {
@@ -1050,7 +1144,8 @@ impl AirTeachApp {
                 .selected_user_idx
                 .min(self.registered_users.len().saturating_sub(1));
             self.select_registered_user_for_signin(idx);
-            self.signin_face_mode = !self.enrolled_face_embedding.is_empty();
+            self.signin_face_mode =
+                !self.enrolled_face_templates.is_empty() || !self.enrolled_face_embedding.is_empty();
             if self.signin_face_mode {
                 self.ensure_camera_acquired();
             } else {
@@ -1067,8 +1162,21 @@ impl AirTeachApp {
         }
         if let Some(u) = self.registered_users.get(self.selected_user_idx) {
             self.enrolled_face_embedding = u.face_embedding.clone();
+            self.enrolled_face_templates = u.face_templates.clone();
         } else {
             self.enrolled_face_embedding.clear();
+            self.enrolled_face_templates.clear();
+        }
+    }
+
+    pub fn set_calibration_modal_open(&mut self, open: bool) {
+        self.calibration_modal_open = open;
+        let _ = self
+            .camera
+            .cmd_tx
+            .try_send(CameraControlCmd::SetCalibrationPreview(open));
+        if open {
+            self.ensure_camera_acquired();
         }
     }
 
@@ -1083,6 +1191,9 @@ impl AirTeachApp {
 
     /// Explicitly stop & release hardware camera stream on logout, toggle-off, or non-camera views.
     pub fn release_camera_hardware(&mut self) {
+        if self.calibration_modal_open {
+            return;
+        }
         if self.camera_acquired || self.camera_using_hardware {
             self.camera.release();
             self.camera_acquired = false;
@@ -1097,6 +1208,8 @@ impl AirTeachApp {
             self.last_two_hand_frame = TwoHandFrame::default();
             self.last_face_bbox_norm = None;
             self.last_face_eyes_norm = None;
+            self.last_face_5pt_norm = None;
+            self.last_live_face_vec.clear();
             self.hud_right_trail.clear();
         }
     }
@@ -1166,10 +1279,8 @@ impl AirTeachApp {
             );
             return;
         }
-        if !self
-            .last_live_face_embedding
-            .iter()
-            .any(|&v| v.abs() > 1e-6)
+        if self.last_live_face_vec.is_empty()
+            || !self.last_live_face_vec.iter().any(|&v| v.abs() > 1e-6)
         {
             self.auth_error_msg =
                 "Đang chờ khung hình Face embedding ổn định, vui lòng thử bấm chụp lại sau 0.5 giây."
@@ -1177,7 +1288,7 @@ impl AirTeachApp {
             return;
         }
 
-        self.signup_face_samples.push(self.last_live_face_embedding);
+        self.signup_face_samples.push(self.last_live_face_vec.clone());
         let count = self.signup_face_samples.len();
         let next_prompt = ENROLL_ANGLE_PROMPTS
             .get(count)
@@ -1214,19 +1325,22 @@ impl AirTeachApp {
             }
         };
 
-        let avg_face_vec = if skip_face {
+        let face_templates = if skip_face {
             Vec::new()
         } else {
-            FaceAuthEngine::average_embeddings(&self.signup_face_samples).unwrap_or_default()
+            self.signup_face_samples.clone()
         };
+        let has_face = !face_templates.is_empty();
 
         let clean_uname = self.signup_username.trim().to_string();
         let clean_dname = self.signup_full_name.trim().to_string();
 
-        match self
-            .storage
-            .create_user(&clean_uname, &clean_dname, &pw_hash, &avg_face_vec)
-        {
+        match self.storage.create_user_with_templates(
+            &clean_uname,
+            &clean_dname,
+            &pw_hash,
+            &face_templates,
+        ) {
             Ok(created) => {
                 self.reload_registered_users();
                 let new_idx = self
@@ -1241,7 +1355,7 @@ impl AirTeachApp {
                 self.signup_face_samples.clear();
                 self.signup_step = 1;
                 self.auth_tab_is_signup = false;
-                self.signin_face_mode = !avg_face_vec.is_empty();
+                self.signin_face_mode = has_face;
                 if self.signin_face_mode {
                     self.ensure_camera_acquired();
                 } else {
@@ -1262,6 +1376,7 @@ impl AirTeachApp {
         if let Some(u) = self.registered_users.get(idx) {
             self.selected_user_idx = idx;
             self.enrolled_face_embedding = u.face_embedding.clone();
+            self.enrolled_face_templates = u.face_templates.clone();
             self.face_auth.reset_liveness();
             self.last_face_similarity = 0.0;
             self.auth_error_msg.clear();
@@ -1274,6 +1389,7 @@ impl AirTeachApp {
         self.logged_in_teacher_name = user.display_name.clone();
         self.logged_in_username = user.username.clone();
         self.enrolled_face_embedding = user.face_embedding.clone();
+        self.enrolled_face_templates = user.face_templates.clone();
         self.lecture_history = self.storage.list_lecture_history(&user.id);
         self.pin_input_buffer.clear();
         self.auth_error_msg.clear();
@@ -1296,6 +1412,7 @@ impl AirTeachApp {
         self.auth_tab_is_signup = self.registered_users.is_empty();
         self.signup_step = 1;
         self.signin_face_mode = false;
+        self.set_calibration_modal_open(false);
         self.release_camera_hardware();
         self.screen = AppScreen::Auth;
     }
@@ -1536,20 +1653,29 @@ impl AirTeachApp {
     /// Module 4 ("Analyze Board & Lecture"):
     /// 1. Export the entire Smartboard Canvas to PNG
     /// 2. Attach the latest transcribed lecture text from the microphone
-    /// 3. Send both Board PNG + Lecture Transcript to Gemini 2.5 Flash (fallback 2.0 Flash)
-    ///    using one of the 3 Pedagogical Modes, and persist history into `airteach_local.db`.
+    /// 3. Send both Board PNG + Lecture Transcript to Gemini 3.5 Flash (fallback 2.5 / 2.0 Flash)
+    ///    with Structured JSON Output + SQLite cache, and persist history into `airteach_local.db`.
     pub fn analyze_board_and_lecture(&mut self, mode: PedagogicalAnalysisMode) {
         self.chat_drawer_open = true;
         // Temporarily clear selection_rect_board so crop_selection_to_base64_png exports the full board
         let prev_sel = self.selection_rect_board.take();
         let prompt = mode.prompt_instruction(&self.subtitles_engine.full_transcript_text());
-        self.send_chat_message(prompt, true);
+        self.send_chat_message_with_options(prompt, true, true);
         self.selection_rect_board = prev_sel;
         // Also persist the lecture snapshot to SQLite history
         self.save_current_lecture_session();
     }
 
     pub fn send_chat_message(&mut self, prompt: String, include_selection_image: bool) {
+        self.send_chat_message_with_options(prompt, include_selection_image, false);
+    }
+
+    pub fn send_chat_message_with_options(
+        &mut self,
+        prompt: String,
+        include_selection_image: bool,
+        use_structured_json: bool,
+    ) {
         // Check if the user asked to draw a PubChem molecule in chat
         let lower = prompt.to_lowercase();
         for mol in ["aspirin", "benzene", "caffeine", "glucose"] {
@@ -1574,7 +1700,7 @@ impl AirTeachApp {
         let img_dims = crop_data.as_ref().map(|(_, w, h)| (*w, *h));
         let b64_img = crop_data.map(|(b64, _, _)| b64);
 
-        // Retrieve grounded Slide Context RAG (`Workstream 3.2`)
+        // Retrieve grounded Slide Context RAG
         let rag_hits = self
             .rag_index
             .retrieve(&prompt, self.current_slide_idx, 2);
@@ -1590,6 +1716,16 @@ impl AirTeachApp {
                 .build_grounded_prompt_context(&prompt, self.current_slide_idx),
         );
 
+        let resolved_model = GeminiChatClient::resolve_model_id(&self.config.gemini_model);
+        let cache_key = GeminiChatClient::compute_cache_key(
+            &resolved_model,
+            self.subject_mode,
+            &prompt,
+            slide_rag_context.as_deref(),
+            b64_img.as_deref(),
+            use_structured_json,
+        );
+
         self.chat_messages.push(ChatMessage {
             role: "user".to_string(),
             text: prompt.clone(),
@@ -1599,6 +1735,24 @@ impl AirTeachApp {
             rag_slide_badge: rag_badge.clone(),
             timestamp: now_str.clone(),
         });
+
+        if let Some((cached_model, cached_text, _structured)) =
+            self.storage.get_cached_ai_response(&cache_key)
+        {
+            if !cached_text.trim().is_empty() {
+                self.chat_messages.push(ChatMessage {
+                    role: "model".to_string(),
+                    text: format!("⚡ [Cache · {cached_model}]\n{cached_text}"),
+                    subject: self.subject_mode,
+                    has_image_attachment: false,
+                    image_dimensions: None,
+                    rag_slide_badge: rag_badge,
+                    timestamp: now_str,
+                });
+                self.chat_streaming_active = false;
+                return;
+            }
+        }
 
         let model_msg_idx = self.chat_messages.len();
         self.chat_messages.push(ChatMessage {
@@ -1613,13 +1767,15 @@ impl AirTeachApp {
 
         let api_key = self.storage.get_decrypted_api_key(&self.config);
         self.chat_streaming_active = true;
-        self.gemini_client.stream_completion(
+        self.gemini_client.stream_completion_with_options(
             api_key,
-            self.config.gemini_model.clone(),
+            resolved_model,
             self.subject_mode,
             prompt,
             slide_rag_context,
             b64_img,
+            use_structured_json,
+            cache_key,
             model_msg_idx,
             self.chat_event_tx.clone(),
         );
@@ -1641,6 +1797,21 @@ impl AirTeachApp {
                 }
                 ChatStreamEvent::Completed { .. } => {
                     self.chat_streaming_active = false;
+                }
+                ChatStreamEvent::CacheStore {
+                    cache_key,
+                    model_id,
+                    response_text,
+                    structured_json,
+                } => {
+                    if !cache_key.trim().is_empty() && !response_text.trim().is_empty() {
+                        self.storage.put_cached_ai_response(
+                            &cache_key,
+                            &model_id,
+                            &response_text,
+                            &structured_json,
+                        );
+                    }
                 }
                 ChatStreamEvent::Error {
                     message_index,
@@ -1857,7 +2028,9 @@ impl AirTeachApp {
     }
 
     fn render_dashboard(&mut self, ctx: &egui::Context) {
-        self.release_camera_hardware();
+        if !self.calibration_modal_open {
+            self.release_camera_hardware();
+        }
         let palette = self.config.theme_mode.palette();
         let teacher_label = if self.logged_in_teacher_name.trim().is_empty() {
             "Người dùng cục bộ".to_string()
@@ -2263,9 +2436,15 @@ impl eframe::App for AirTeachApp {
         self.poll_chat_stream_events();
         self.poll_lecture_replay_and_subtitles();
 
+        if self.calibration_modal_open {
+            self.ensure_camera_acquired();
+        }
+
         match self.screen {
             AppScreen::Welcome => {
-                self.release_camera_hardware();
+                if !self.calibration_modal_open {
+                    self.release_camera_hardware();
+                }
                 welcome_view::render_welcome_view(self, ctx);
             }
             AppScreen::Auth => {
@@ -2275,7 +2454,7 @@ impl eframe::App for AirTeachApp {
                 self.render_dashboard(ctx);
             }
             AppScreen::LectureMode => {
-                if self.left_camera_dock_open {
+                if self.left_camera_dock_open || self.calibration_modal_open {
                     self.ensure_camera_acquired();
                 } else {
                     self.release_camera_hardware();
@@ -2293,10 +2472,14 @@ impl eframe::App for AirTeachApp {
                 canvas_view::render_lecture_canvas(self, ctx);
             }
             AppScreen::Settings => {
-                self.release_camera_hardware();
+                if !self.calibration_modal_open {
+                    self.release_camera_hardware();
+                }
                 settings_view::render_settings_view(self, ctx);
             }
         }
+
+        calibration_view::render_calibration_modal(self, ctx);
 
         ctx.request_repaint();
     }

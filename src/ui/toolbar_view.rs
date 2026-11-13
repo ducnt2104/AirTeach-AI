@@ -1,16 +1,16 @@
 //! Minimalist Studio Header Bar & Bottom Drawing Dock (`src/ui/toolbar_view.rs` — MODULE 2.1):
-//! - Single Header Bar (`Height: 46px`, Background `#0F172A`, Zero 2nd Sub-Toolbar!):
+//! - Single Header Bar (`Height: 46px`, zero 2nd Sub-Toolbar!):
 //!   * Left: `[Đăng xuất]` | Tên Giáo viên đã đăng nhập | `[Mở PDF/Slide]` | `[ < ] Slide 1/4 [ > ]` | `[Bật/Tắt Lưới Caro]`
 //!   * Middle: Flexible stretch spacer so left and right controls never overlap
 //!   * Right: `[Ghi Âm Bài Giảng]` | `[Ẩn/Hiện Camera]` | `[Trợ Lý AI (Đóng/Mở)]`
-//! - Bottom Drawing Dock (`Height: 54px`, Background `#0F172A`):
+//! - Bottom Drawing Dock (`Height: 54px`):
 //!   * Group 1: `[Phân Tích Vùng]` | `[Bút vẽ]` | `[Tẩy]` | `[Laser]` | `[Nắn hình: TẮT/BẬT]`
 //!   * Group 2: 6 circular color buttons (`22x22px`) + thickness slider (`2px - 14px`)
 //!   * Group 3: `[Hoàn tác (Undo)]` | `[Làm lại (Redo)]` | `[Xóa Bảng]`
 
 use crate::app::{ActiveBoardTool, AirTeachApp};
 use crate::core::audio_recorder::RecordingState;
-use crate::ui::brand::{render_about_modal, ui_brand_logo};
+use crate::ui::brand::{render_about_modal, ui_brand_logo, ThemeMode, ThemePalette};
 use crate::utils::storage::BoardLayoutMode;
 use egui::{Color32, FontId, RichText, Rounding, Sense, Stroke, Vec2};
 
@@ -42,7 +42,7 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
             ui.horizontal_centered(|ui| {
                 // Brand Logo + Quick About trigger
                 if ui_brand_logo(ui, 26.0)
-                    .on_hover_text("AirTeach AI — Sản phẩm của DNT - Victer (Nhấn Cài đặt / Giới thiệu)")
+                    .on_hover_text("AirTeach AI — Sản phẩm của DNT - Victer (Nhấn để xem Giới thiệu)")
                     .interact(Sense::click())
                     .clicked()
                 {
@@ -54,12 +54,12 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                     .add(
                         egui::Button::new(
                             RichText::new("[Đăng xuất]")
-                                .color(ALERT_ROSE)
+                                .color(palette.danger)
                                 .font(FontId::proportional(12.5))
                                 .strong(),
                         )
                         .fill(palette.surface)
-                        .stroke(Stroke::new(1.0_f32, ALERT_ROSE))
+                        .stroke(Stroke::new(1.0_f32, palette.danger))
                         .rounding(Rounding::same(6.0))
                         .min_size(Vec2::new(0.0, 30.0)),
                     )
@@ -77,7 +77,7 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                 ui.label(
                     RichText::new(format!("GV: {teacher_display}"))
                         .font(FontId::proportional(13.0))
-                        .color(SECONDARY_TEAL)
+                        .color(palette.secondary)
                         .strong(),
                 );
 
@@ -88,11 +88,11 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                         egui::Button::new(
                             RichText::new("[Mở PDF/Slide]")
                                 .font(FontId::proportional(12.5))
-                                .color(TEXT_LIGHT)
+                                .color(palette.text_primary)
                                 .strong(),
                         )
-                        .fill(SURFACE_DARK)
-                        .stroke(Stroke::new(1.0_f32, BORDER_SLATE))
+                        .fill(palette.surface)
+                        .stroke(Stroke::new(1.0_f32, palette.border))
                         .rounding(Rounding::same(6.0))
                         .min_size(Vec2::new(0.0, 30.0)),
                     )
@@ -106,11 +106,11 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                         egui::Button::new(
                             RichText::new("<")
                                 .font(FontId::proportional(13.5))
-                                .color(TEXT_LIGHT)
+                                .color(palette.text_primary)
                                 .strong(),
                         )
-                        .fill(SURFACE_DARK)
-                        .stroke(Stroke::new(1.0_f32, BORDER_SLATE))
+                        .fill(palette.surface)
+                        .stroke(Stroke::new(1.0_f32, palette.border))
                         .rounding(Rounding::same(6.0))
                         .min_size(Vec2::new(28.0, 30.0)),
                     )
@@ -128,7 +128,7 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                         app.slides.len().max(1)
                     ))
                     .font(FontId::proportional(13.0))
-                    .color(TEXT_LIGHT)
+                    .color(palette.text_primary)
                     .strong(),
                 );
 
@@ -137,11 +137,11 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                         egui::Button::new(
                             RichText::new(">")
                                 .font(FontId::proportional(13.5))
-                                .color(TEXT_LIGHT)
+                                .color(palette.text_primary)
                                 .strong(),
                         )
-                        .fill(SURFACE_DARK)
-                        .stroke(Stroke::new(1.0_f32, BORDER_SLATE))
+                        .fill(palette.surface)
+                        .stroke(Stroke::new(1.0_f32, palette.border))
                         .rounding(Rounding::same(6.0))
                         .min_size(Vec2::new(28.0, 30.0)),
                     )
@@ -152,21 +152,22 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                     app.invalidate_slide_texture();
                 }
 
-                let grid_fill = if app.config.canvas_grid_enabled {
-                    PRIMARY_INDIGO
+                let grid_active = app.config.canvas_grid_enabled;
+                let (grid_fill, grid_text_col) = if grid_active {
+                    (palette.primary, Color32::WHITE)
                 } else {
-                    SURFACE_DARK
+                    (palette.surface, palette.text_primary)
                 };
                 if ui
                     .add(
                         egui::Button::new(
                             RichText::new("[Bật/Tắt Lưới Caro]")
                                 .font(FontId::proportional(12.5))
-                                .color(TEXT_LIGHT)
+                                .color(grid_text_col)
                                 .strong(),
                         )
                         .fill(grid_fill)
-                        .stroke(Stroke::new(1.0_f32, BORDER_SLATE))
+                        .stroke(Stroke::new(1.0_f32, palette.border))
                         .rounding(Rounding::same(6.0))
                         .min_size(Vec2::new(0.0, 30.0)),
                     )
@@ -179,21 +180,21 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                 // MIDDLE FLEXIBLE STRETCH + RIGHT GROUP:
                 // [Ghi Âm Bài Giảng] | [Ẩn/Hiện Camera] | [Trợ Lý AI (Đóng/Mở)]
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let ai_fill = if app.chat_drawer_open {
-                        PRIMARY_INDIGO
+                    let (ai_fill, ai_text_col) = if app.chat_drawer_open {
+                        (palette.primary, Color32::WHITE)
                     } else {
-                        SURFACE_DARK
+                        (palette.surface, palette.text_primary)
                     };
                     if ui
                         .add(
                             egui::Button::new(
                                 RichText::new("[Trợ Lý AI (Đóng/Mở)]")
                                     .font(FontId::proportional(12.5))
-                                    .color(TEXT_LIGHT)
+                                    .color(ai_text_col)
                                     .strong(),
                             )
                             .fill(ai_fill)
-                            .stroke(Stroke::new(1.0_f32, PRIMARY_INDIGO))
+                            .stroke(Stroke::new(1.0_f32, palette.primary))
                             .rounding(Rounding::same(6.0))
                             .min_size(Vec2::new(0.0, 30.0)),
                         )
@@ -207,15 +208,14 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                         };
                     }
 
-                    let cam_fill = if app.left_camera_dock_open {
-                        SECONDARY_TEAL
+                    let (cam_fill, cam_text_col) = if app.left_camera_dock_open {
+                        let on_sec = match palette.mode {
+                            ThemeMode::Dark => Color32::from_rgb(0x0f, 0x17, 0x2a),
+                            ThemeMode::Light => Color32::WHITE,
+                        };
+                        (palette.secondary, on_sec)
                     } else {
-                        SURFACE_DARK
-                    };
-                    let cam_text_col = if app.left_camera_dock_open {
-                        BG_DARK
-                    } else {
-                        TEXT_LIGHT
+                        (palette.surface, palette.text_primary)
                     };
                     if ui
                         .add(
@@ -226,7 +226,7 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                                     .strong(),
                             )
                             .fill(cam_fill)
-                            .stroke(Stroke::new(1.0_f32, SECONDARY_TEAL))
+                            .stroke(Stroke::new(1.0_f32, palette.secondary))
                             .rounding(Rounding::same(6.0))
                             .min_size(Vec2::new(0.0, 30.0)),
                         )
@@ -240,7 +240,7 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                         }
                     }
 
-                    render_audio_recorder_widget(app, ui, ctx);
+                    render_audio_recorder_widget(app, ui, ctx, palette);
                 });
             });
         });
@@ -248,14 +248,16 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
     render_about_modal(ctx, &mut app.about_modal_open, palette);
 }
 
-/// Non-Overlapping Bottom Drawing Dock (`Height: 54px`, Background `#0F172A`).
+/// Non-Overlapping Bottom Drawing Dock (`Height: 54px`, theme-aware).
 pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
+    let palette = app.config.theme_mode.palette();
+
     egui::TopBottomPanel::bottom("airteach_bottom_drawing_dock")
         .exact_height(54.0)
         .frame(
             egui::Frame::none()
-                .fill(BG_DARK)
-                .stroke(Stroke::new(1.0_f32, BORDER_SLATE))
+                .fill(palette.bg_panel)
+                .stroke(Stroke::new(1.0_f32, palette.border))
                 .inner_margin(egui::Margin::symmetric(12.0, 8.0)),
         )
         .show(ctx, |ui| {
@@ -269,27 +271,28 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                     (ActiveBoardTool::LaserPointer, "[Laser]"),
                 ] {
                     let selected = app.active_tool == tool;
-                    let fill = if selected {
-                        if tool == ActiveBoardTool::SelectRegion {
-                            ALERT_ROSE
+                    let (fill, text_col) = if selected {
+                        let bg = if tool == ActiveBoardTool::SelectRegion {
+                            palette.danger
                         } else {
-                            PRIMARY_INDIGO
-                        }
+                            palette.primary
+                        };
+                        (bg, Color32::WHITE)
                     } else {
-                        SURFACE_DARK
+                        (palette.surface, palette.text_primary)
                     };
                     let border_col = if selected {
-                        TEXT_LIGHT
+                        palette.text_primary
                     } else if tool == ActiveBoardTool::SelectRegion {
-                        ALERT_ROSE
+                        palette.danger
                     } else {
-                        BORDER_SLATE
+                        palette.border
                     };
                     if ui
                         .add(
                             egui::Button::new(
                                 RichText::new(label)
-                                    .color(TEXT_LIGHT)
+                                    .color(text_col)
                                     .font(FontId::proportional(12.5))
                                     .strong(),
                             )
@@ -304,10 +307,10 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                     }
                 }
 
-                let snap_fill = if app.config.auto_shape_snap {
-                    Color32::from_rgb(13, 148, 136)
+                let (snap_fill, snap_text_col) = if app.config.auto_shape_snap {
+                    (Color32::from_rgb(13, 148, 136), Color32::WHITE)
                 } else {
-                    SURFACE_DARK
+                    (palette.surface, palette.text_primary)
                 };
                 let snap_label = if app.config.auto_shape_snap {
                     "[Nắn hình: BẬT]"
@@ -318,12 +321,12 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                     .add(
                         egui::Button::new(
                             RichText::new(snap_label)
-                                .color(TEXT_LIGHT)
+                                .color(snap_text_col)
                                 .font(FontId::proportional(12.5))
                                 .strong(),
                         )
                         .fill(snap_fill)
-                        .stroke(Stroke::new(1.0_f32, SECONDARY_TEAL))
+                        .stroke(Stroke::new(1.0_f32, palette.secondary))
                         .rounding(Rounding::same(7.0))
                         .min_size(Vec2::new(0.0, 32.0)),
                     )
@@ -337,7 +340,7 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                 ui.separator();
 
                 // GROUP 2: 6 Circular Color Buttons (22x22px) + Thickness Slider (2px - 14px)
-                let palette: [([u8; 4], &str); 6] = [
+                let ink_swatches: [([u8; 4], &str); 6] = [
                     ([0x00, 0xf5, 0xd4, 255], "Cyan (#00F5D4)"),
                     ([0xfe, 0xe4, 0x40, 255], "Vàng (#FEE440)"),
                     ([0xff, 0xff, 0xff, 255], "Trắng (#FFFFFF)"),
@@ -346,13 +349,13 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                     ([0xff, 0x6d, 0x00, 255], "Cam (#FF6D00)"),
                 ];
 
-                for (rgba, tooltip) in palette {
+                for (rgba, tooltip) in ink_swatches {
                     let c = Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]);
                     let is_active = app.current_ink_color == rgba;
                     let stroke = if is_active {
-                        Stroke::new(2.4_f32, TEXT_LIGHT)
+                        Stroke::new(2.4_f32, palette.text_primary)
                     } else {
-                        Stroke::new(1.0_f32, BORDER_SLATE)
+                        Stroke::new(1.0_f32, palette.border)
                     };
                     let btn = egui::Button::new("")
                         .fill(c)
@@ -371,7 +374,7 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                 ui.label(
                     RichText::new(format!("{:.0}px", app.current_stroke_thickness))
                         .font(FontId::proportional(12.0))
-                        .color(SECONDARY_TEAL)
+                        .color(palette.secondary)
                         .strong(),
                 );
                 ui.spacing_mut().slider_width = 88.0;
@@ -387,12 +390,12 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                     .add(
                         egui::Button::new(
                             RichText::new("[Hoàn tác (Undo)]")
-                                .color(TEXT_LIGHT)
+                                .color(palette.text_primary)
                                 .font(FontId::proportional(12.5))
                                 .strong(),
                         )
-                        .fill(SURFACE_DARK)
-                        .stroke(Stroke::new(1.0_f32, BORDER_SLATE))
+                        .fill(palette.surface)
+                        .stroke(Stroke::new(1.0_f32, palette.border))
                         .rounding(Rounding::same(7.0))
                         .min_size(Vec2::new(0.0, 32.0)),
                     )
@@ -407,12 +410,12 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                     .add(
                         egui::Button::new(
                             RichText::new("[Làm lại (Redo)]")
-                                .color(TEXT_LIGHT)
+                                .color(palette.text_primary)
                                 .font(FontId::proportional(12.5))
                                 .strong(),
                         )
-                        .fill(SURFACE_DARK)
-                        .stroke(Stroke::new(1.0_f32, BORDER_SLATE))
+                        .fill(palette.surface)
+                        .stroke(Stroke::new(1.0_f32, palette.border))
                         .rounding(Rounding::same(7.0))
                         .min_size(Vec2::new(0.0, 32.0)),
                     )
@@ -427,12 +430,12 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                     .add(
                         egui::Button::new(
                             RichText::new("[Xóa Bảng]")
-                                .color(ALERT_ROSE)
+                                .color(palette.danger)
                                 .font(FontId::proportional(12.5))
                                 .strong(),
                         )
-                        .fill(SURFACE_DARK)
-                        .stroke(Stroke::new(1.0_f32, ALERT_ROSE))
+                        .fill(palette.surface)
+                        .stroke(Stroke::new(1.0_f32, palette.danger))
                         .rounding(Rounding::same(7.0))
                         .min_size(Vec2::new(0.0, 32.0)),
                     )
@@ -446,7 +449,12 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
         });
 }
 
-fn render_audio_recorder_widget(app: &mut AirTeachApp, ui: &mut egui::Ui, ctx: &egui::Context) {
+fn render_audio_recorder_widget(
+    app: &mut AirTeachApp,
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    palette: ThemePalette,
+) {
     let rec_state = app.audio_recorder.state();
     let duration_s = app.audio_recorder.recorded_duration_secs();
     let mins = (duration_s as u32) / 60;
@@ -459,10 +467,10 @@ fn render_audio_recorder_widget(app: &mut AirTeachApp, ui: &mut egui::Ui, ctx: &
                     egui::Button::new(
                         RichText::new("[Ghi Âm Bài Giảng]")
                             .font(FontId::proportional(12.5))
-                            .color(TEXT_LIGHT)
+                            .color(Color32::WHITE)
                             .strong(),
                     )
-                    .fill(ALERT_ROSE)
+                    .fill(palette.danger)
                     .rounding(Rounding::same(6.0))
                     .min_size(Vec2::new(0.0, 30.0)),
                 )
@@ -480,10 +488,10 @@ fn render_audio_recorder_widget(app: &mut AirTeachApp, ui: &mut egui::Ui, ctx: &
                     egui::Button::new(
                         RichText::new(format!("[Đang Ghi Âm {mins:02}:{secs:02}]"))
                             .font(FontId::proportional(12.5))
-                            .color(TEXT_LIGHT)
+                            .color(Color32::WHITE)
                             .strong(),
                     )
-                    .fill(ALERT_ROSE)
+                    .fill(palette.danger)
                     .rounding(Rounding::same(6.0))
                     .min_size(Vec2::new(0.0, 30.0)),
                 )
@@ -498,10 +506,10 @@ fn render_audio_recorder_widget(app: &mut AirTeachApp, ui: &mut egui::Ui, ctx: &
                     egui::Button::new(
                         RichText::new(format!("[Tiếp tục Ghi {mins:02}:{secs:02}]"))
                             .font(FontId::proportional(12.5))
-                            .color(TEXT_LIGHT)
+                            .color(Color32::WHITE)
                             .strong(),
                     )
-                    .fill(PRIMARY_INDIGO)
+                    .fill(palette.primary)
                     .rounding(Rounding::same(6.0))
                     .min_size(Vec2::new(0.0, 30.0)),
                 )

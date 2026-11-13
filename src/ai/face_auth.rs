@@ -12,6 +12,8 @@ use argon2::{
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_FACE_MATCH_THRESHOLD: f32 = 0.80;
+pub const SFACE_EMBEDDING_DIM: usize = 128;
+pub const DEFAULT_SFACE_MATCH_THRESHOLD: f32 = 0.54;
 pub const MIN_FACE_ENROLL_SAMPLES: usize = 3;
 pub const MAX_FACE_ENROLL_SAMPLES: usize = 5;
 pub const EMBEDDING_DIM: usize = 512;
@@ -37,6 +39,8 @@ pub struct UserAccount {
     pub display_name: String,
     pub password_hash: String,
     pub face_embedding: Vec<f32>,
+    #[serde(default)]
+    pub face_templates: Vec<Vec<f32>>,
     pub created_at: String,
 }
 
@@ -292,6 +296,63 @@ impl FaceAuthEngine {
         Some(out)
     }
 
+    /// Compute L2-normalized centroid across dynamically sized vectors (e.g. 128-D SFace or 512-D fallback).
+    pub fn average_embeddings_dynamic(samples: &[Vec<f32>]) -> Option<Vec<f32>> {
+        let dim = samples.first().map(|v| v.len()).unwrap_or(0);
+        if dim == 0 {
+            return None;
+        }
+        let valid: Vec<&Vec<f32>> = samples.iter().filter(|s| s.len() == dim).collect();
+        if valid.is_empty() {
+            return None;
+        }
+        let mut out = vec![0.0_f32; dim];
+        for s in &valid {
+            for (i, &v) in s.iter().enumerate() {
+                out[i] += v;
+            }
+        }
+        let n = valid.len() as f32;
+        for v in &mut out {
+            *v /= n;
+        }
+        normalize_l2_in_place(&mut out);
+        Some(out)
+    }
+
+    /// Multi-template cosine similarity across stored enrolled angle templates (`max` / top-2 blend).
+    /// Strictly restricts comparisons to matching vector dimensionality (128-D SFace vs 128-D, etc.).
+    pub fn best_template_similarity(
+        live_embedding: &[f32],
+        enrolled_templates: &[Vec<f32>],
+        fallback_embedding: &[f32],
+    ) -> f32 {
+        let dim = live_embedding.len();
+        if dim == 0 {
+            return 0.0;
+        }
+        let mut sims: Vec<f32> = enrolled_templates
+            .iter()
+            .filter(|t| t.len() == dim)
+            .map(|t| cosine_similarity(live_embedding, t))
+            .collect();
+
+        if sims.is_empty() && fallback_embedding.len() == dim {
+            return cosine_similarity(live_embedding, fallback_embedding);
+        }
+        if sims.is_empty() {
+            return 0.0;
+        }
+        sims.sort_by(|a, b| b.total_cmp(a));
+        if sims.len() == 1 {
+            sims[0]
+        } else {
+            // Top-2 weighted blend (prevents isolated frame noise spikes while preserving pose recall)
+            let top2_blend = sims[0] * 0.65 + sims[1] * 0.35;
+            top2_blend.max(sims[0] * 0.94)
+        }
+    }
+
     /// Evaluate live embedding against a target user's normalized vector using Cosine Similarity + Liveness.
     pub fn evaluate_unlock_with_threshold(
         &mut self,
@@ -301,16 +362,43 @@ impl FaceAuthEngine {
         motion_score: f32,
         threshold: f32,
     ) -> FaceAuthEvaluation {
+        self.evaluate_unlock_multi_template(
+            live_embedding,
+            &[],
+            enrolled_embedding,
+            blink_detected,
+            motion_score,
+            threshold,
+        )
+    }
+
+    /// Evaluate a dynamically sized live embedding (128-D SFace or 512-D aligned) against up to 5 templates.
+    pub fn evaluate_unlock_multi_template(
+        &mut self,
+        live_embedding: &[f32],
+        enrolled_templates: &[Vec<f32>],
+        fallback_embedding: &[f32],
+        blink_detected: bool,
+        motion_score: f32,
+        threshold: f32,
+    ) -> FaceAuthEvaluation {
         self.update_liveness(blink_detected, motion_score);
-        if enrolled_embedding.is_empty() {
+        if live_embedding.is_empty()
+            || (enrolled_templates.is_empty() && fallback_embedding.is_empty())
+        {
             return FaceAuthEvaluation {
                 cosine_similarity: 0.0,
                 liveness: self.liveness.clone(),
                 unlocked: false,
             };
         }
-        let sim = cosine_similarity(live_embedding, enrolled_embedding);
-        let effective_threshold = threshold.clamp(0.55, 0.98);
+        let sim =
+            Self::best_template_similarity(live_embedding, enrolled_templates, fallback_embedding);
+        let effective_threshold = if live_embedding.len() == SFACE_EMBEDDING_DIM {
+            threshold.clamp(0.46, 0.72)
+        } else {
+            threshold.clamp(0.55, 0.98)
+        };
         let unlocked = sim >= effective_threshold && self.liveness.is_live();
         FaceAuthEvaluation {
             cosine_similarity: sim,
@@ -392,14 +480,13 @@ pub fn normalize_l2_in_place(vec: &mut [f32]) {
 
 #[inline]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let n = a.len().min(b.len());
-    if n == 0 {
+    if a.is_empty() || a.len() != b.len() {
         return 0.0;
     }
     let mut dot = 0.0_f32;
     let mut na = 0.0_f32;
     let mut nb = 0.0_f32;
-    for i in 0..n {
+    for i in 0..a.len() {
         dot += a[i] * b[i];
         na += a[i] * a[i];
         nb += b[i] * b[i];
@@ -523,5 +610,48 @@ mod tests {
             sim > 0.90,
             "Aligned face embedding must stay consistent under 18-deg head tilt: sim={sim}"
         );
+    }
+
+    #[test]
+    fn test_multi_template_128d_sface_unlock_top2_matching() {
+        let mut engine = FaceAuthEngine::new();
+        let mut t_front = vec![0.0_f32; SFACE_EMBEDDING_DIM];
+        t_front[0] = 1.0;
+        let mut t_left = vec![0.0_f32; SFACE_EMBEDDING_DIM];
+        t_left[0] = 0.85;
+        t_left[1] = 0.526;
+        let mut t_right = vec![0.0_f32; SFACE_EMBEDDING_DIM];
+        t_right[0] = 0.82;
+        t_right[2] = 0.572;
+
+        let templates = vec![t_front.clone(), t_left, t_right];
+        let mut live_left = vec![0.0_f32; SFACE_EMBEDDING_DIM];
+        live_left[0] = 0.84;
+        live_left[1] = 0.54;
+        normalize_l2_in_place(&mut live_left);
+
+        let eval = engine.evaluate_unlock_multi_template(
+            &live_left,
+            &templates,
+            &t_front,
+            true,
+            0.08,
+            DEFAULT_SFACE_MATCH_THRESHOLD,
+        );
+        assert!(eval.unlocked, "Multi-template SFace match must unlock cleanly: sim={}", eval.cosine_similarity);
+        assert!(eval.cosine_similarity >= 0.90);
+
+        // Stranger orthogonality must strictly stay below threshold
+        let mut stranger = vec![0.0_f32; SFACE_EMBEDDING_DIM];
+        stranger[64] = 1.0;
+        let rej = engine.evaluate_unlock_multi_template(
+            &stranger,
+            &templates,
+            &t_front,
+            true,
+            0.08,
+            DEFAULT_SFACE_MATCH_THRESHOLD,
+        );
+        assert!(!rej.unlocked);
     }
 }

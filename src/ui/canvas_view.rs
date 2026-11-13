@@ -134,6 +134,16 @@ pub fn render_left_camera_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                     );
                 }
 
+                if let Some(pts5) = app.last_face_5pt_norm {
+                    let pt_col = Color32::from_rgba_unmultiplied(0x00, 0xf5, 0xd4, 210);
+                    for i in 0..5 {
+                        let px = active_view_rect.min.x + pts5[i * 2] * active_view_rect.width();
+                        let py =
+                            active_view_rect.min.y + pts5[i * 2 + 1] * active_view_rect.height();
+                        painter.circle_filled(Pos2::new(px, py), 2.0, pt_col);
+                    }
+                }
+
                 if let Some([lx, ly, rx, ry]) = app.last_face_eyes_norm {
                     let lp = Pos2::new(
                         active_view_rect.min.x + lx * active_view_rect.width(),
@@ -492,6 +502,26 @@ pub fn render_left_camera_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
             ui.separator();
             ui.add_space(6.0);
 
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("⚙ Hiệu chỉnh nhanh (Raw vs HDR)")
+                            .font(FontId::proportional(11.5))
+                            .strong()
+                            .color(palette.text_primary),
+                    )
+                    .fill(palette.surface_elevated)
+                    .stroke(Stroke::new(1.0_f32, palette.secondary))
+                    .rounding(Rounding::same(6.0))
+                    .min_size(Vec2::new(250.0, 26.0)),
+                )
+                .clicked()
+            {
+                app.set_calibration_modal_open(true);
+            }
+
+            ui.add_space(6.0);
+
             // =================================================================
             // 4. COMPACT MIC VOLUME BAR (VU METER) AT BOTTOM
             // =================================================================
@@ -541,6 +571,7 @@ pub fn render_left_camera_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
 
 /// MODULE 2.3 & MODULE 4: Clean Center Smartboard Canvas (Zero Clutter, 80% Screen Area).
 pub fn render_lecture_canvas(app: &mut AirTeachApp, ctx: &egui::Context) {
+    let palette = app.config.theme_mode.palette();
     let bg_rgb = app.config.contrast_mode.canvas_bg_rgb();
     let canvas_bg_color = Color32::from_rgb(bg_rgb[0], bg_rgb[1], bg_rgb[2]);
     let is_light_board = app.config.contrast_mode == ClassroomContrastMode::WhiteboardClean;
@@ -654,12 +685,12 @@ pub fn render_lecture_canvas(app: &mut AirTeachApp, ctx: &egui::Context) {
                 let card_border = if use_light_card {
                     palette.border
                 } else {
-                    BORDER_SLATE
+                    palette.border
                 };
                 let card_title_col = if use_light_card {
                     palette.primary
                 } else {
-                    SECONDARY_TEAL
+                    palette.secondary
                 };
                 let card_sub_col = palette.text_muted;
                 let card_body_col = palette.text_primary;
@@ -832,7 +863,7 @@ pub fn render_lecture_canvas(app: &mut AirTeachApp, ctx: &egui::Context) {
                 painter.rect_stroke(
                     sel_rect,
                     Rounding::same(8.0),
-                    Stroke::new(2.2_f32, ALERT_ROSE),
+                    Stroke::new(2.2_f32, palette.danger),
                 );
             }
 
@@ -865,14 +896,19 @@ pub fn render_lecture_canvas(app: &mut AirTeachApp, ctx: &egui::Context) {
                         erase_r,
                         Color32::from_rgba_unmultiplied(0xf4, 0x3f, 0x5e, 55),
                     );
-                    painter.circle_stroke(cp, erase_r, Stroke::new(2.0_f32, ALERT_ROSE));
+                    painter.circle_stroke(cp, erase_r, Stroke::new(2.0_f32, palette.danger));
+                    let cross_col = if is_light_board {
+                        Color32::from_rgb(0x0f, 0x17, 0x2a)
+                    } else {
+                        TEXT_LIGHT
+                    };
                     painter.line_segment(
                         [Pos2::new(cp.x - 8.0, cp.y), Pos2::new(cp.x + 8.0, cp.y)],
-                        Stroke::new(1.5_f32, TEXT_LIGHT),
+                        Stroke::new(1.5_f32, cross_col),
                     );
                     painter.line_segment(
                         [Pos2::new(cp.x, cp.y - 8.0), Pos2::new(cp.x, cp.y + 8.0)],
-                        Stroke::new(1.5_f32, TEXT_LIGHT),
+                        Stroke::new(1.5_f32, cross_col),
                     );
                 } else if is_drawing {
                     let cyan = Color32::from_rgb(0x00, 0xf5, 0xd4);

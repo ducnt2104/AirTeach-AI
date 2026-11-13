@@ -95,15 +95,16 @@ pub struct DualHandGestureState {
     pub right_hold_progress: f32,
 }
 
-/// Normalize hand reference scale as distance from Wrist (LM 0) to Middle MCP (LM 9).
+/// Normalize hand reference scale as full 3D Euclidean distance from Wrist (LM 0) to Middle MCP (LM 9).
 #[inline]
 pub fn compute_palm_scale(lm: &[Landmark3D; 21]) -> f32 {
-    lm[WRIST].dist_2d(lm[MIDDLE_MCP]).max(1e-4)
+    lm[WRIST].dist_3d(lm[MIDDLE_MCP]).max(1e-4)
 }
 
-/// Scale- and rotation-invariant finger extension metric using wrist radial ratio,
-/// multi-bone dot-product joint angles (`MCP->PIP · PIP->DIP` and `PIP->DIP · DIP->TIP`),
-/// and palm-scaled forward reach, with asymmetric hysteresis (`was_extended`).
+/// 3D Z-aware, scale- & rotation-invariant finger extension metric combining:
+/// - 3D wrist radial ratio (`dist_3d(WRIST, TIP) / dist_3d(WRIST, PIP)`)
+/// - 3D multi-bone dot-product joint angles (`MCP->PIP · PIP->DIP · DIP->TIP`)
+/// - Palm-scaled 3D forward reach with asymmetric hysteresis (`was_extended`).
 #[inline]
 pub fn is_finger_extended_hysteresis(
     lm: &[Landmark3D; 21],
@@ -120,40 +121,47 @@ pub fn is_finger_extended_hysteresis(
     let dip = lm[dip_idx];
     let tip = lm[tip_idx];
 
-    let r_pip = wrist.dist_2d(pip) / palm_scale;
-    let r_tip = wrist.dist_2d(tip) / palm_scale;
+    let r_pip = wrist.dist_3d(pip) / palm_scale;
+    let r_tip = wrist.dist_3d(tip) / palm_scale;
     let radial_ratio = r_tip / r_pip.max(0.15);
 
-    // Direction vectors for MCP->PIP, PIP->DIP, and DIP->TIP bone segments
+    // Full 3D direction vectors for MCP->PIP, PIP->DIP, and DIP->TIP bone segments
     let v1x = pip.x - mcp.x;
     let v1y = pip.y - mcp.y;
-    let len1 = (v1x * v1x + v1y * v1y).sqrt().max(1e-5);
+    let v1z = pip.z - mcp.z;
+    let len1 = (v1x * v1x + v1y * v1y + v1z * v1z).sqrt().max(1e-5);
 
     let v2x = dip.x - pip.x;
     let v2y = dip.y - pip.y;
-    let len2 = (v2x * v2x + v2y * v2y).sqrt().max(1e-5);
+    let v2z = dip.z - pip.z;
+    let len2 = (v2x * v2x + v2y * v2y + v2z * v2z).sqrt().max(1e-5);
 
     let v3x = tip.x - dip.x;
     let v3y = tip.y - dip.y;
-    let len3 = (v3x * v3x + v3y * v3y).sqrt().max(1e-5);
+    let v3z = tip.z - dip.z;
+    let len3 = (v3x * v3x + v3y * v3y + v3z * v3z).sqrt().max(1e-5);
 
-    let cos_pip = (v1x * v2x + v1y * v2y) / (len1 * len2);
-    let cos_dip = (v2x * v3x + v2y * v3y) / (len2 * len3);
-    let cos_overall = (v1x * (tip.x - pip.x) + v1y * (tip.y - pip.y))
-        / (len1 * ((tip.x - pip.x).hypot(tip.y - pip.y).max(1e-5)));
+    let ox = tip.x - pip.x;
+    let oy = tip.y - pip.y;
+    let oz = tip.z - pip.z;
+    let len_overall = (ox * ox + oy * oy + oz * oz).sqrt().max(1e-5);
+
+    let cos_pip = (v1x * v2x + v1y * v2y + v1z * v2z) / (len1 * len2);
+    let cos_dip = (v2x * v3x + v2y * v3y + v2z * v3z) / (len2 * len3);
+    let cos_overall = (v1x * ox + v1y * oy + v1z * oz) / (len1 * len_overall);
     let cos_min_chain = cos_pip.min(cos_dip).max(cos_overall * 0.9);
-    let forward_reach = wrist.dist_2d(tip) / palm_scale;
+    let forward_reach = wrist.dist_3d(tip) / palm_scale;
 
     if was_extended {
-        // Hysteresis hold band: tolerates slight natural jitter without flickering out
+        // Hysteresis hold band: tolerates slight natural jitter & 3D tilt without flickering out
         radial_ratio > 1.05 && cos_min_chain > 0.22 && cos_overall > 0.28 && forward_reach > 1.05
     } else {
-        // Strict enter band: clearly straightened along full bone chain & pointing outward
+        // Strict enter band: clearly straightened along full 3D bone chain & pointing outward
         radial_ratio > 1.15 && cos_min_chain > 0.45 && cos_overall > 0.50 && forward_reach > 1.24
     }
 }
 
-/// Rotation- and scale-invariant thumb extension metric using CMC->MCP->IP dot product & spread.
+/// 3D rotation- and scale-invariant thumb extension metric using CMC->MCP->IP->TIP dot product & spread.
 #[inline]
 pub fn is_thumb_extended_hysteresis(
     lm: &[Landmark3D; 21],
@@ -167,14 +175,16 @@ pub fn is_thumb_extended_hysteresis(
 
     let v1x = mcp.x - cmc.x;
     let v1y = mcp.y - cmc.y;
-    let len1 = v1x.hypot(v1y).max(1e-5);
+    let v1z = mcp.z - cmc.z;
+    let len1 = (v1x * v1x + v1y * v1y + v1z * v1z).sqrt().max(1e-5);
 
     let v2x = tip.x - ip.x;
     let v2y = tip.y - ip.y;
-    let len2 = v2x.hypot(v2y).max(1e-5);
+    let v2z = tip.z - ip.z;
+    let len2 = (v2x * v2x + v2y * v2y + v2z * v2z).sqrt().max(1e-5);
 
-    let cos_thumb = (v1x * v2x + v1y * v2y) / (len1 * len2);
-    let spread_index = tip.dist_2d(lm[INDEX_MCP]) / palm_scale;
+    let cos_thumb = (v1x * v2x + v1y * v2y + v1z * v2z) / (len1 * len2);
+    let spread_index = tip.dist_3d(lm[INDEX_MCP]) / palm_scale;
 
     if was_extended {
         cos_thumb > 0.30 && spread_index > 0.36
@@ -217,7 +227,7 @@ pub fn classify_left_hand_with_hysteresis(
         lm, PINKY_MCP, PINKY_PIP, PINKY_TIP, palm_scale, prev_fingers[3],
     );
 
-    let thumb_index_dist = lm[THUMB_TIP].dist_2d(lm[INDEX_TIP]);
+    let thumb_index_dist = lm[THUMB_TIP].dist_3d(lm[INDEX_TIP]);
     let pinch_ratio = thumb_index_dist / palm_scale;
     let palm_center = Point2D::new(lm[MIDDLE_MCP].x, lm[MIDDLE_MCP].y);
 
@@ -264,7 +274,7 @@ pub fn classify_right_hand_with_hysteresis(
     );
 
     let [index_up, middle_up, ring_up, pinky_up] = *prev_fingers;
-    let thumb_index_ratio = lm[THUMB_TIP].dist_2d(lm[INDEX_TIP]) / palm_scale;
+    let thumb_index_ratio = lm[THUMB_TIP].dist_3d(lm[INDEX_TIP]) / palm_scale;
     let is_thumb_pinched = thumb_index_ratio < if was_pinched { 0.36 } else { 0.27 };
     let index_tip_pt = lm[INDEX_TIP].to_2d();
 
@@ -387,6 +397,11 @@ impl GestureDebounceFsm {
             no_hand_frames: 3,
             frame_clock_sec: 0.0,
         }
+    }
+
+    pub fn set_hold_frames(&mut self, hold_frames: u8) {
+        self.debounce_frames = hold_frames.clamp(5, 8);
+        self.min_hold_sec = ((self.debounce_frames as f64) * 0.030).clamp(0.150, 0.250);
     }
 
     #[inline]
@@ -835,5 +850,34 @@ mod tests {
             t += 0.035;
         }
         assert_eq!(released.right_gesture, RightGesture::Idle);
+    }
+
+    #[test]
+    fn test_3d_depth_tilted_hand_gestures_remain_invariant() {
+        let mut pitched = HandLandmarks::from_pose_preset(
+            Handedness::Right,
+            0.5,
+            0.5,
+            1.0,
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
+        // Pitch hand 45 degrees toward camera around X axis (foreshortens Y while expanding Z)
+        let pitch = 45.0_f32.to_radians();
+        let (sin_p, cos_p) = pitch.sin_cos();
+        for lm in &mut pitched.landmarks {
+            let dy = lm.y - 0.5;
+            let dz = lm.z;
+            lm.y = 0.5 + dy * cos_p - dz * sin_p;
+            lm.z = dy * sin_p + dz * cos_p;
+        }
+        assert_eq!(
+            classify_right_hand_raw(&pitched).0,
+            RightGesture::DrawStroke,
+            "3D Z-aware dot products must classify Draw pose even when pitched 45 deg in depth"
+        );
     }
 }

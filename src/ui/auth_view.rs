@@ -663,8 +663,20 @@ fn render_signin_flow(
                     );
 
                     let right = &mut cols[1];
-                    let has_enrolled_face = !app.enrolled_face_embedding.is_empty();
-                    let thr = app.config.face_match_threshold;
+                    let has_enrolled_face = !app.enrolled_face_embedding.is_empty()
+                        || !app.enrolled_face_templates.is_empty();
+                    let using_sface = app.last_live_face_vec.len()
+                        == crate::ai::face_auth::SFACE_EMBEDDING_DIM
+                        || app
+                            .enrolled_face_templates
+                            .first()
+                            .map(|v| v.len() == crate::ai::face_auth::SFACE_EMBEDDING_DIM)
+                            .unwrap_or(false);
+                    let thr = if using_sface {
+                        app.config.sface_match_threshold
+                    } else {
+                        app.config.face_match_threshold
+                    };
 
                     right.label(
                         RichText::new("Xác thực Khuôn Mặt Cục bộ (Face ID)")
@@ -766,11 +778,27 @@ fn render_signin_flow(
                                 .fill(palette.surface_elevated)
                                 .stroke(Stroke::new(1.0_f32, palette.border))
                                 .rounding(Rounding::same(RADIUS_MD))
-                                .min_size(Vec2::new(155.0, 36.0)),
+                                .min_size(Vec2::new(150.0, 36.0)),
                             )
                             .clicked()
                         {
                             let _ = app.camera.cmd_tx.try_send(CameraControlCmd::ReconnectHardware);
+                        }
+
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Hiệu chỉnh nhanh")
+                                        .color(palette.text_primary),
+                                )
+                                .fill(palette.surface_elevated)
+                                .stroke(Stroke::new(1.0_f32, palette.secondary))
+                                .rounding(Rounding::same(RADIUS_MD))
+                                .min_size(Vec2::new(140.0, 36.0)),
+                            )
+                            .clicked()
+                        {
+                            app.set_calibration_modal_open(true);
                         }
                     });
                 });
@@ -911,6 +939,15 @@ fn render_camera_auth_box(
                     rect.height() * 0.35,
                     Stroke::new(1.8_f32, ring_col),
                 );
+
+                // Render 5-pt facial alignment landmarks (eyes, nose, mouth corners) when available
+                if let Some(pts5) = app.last_face_5pt_norm {
+                    for i in 0..5 {
+                        let px = active_view_rect.left() + pts5[i * 2] * active_view_rect.width();
+                        let py = active_view_rect.top() + pts5[i * 2 + 1] * active_view_rect.height();
+                        painter.circle_filled(Pos2::new(px, py), 2.5, palette.secondary);
+                    }
+                }
 
                 // Top-left Adaptive Lighting pill + Luma
                 let lighting_col = match app.camera_lighting_mode {

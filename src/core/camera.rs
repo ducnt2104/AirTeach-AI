@@ -66,6 +66,9 @@ pub enum CameraControlCmd {
         enabled: bool,
         spacing_px: u32,
     },
+    SetCalibrationPreview(bool),
+    SetQualityGateThreshold(f32),
+    SetHandConfidenceThreshold(f32),
     Shutdown,
 }
 
@@ -111,9 +114,11 @@ pub struct CameraTelemetryPacket {
     pub width: u32,
     pub height: u32,
     pub rgba_bytes: Arc<Vec<u8>>,
+    pub raw_rgba_bytes: Option<Arc<Vec<u8>>>,
     pub two_hand_frame: TwoHandFrame,
     pub camera_fps: f32,
     pub sharpness_score: f32,
+    pub active_sharpness_threshold: f32,
     pub lighting_mode: LightingAdaptationMode,
     pub mean_luma: f32,
     pub overexposed_ratio: f32,
@@ -523,6 +528,7 @@ struct CvAsyncJob {
     width: u32,
     height: u32,
     face_bbox_norm: Option<[f32; 4]>,
+    min_hand_confidence: f32,
 }
 
 pub struct CameraSubsystem {
@@ -672,8 +678,8 @@ impl CameraSubsystem {
                                 return Ok((
                                     cam,
                                     name,
-                                    res.width().max(320),
-                                    res.height().max(240),
+                                    res.width().max(640),
+                                    res.height().max(480),
                                 ));
                             }
                             Err(e) => {
@@ -757,6 +763,7 @@ impl CameraSubsystem {
                 while cv_running_flag.load(Ordering::Relaxed) {
                     match cv_req_rx.recv_timeout(Duration::from_millis(80)) {
                         Ok(job) => {
+                            tracker.set_hand_confidence_min(job.min_hand_confidence);
                             tracker.set_face_exclusion_bbox(job.face_bbox_norm);
                             let res = tracker.process_frame(
                                 &job.rgba_bytes,
@@ -776,8 +783,8 @@ impl CameraSubsystem {
                 }
             });
 
-        let mut out_w = hw_cam.as_ref().map(|c| c.2.min(1280)).unwrap_or(640);
-        let mut out_h = hw_cam.as_ref().map(|c| c.3.min(720)).unwrap_or(480);
+        let mut out_w = hw_cam.as_ref().map(|c| c.2.clamp(640, 1280)).unwrap_or(640);
+        let mut out_h = hw_cam.as_ref().map(|c| c.3.clamp(480, 720)).unwrap_or(480);
         let mut rgba_work_buf = vec![15u8; (out_w * out_h * 4) as usize];
         let mut luma_buf = vec![0u8; (out_w * out_h) as usize];
         let mut blur_buf = vec![0u8; (out_w * out_h) as usize];
@@ -786,6 +793,13 @@ impl CameraSubsystem {
         let mut enable_clahe = true;
         let mut clahe_clip_limit = 2.2_f32;
         let mut unsharp_amount = 0.75_f32;
+        let mut calibration_preview = false;
+        let mut quality_gate_min_sharpness = FACE_QUALITY_GATE_MIN_SHARPNESS;
+        let mut hand_confidence_min = std::env::var("AIRTEACH_HAND_MIN_CONFIDENCE")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.50)
+            .clamp(0.40, 0.85);
 
         let mut last_frame_instant = Instant::now();
         let mut smoothed_fps = 0.0_f32;
@@ -880,6 +894,15 @@ impl CameraSubsystem {
                         hud_grid_enabled = enabled;
                         hud_grid_px = spacing_px.clamp(10, 60);
                     }
+                    CameraControlCmd::SetCalibrationPreview(enabled) => {
+                        calibration_preview = enabled;
+                    }
+                    CameraControlCmd::SetQualityGateThreshold(thresh) => {
+                        quality_gate_min_sharpness = thresh.clamp(12.0, 90.0);
+                    }
+                    CameraControlCmd::SetHandConfidenceThreshold(conf) => {
+                        hand_confidence_min = conf.clamp(0.40, 0.85);
+                    }
                     CameraControlCmd::Shutdown => {
                         running.store(false, Ordering::SeqCst);
                         Self::release_hw_camera(&mut hw_cam);
@@ -894,9 +917,11 @@ impl CameraSubsystem {
                     width: 640,
                     height: 360,
                     rgba_bytes: Arc::new(vec![0u8; 640 * 360 * 4]),
+                    raw_rgba_bytes: None,
                     two_hand_frame: TwoHandFrame::default(),
                     camera_fps: 0.0,
                     sharpness_score: 0.0,
+                    active_sharpness_threshold: quality_gate_min_sharpness,
                     lighting_mode: LightingAdaptationMode::Normal,
                     mean_luma: 0.0,
                     overexposed_ratio: 0.0,
@@ -951,8 +976,8 @@ impl CameraSubsystem {
                             let src_h = decoded.height().max(1);
                             res_label = format!("{}x{} ({:.1} FPS)", src_w, src_h, smoothed_fps);
 
-                            let target_w = src_w.min(1280);
-                            let target_h = src_h.min(720);
+                            let target_w = src_w.clamp(640, 1280);
+                            let target_h = src_h.clamp(480, 720);
                             if target_w != out_w || target_h != out_h {
                                 out_w = target_w;
                                 out_h = target_h;
@@ -1015,8 +1040,14 @@ impl CameraSubsystem {
                 }
             }
 
+            let raw_snapshot = if using_hardware && calibration_preview {
+                Some(Arc::new(rgba_work_buf.clone()))
+            } else {
+                None
+            };
+
             let diag = if using_hardware {
-                enhance_frame_adaptive_with_diagnostics(
+                let mut d = enhance_frame_adaptive_with_diagnostics(
                     &mut rgba_work_buf,
                     &mut luma_buf,
                     &mut blur_buf,
@@ -1025,7 +1056,9 @@ impl CameraSubsystem {
                     enable_clahe,
                     clahe_clip_limit,
                     unsharp_amount,
-                )
+                );
+                d.quality_gate_passed = d.sharpness_score >= quality_gate_min_sharpness;
+                d
             } else {
                 FrameDiagnostics::default()
             };
@@ -1050,6 +1083,7 @@ impl CameraSubsystem {
                     width: out_w,
                     height: out_h,
                     face_bbox_norm: skin_face_bbox,
+                    min_hand_confidence: hand_confidence_min,
                 };
                 if cv_req_tx.try_send(job).is_err() {
                     cv_gate.finish();
@@ -1088,9 +1122,11 @@ impl CameraSubsystem {
                 width: out_w,
                 height: out_h,
                 rgba_bytes: Arc::new(rgba_work_buf.clone()),
+                raw_rgba_bytes: raw_snapshot,
                 two_hand_frame,
                 camera_fps: if using_hardware { smoothed_fps } else { 0.0 },
                 sharpness_score: diag.sharpness_score,
+                active_sharpness_threshold: quality_gate_min_sharpness,
                 lighting_mode: diag.lighting_mode,
                 mean_luma: diag.mean_luma,
                 overexposed_ratio: diag.overexposed_ratio,

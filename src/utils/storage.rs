@@ -4,8 +4,11 @@
 //! - `aes-gcm` (AES-256-GCM with 96-bit random CSPRNG nonces) protects Gemini API keys and `.airteach` exports
 //! - Biometric embeddings are stored strictly as normalized numeric vectors (`face_embedding`) — never raw photos
 
-use crate::ai::face_auth::{normalize_l2_in_place, UserAccount, DEFAULT_FACE_MATCH_THRESHOLD, EMBEDDING_DIM};
-use crate::core::camera::CaroGridSpacing;
+use crate::ai::face_auth::{
+    normalize_l2_in_place, FaceAuthEngine, UserAccount, DEFAULT_FACE_MATCH_THRESHOLD,
+    DEFAULT_SFACE_MATCH_THRESHOLD, EMBEDDING_DIM, SFACE_EMBEDDING_DIM,
+};
+use crate::core::camera::{CaroGridSpacing, FACE_QUALITY_GATE_MIN_SHARPNESS};
 use crate::core::stroke_engine::{Point2D, SnappedShape};
 use crate::ui::brand::ThemeMode;
 use aes_gcm::{
@@ -150,6 +153,14 @@ pub struct AppConfig {
     pub camera_index: u32,
     #[serde(default = "default_face_threshold")]
     pub face_match_threshold: f32,
+    #[serde(default = "default_sface_threshold")]
+    pub sface_match_threshold: f32,
+    #[serde(default = "default_hand_confidence_min")]
+    pub hand_confidence_min: f32,
+    #[serde(default = "default_quality_gate_sharpness")]
+    pub quality_gate_min_sharpness: f32,
+    #[serde(default = "default_gesture_hold_frames")]
+    pub gesture_hold_frames: u8,
     pub canvas_grid_spacing: CaroGridSpacing,
     pub preview_grid_spacing: CaroGridSpacing,
     #[serde(default = "default_true")]
@@ -188,9 +199,13 @@ impl Default for AppConfig {
             theme_mode: ThemeMode::Dark,
             lecture_title: default_lecture_title(),
             encrypted_api_key_b64: String::new(),
-            gemini_model: "gemini-2.0-flash".to_string(),
+            gemini_model: "gemini-3.5-flash".to_string(),
             camera_index: 0,
             face_match_threshold: DEFAULT_FACE_MATCH_THRESHOLD,
+            sface_match_threshold: DEFAULT_SFACE_MATCH_THRESHOLD,
+            hand_confidence_min: 0.50,
+            quality_gate_min_sharpness: FACE_QUALITY_GATE_MIN_SHARPNESS,
+            gesture_hold_frames: 6,
             canvas_grid_spacing: CaroGridSpacing::Grid20px,
             preview_grid_spacing: CaroGridSpacing::Grid20px,
             canvas_grid_enabled: true,
@@ -223,6 +238,22 @@ const fn default_face_threshold() -> f32 {
     DEFAULT_FACE_MATCH_THRESHOLD
 }
 
+const fn default_sface_threshold() -> f32 {
+    DEFAULT_SFACE_MATCH_THRESHOLD
+}
+
+const fn default_hand_confidence_min() -> f32 {
+    0.50
+}
+
+const fn default_quality_gate_sharpness() -> f32 {
+    FACE_QUALITY_GATE_MIN_SHARPNESS
+}
+
+const fn default_gesture_hold_frames() -> u8 {
+    6
+}
+
 const fn default_true() -> bool {
     true
 }
@@ -250,6 +281,75 @@ pub struct LectureHistoryEntry {
     pub created_at: String,
     pub stroke_count: usize,
     pub audio_wav_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredFacePayload {
+    avg: Vec<f32>,
+    #[serde(default)]
+    templates: Vec<Vec<f32>>,
+}
+
+fn decode_face_payload(emb_json: &str) -> (Vec<f32>, Vec<Vec<f32>>) {
+    let trimmed = emb_json.trim();
+    if trimmed.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    if let Ok(mut payload) = serde_json::from_str::<StoredFacePayload>(trimmed) {
+        if payload.avg.len() == EMBEDDING_DIM || payload.avg.len() == SFACE_EMBEDDING_DIM {
+            normalize_l2_in_place(&mut payload.avg);
+        }
+        for tmpl in &mut payload.templates {
+            if !tmpl.is_empty() {
+                normalize_l2_in_place(tmpl);
+            }
+        }
+        if payload.templates.is_empty() && !payload.avg.is_empty() {
+            payload.templates.push(payload.avg.clone());
+        }
+        return (payload.avg, payload.templates);
+    }
+    let mut legacy = serde_json::from_str::<Vec<f32>>(trimmed).unwrap_or_default();
+    if legacy.len() == EMBEDDING_DIM || legacy.len() == SFACE_EMBEDDING_DIM {
+        normalize_l2_in_place(&mut legacy);
+    }
+    let templates = if legacy.is_empty() {
+        Vec::new()
+    } else {
+        vec![legacy.clone()]
+    };
+    (legacy, templates)
+}
+
+fn encode_face_payload(templates: &[Vec<f32>], fallback: &[f32]) -> (Vec<f32>, Vec<Vec<f32>>, String) {
+    let mut clean_templates: Vec<Vec<f32>> = templates
+        .iter()
+        .filter(|v| !v.is_empty())
+        .map(|v| {
+            let mut copy = v.clone();
+            normalize_l2_in_place(&mut copy);
+            copy
+        })
+        .take(5)
+        .collect();
+
+    if clean_templates.is_empty() && !fallback.is_empty() {
+        let mut copy = fallback.to_vec();
+        normalize_l2_in_place(&mut copy);
+        clean_templates.push(copy);
+    }
+
+    let avg = FaceAuthEngine::average_embeddings_dynamic(&clean_templates).unwrap_or_default();
+    let json = if clean_templates.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&StoredFacePayload {
+            avg: avg.clone(),
+            templates: clean_templates.clone(),
+        })
+        .unwrap_or_default()
+    };
+    (avg, clean_templates, json)
 }
 
 pub struct LocalStorage {
@@ -320,6 +420,13 @@ impl LocalStorage {
                      created_at TEXT NOT NULL,
                      stroke_count INTEGER NOT NULL,
                      encrypted_bundle_b64 TEXT NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS ai_response_cache (
+                     cache_key TEXT PRIMARY KEY,
+                     model_id TEXT NOT NULL,
+                     response_text TEXT NOT NULL,
+                     structured_json TEXT NOT NULL DEFAULT '',
+                     created_at TEXT NOT NULL
                  );",
             )
             .map_err(|e| format!("SQLite schema error: {e}"))?;
@@ -446,28 +553,36 @@ impl LocalStorage {
         password_hash: &str,
         face_embedding: &[f32],
     ) -> Result<UserAccount, String> {
+        let templates = if face_embedding.is_empty() {
+            Vec::new()
+        } else {
+            vec![face_embedding.to_vec()]
+        };
+        self.create_user_with_templates(username, display_name, password_hash, &templates)
+    }
+
+    pub fn create_user_with_templates(
+        &self,
+        username: &str,
+        display_name: &str,
+        password_hash: &str,
+        face_templates: &[Vec<f32>],
+    ) -> Result<UserAccount, String> {
         let clean_username = username.trim().to_string();
         let clean_display = display_name.trim().to_string();
         if self.username_exists(&clean_username)? {
             return Err(format!("Tên đăng nhập '{clean_username}' đã tồn tại."));
         }
 
-        let mut norm_emb = face_embedding.to_vec();
-        if !norm_emb.is_empty() {
-            normalize_l2_in_place(&mut norm_emb);
-        }
-        let emb_json = if norm_emb.is_empty() {
-            String::new()
-        } else {
-            serde_json::to_string(&norm_emb).map_err(|e| e.to_string())?
-        };
+        let (norm_avg, norm_templates, emb_json) = encode_face_payload(face_templates, &[]);
 
         let user = UserAccount {
             id: Self::new_uuid_v4(),
             username: clean_username,
             display_name: clean_display,
             password_hash: password_hash.to_string(),
-            face_embedding: norm_emb,
+            face_embedding: norm_avg,
+            face_templates: norm_templates,
             created_at: Utc::now().to_rfc3339(),
         };
 
@@ -496,20 +611,14 @@ impl LocalStorage {
         let password_hash: String = row.get(3)?;
         let emb_json: String = row.get(4)?;
         let created_at: String = row.get(5)?;
-        let mut face_embedding = if emb_json.trim().is_empty() {
-            Vec::new()
-        } else {
-            serde_json::from_str::<Vec<f32>>(&emb_json).unwrap_or_default()
-        };
-        if face_embedding.len() == EMBEDDING_DIM {
-            normalize_l2_in_place(&mut face_embedding);
-        }
+        let (face_embedding, face_templates) = decode_face_payload(&emb_json);
         Ok(UserAccount {
             id,
             username,
             display_name,
             password_hash,
             face_embedding,
+            face_templates,
             created_at,
         })
     }
@@ -564,11 +673,20 @@ impl LocalStorage {
         user_id: &str,
         face_embedding: &[f32],
     ) -> Result<(), String> {
-        let mut norm = face_embedding.to_vec();
-        if !norm.is_empty() {
-            normalize_l2_in_place(&mut norm);
-        }
-        let json = serde_json::to_string(&norm).map_err(|e| e.to_string())?;
+        let templates = if face_embedding.is_empty() {
+            Vec::new()
+        } else {
+            vec![face_embedding.to_vec()]
+        };
+        self.update_user_face_templates(user_id, &templates)
+    }
+
+    pub fn update_user_face_templates(
+        &self,
+        user_id: &str,
+        face_templates: &[Vec<f32>],
+    ) -> Result<(), String> {
+        let (_, _, json) = encode_face_payload(face_templates, &[]);
         self.conn
             .execute(
                 "UPDATE users SET face_embedding = ?1 WHERE id = ?2",
@@ -633,20 +751,14 @@ impl LocalStorage {
                     active: row.get::<_, i64>(4)? != 0,
                 };
                 let emb_json: String = row.get(9)?;
-                let mut face_embedding = if emb_json.trim().is_empty() {
-                    Vec::new()
-                } else {
-                    serde_json::from_str::<Vec<f32>>(&emb_json).unwrap_or_default()
-                };
-                if face_embedding.len() == EMBEDDING_DIM {
-                    normalize_l2_in_place(&mut face_embedding);
-                }
+                let (face_embedding, face_templates) = decode_face_payload(&emb_json);
                 let user = UserAccount {
                     id: row.get(5)?,
                     username: row.get(6)?,
                     display_name: row.get(7)?,
                     password_hash: row.get(8)?,
                     face_embedding,
+                    face_templates,
                     created_at: row.get(10)?,
                 };
                 Ok((session, user))
@@ -675,7 +787,11 @@ impl LocalStorage {
                     row.get::<_, String>(0)
                 })
         {
-            if let Ok(cfg) = serde_json::from_str::<AppConfig>(&json_str) {
+            if let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&json_str) {
+                if cfg.gemini_model.trim().is_empty() || cfg.gemini_model == "gemini-2.0-flash" {
+                    cfg.gemini_model = "gemini-3.5-flash".to_string();
+                    self.save_config(&cfg);
+                }
                 return cfg;
             }
         }
@@ -683,6 +799,40 @@ impl LocalStorage {
         let cfg = AppConfig::default();
         self.save_config(&cfg);
         cfg
+    }
+
+    /// Retrieve cached AI pedagogical response (`model_id, response_text, structured_json`).
+    pub fn get_cached_ai_response(&self, cache_key: &str) -> Option<(String, String, String)> {
+        self.conn
+            .query_row(
+                "SELECT model_id, response_text, structured_json
+                 FROM ai_response_cache WHERE cache_key = ?1",
+                params![cache_key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub fn put_cached_ai_response(
+        &self,
+        cache_key: &str,
+        model_id: &str,
+        response_text: &str,
+        structured_json: &str,
+    ) {
+        let now = Utc::now().to_rfc3339();
+        let _ = self.conn.execute(
+            "INSERT INTO ai_response_cache (cache_key, model_id, response_text, structured_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(cache_key) DO UPDATE SET
+                model_id = excluded.model_id,
+                response_text = excluded.response_text,
+                structured_json = excluded.structured_json,
+                created_at = excluded.created_at",
+            params![cache_key, model_id, response_text, structured_json, now],
+        );
     }
 
     pub fn save_config(&self, cfg: &AppConfig) {
@@ -860,5 +1010,29 @@ mod tests {
 
         db.clear_active_sessions().expect("clear session on logout");
         assert!(db.get_active_session_user().expect("read after logout").is_none());
+    }
+
+    #[test]
+    fn multi_template_face_and_ai_cache_persistence() {
+        let db = LocalStorage::open_in_memory();
+        let pw_hash = FaceAuthEngine::hash_password_argon2("SecureTeacher99").unwrap();
+        let mut t1 = vec![0.0_f32; SFACE_EMBEDDING_DIM];
+        t1[0] = 1.0;
+        let mut t2 = vec![0.0_f32; SFACE_EMBEDDING_DIM];
+        t2[0] = 0.8;
+        t2[1] = 0.6;
+        let user = db
+            .create_user_with_templates("sface_user", "SFace Teacher", &pw_hash, &[t1, t2])
+            .expect("create multi-template user");
+        assert_eq!(user.face_templates.len(), 2);
+        assert_eq!(user.face_embedding.len(), SFACE_EMBEDDING_DIM);
+
+        let loaded = db.find_user_by_username("sface_user").unwrap().unwrap();
+        assert_eq!(loaded.face_templates.len(), 2);
+
+        db.put_cached_ai_response("k123", "gemini-3.5-flash", "Lời giải chi tiết", "{\"summary\":\"OK\"}");
+        let cached = db.get_cached_ai_response("k123").expect("cache hit");
+        assert_eq!(cached.0, "gemini-3.5-flash");
+        assert_eq!(cached.1, "Lời giải chi tiết");
     }
 }

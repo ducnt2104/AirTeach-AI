@@ -6,48 +6,71 @@
 //!   * `[2. Tóm Tắt & Tạo Trắc Nghiệm]`
 //!   * `[3. Hỏi Đáp Sư Phạm]`
 
-use crate::ai::gemini_chat::PedagogicalAnalysisMode;
+use crate::ai::gemini_chat::{GeminiChatClient, PedagogicalAnalysisMode, SubjectAssistantMode};
 use crate::app::AirTeachApp;
-use crate::ui::toolbar_view::{
-    ALERT_ROSE, BG_DARK, BORDER_SLATE, PRIMARY_INDIGO, SECONDARY_TEAL, SURFACE_DARK, TEXT_LIGHT,
-    TEXT_MUTED,
-};
+use crate::ui::brand::ThemeMode;
 use crate::utils::document_loader::DocumentLoader;
 use egui::{Color32, FontId, RichText, Rounding, ScrollArea, Stroke, Vec2};
+
+fn format_model_badge(model_id: &str) -> String {
+    match model_id.trim() {
+        "gemini-3.5-flash" => "Gemini 3.5 Flash".to_string(),
+        "gemini-2.5-flash" => "Gemini 2.5 Flash".to_string(),
+        "gemini-2.0-flash" => "Gemini 2.0 Flash".to_string(),
+        other if !other.is_empty() => other.to_string(),
+        _ => "Gemini 3.5 Flash".to_string(),
+    }
+}
 
 pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
     if !app.chat_drawer_open {
         return;
     }
 
+    let palette = app.config.theme_mode.palette();
+    let active_model_id = GeminiChatClient::resolve_model_id(&app.config.gemini_model);
+    let model_badge = format_model_badge(&active_model_id);
+    let has_env_or_cfg_key = !GeminiChatClient::resolve_api_key(
+        &app.storage.get_decrypted_api_key(&app.config),
+    )
+    .is_empty();
+
     egui::SidePanel::right("airteach_modern_ai_copilot_panel")
         .resizable(false)
-        .exact_width(330.0)
+        .exact_width(340.0)
         .frame(
             egui::Frame::none()
-                .fill(SURFACE_DARK)
-                .stroke(Stroke::new(1.0_f32, BORDER_SLATE))
+                .fill(palette.bg_panel)
+                .stroke(Stroke::new(1.0_f32, palette.border))
                 .inner_margin(egui::Margin::same(10.0)),
         )
         .show(ctx, |ui| {
             // =========================================================================
-            // 1. HEADER & COMPACT API KEY SETUP (AUTO-HIDES WHEN SAVED)
+            // 1. HEADER, MODEL BADGE & COMPACT API KEY SETUP
             // =========================================================================
             let has_saved_key = !app.config.encrypted_api_key_b64.trim().is_empty();
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("Trợ Lý Sư Phạm Gemini AI")
-                        .font(FontId::proportional(13.5))
-                        .strong()
-                        .color(TEXT_LIGHT),
-                );
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new("Trợ Lý Sư Phạm AI")
+                            .font(FontId::proportional(13.5))
+                            .strong()
+                            .color(palette.text_primary),
+                    );
+                    ui.label(
+                        RichText::new(format!("{} • {}", model_badge, if has_env_or_cfg_key { "Sẵn sàng" } else { "Offline / Chưa Key" }))
+                            .font(FontId::proportional(10.5))
+                            .color(if has_env_or_cfg_key { palette.secondary } else { palette.warning }),
+                    );
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("[Đóng]").size(11.5).color(TEXT_MUTED),
+                                RichText::new("Đóng").size(11.5).color(palette.text_muted),
                             )
-                            .fill(BG_DARK)
+                            .fill(palette.surface)
+                            .stroke(Stroke::new(1.0_f32, palette.border))
                             .rounding(Rounding::same(5.0)),
                         )
                         .clicked()
@@ -59,11 +82,12 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                         && ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new("[Đổi API Key]")
+                                    RichText::new("Đổi Key")
                                         .size(11.0)
-                                        .color(SECONDARY_TEAL),
+                                        .color(palette.secondary),
                                 )
-                                .fill(BG_DARK)
+                                .fill(palette.surface)
+                                .stroke(Stroke::new(1.0_f32, palette.border))
                                 .rounding(Rounding::same(5.0)),
                             )
                             .clicked()
@@ -74,11 +98,11 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                 });
             });
 
-            if !has_saved_key {
+            if !has_saved_key && !has_env_or_cfg_key {
                 ui.add_space(4.0);
                 egui::Frame::none()
-                    .fill(BG_DARK)
-                    .stroke(Stroke::new(1.0_f32, SECONDARY_TEAL))
+                    .fill(palette.surface)
+                    .stroke(Stroke::new(1.0_f32, palette.secondary))
                     .rounding(Rounding::same(6.0))
                     .inner_margin(egui::Margin::same(6.0))
                     .show(ui, |ui| {
@@ -87,17 +111,17 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                                 egui::TextEdit::singleline(&mut app.api_key_edit_buffer)
                                     .password(true)
                                     .hint_text("Nhập GEMINI_API_KEY...")
-                                    .desired_width(215.0),
+                                    .desired_width(220.0),
                             );
                             if ui
                                 .add(
                                     egui::Button::new(
                                         RichText::new("Lưu")
                                             .size(12.0)
-                                            .color(TEXT_LIGHT)
+                                            .color(Color32::WHITE)
                                             .strong(),
                                     )
-                                    .fill(PRIMARY_INDIGO)
+                                    .fill(palette.primary)
                                     .rounding(Rounding::same(5.0)),
                                 )
                                 .clicked()
@@ -114,34 +138,65 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
 
             ui.add_space(6.0);
 
+            // Compact Subject Pill Strip
+            ui.horizontal(|ui| {
+                for mode in [
+                    SubjectAssistantMode::Math,
+                    SubjectAssistantMode::Physics,
+                    SubjectAssistantMode::Chemistry,
+                    SubjectAssistantMode::General,
+                ] {
+                    let active = app.subject_mode == mode;
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(mode.short_badge())
+                                    .font(FontId::proportional(10.5))
+                                    .color(if active { Color32::WHITE } else { palette.text_secondary })
+                                    .strong(),
+                            )
+                            .fill(if active { palette.primary } else { palette.surface })
+                            .stroke(Stroke::new(1.0_f32, if active { palette.primary } else { palette.border }))
+                            .rounding(Rounding::same(5.0)),
+                        )
+                        .on_hover_text(mode.label())
+                        .clicked()
+                    {
+                        app.subject_mode = mode;
+                    }
+                }
+            });
+
+            ui.add_space(6.0);
+
             // =========================================================================
-            // 2. THREE CLEAR PEDAGOGICAL ACTION BUTTONS (MODULE 2.4)
+            // 2. THREE CLEAR PEDAGOGICAL ACTION BUTTONS (Structured JSON + RAG + Vision)
             // =========================================================================
             let mut selected_mode: Option<PedagogicalAnalysisMode> = None;
             for (mode, label) in [
                 (
                     PedagogicalAnalysisMode::SolveAndCheckError,
-                    "[1. Giải & Chữa Bài Trên Bảng]",
+                    "1. Giải & Chữa Bài Trên Bảng (JSON)",
                 ),
                 (
                     PedagogicalAnalysisMode::SummarizeAndQuiz,
-                    "[2. Tóm Tắt & Tạo Trắc Nghiệm]",
+                    "2. Tóm Tắt & Tạo Trắc Nghiệm",
                 ),
                 (
                     PedagogicalAnalysisMode::PedagogicalInsights,
-                    "[3. Hỏi Đáp Sư Phạm]",
+                    "3. Gợi Ý Sư Phạm & Tương Tác",
                 ),
             ] {
                 if ui
                     .add(
                         egui::Button::new(
                             RichText::new(label)
-                                .font(FontId::proportional(12.5))
-                                .color(TEXT_LIGHT)
+                                .font(FontId::proportional(12.2))
+                                .color(palette.text_primary)
                                 .strong(),
                         )
-                        .fill(BG_DARK)
-                        .stroke(Stroke::new(1.0_f32, PRIMARY_INDIGO))
+                        .fill(palette.surface)
+                        .stroke(Stroke::new(1.0_f32, palette.primary))
                         .rounding(Rounding::same(6.0))
                         .min_size(Vec2::new(ui.available_width(), 28.0)),
                     )
@@ -172,14 +227,17 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                     for msg in &app.chat_messages {
                         let is_user = msg.role == "user";
                         let card_fill = if is_user {
-                            Color32::from_rgb(0x23, 0x2f, 0x46)
+                            match palette.mode {
+                                ThemeMode::Dark => Color32::from_rgb(0x23, 0x2f, 0x46),
+                                ThemeMode::Light => Color32::from_rgb(0xEE, 0xF2, 0xFF),
+                            }
                         } else {
-                            BG_DARK
+                            palette.surface
                         };
                         let border_col = if is_user {
-                            PRIMARY_INDIGO
+                            palette.primary
                         } else {
-                            BORDER_SLATE
+                            palette.border
                         };
                         let clean_text = DocumentLoader::format_latex_to_unicode_math(&msg.text);
 
@@ -192,29 +250,36 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal_wrapped(|ui| {
                                     let role_lbl = if is_user {
-                                        "[Giáo viên]"
+                                        "Giáo viên".to_string()
                                     } else {
-                                        "[Gemini 2.5 Flash]"
+                                        model_badge.clone()
                                     };
                                     ui.label(
                                         RichText::new(role_lbl)
                                             .font(FontId::proportional(11.5))
                                             .strong()
                                             .color(if is_user {
-                                                PRIMARY_INDIGO
+                                                palette.primary
                                             } else {
-                                                SECONDARY_TEAL
+                                                palette.secondary
                                             }),
                                     );
                                     if msg.has_image_attachment {
                                         let dim_txt = match msg.image_dimensions {
-                                            Some((w, h)) => format!("[Ảnh vùng chọn {w}x{h} PNG]"),
-                                            None => "[Ảnh vùng chọn PNG]".to_string(),
+                                            Some((w, h)) => format!("[Ảnh {w}x{h} PNG]"),
+                                            None => "[Ảnh PNG]".to_string(),
                                         };
                                         ui.label(
                                             RichText::new(dim_txt)
                                                 .font(FontId::proportional(10.5))
-                                                .color(ALERT_ROSE),
+                                                .color(palette.danger),
+                                        );
+                                    }
+                                    if let Some(ref badge) = msg.rag_slide_badge {
+                                        ui.label(
+                                            RichText::new(format!("[{badge}]"))
+                                                .font(FontId::proportional(10.5))
+                                                .color(palette.success),
                                         );
                                     }
                                 });
@@ -222,7 +287,7 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                                 ui.label(
                                     RichText::new(&clean_text)
                                         .font(FontId::proportional(12.5))
-                                        .color(TEXT_LIGHT),
+                                        .color(palette.text_primary),
                                 );
 
                                 if !is_user && !clean_text.trim().is_empty() {
@@ -230,12 +295,12 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                                     if ui
                                         .add(
                                             egui::Button::new(
-                                                RichText::new("[Sao chép lời giải]")
+                                                RichText::new("Sao chép lời giải")
                                                     .font(FontId::proportional(11.0))
-                                                    .color(TEXT_LIGHT),
+                                                    .color(palette.text_secondary),
                                             )
-                                            .fill(SURFACE_DARK)
-                                            .stroke(Stroke::new(1.0_f32, BORDER_SLATE))
+                                            .fill(palette.surface_elevated)
+                                            .stroke(Stroke::new(1.0_f32, palette.border))
                                             .rounding(Rounding::same(5.0)),
                                         )
                                         .clicked()
@@ -251,9 +316,9 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             ui.label(
-                                RichText::new("Đang phân tích nét vẽ vùng chọn với Gemini 2.5 Flash...")
+                                RichText::new(format!("Đang phân tích với {model_badge}..."))
                                     .font(FontId::proportional(11.5))
-                                    .color(SECONDARY_TEAL),
+                                    .color(palette.secondary),
                             );
                         });
                     }
@@ -274,12 +339,12 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                 let send_clicked = ui
                     .add(
                         egui::Button::new(
-                            RichText::new("[Gửi câu hỏi]")
+                            RichText::new("Gửi câu hỏi")
                                 .font(FontId::proportional(12.0))
-                                .color(TEXT_LIGHT)
+                                .color(Color32::WHITE)
                                 .strong(),
                         )
-                        .fill(PRIMARY_INDIGO)
+                        .fill(palette.primary)
                         .rounding(Rounding::same(6.0))
                         .min_size(Vec2::new(ui.available_width(), 28.0)),
                     )
