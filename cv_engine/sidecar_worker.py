@@ -142,6 +142,20 @@ def run_self_test() -> int:
     sim = multi_template_cosine_similarity(emb512.tolist(), templates, mode="top2")
     assert sim > 0.99, f"Self template match must exceed 0.99, got {sim}"
 
+    # Verify impostor face is strictly rejected below 0.50 threshold
+    impostor_face = np.full((240, 240, 3), 90, dtype=np.uint8)
+    for y in range(60, 190):
+        for x in range(65, 175):
+            impostor_face[y, x] = [120, 155, 180]
+    impostor_face[88:104, 78:98] = [10, 10, 10]
+    impostor_face[88:104, 142:162] = [10, 10, 10]
+    impostor_face[162:168, 95:145] = [40, 20, 20]
+    _, _, imp_emb512 = extractor.extract_from_5pt_aligned(
+        impostor_face, pts5, (60.0, 50.0, 120.0, 150.0)
+    )
+    imp_sim = multi_template_cosine_similarity(imp_emb512.tolist(), templates, mode="top2")
+    assert imp_sim < 0.45, f"Impostor face must score below 0.50 threshold, got {imp_sim}"
+
     lock = FrameSkipLock()
     assert lock.try_acquire()
     assert not lock.try_acquire()
@@ -161,6 +175,7 @@ def run_self_test() -> int:
                 "aligned_face_shape": list(aligned_112.shape),
                 "arcface_embedding_dim": int(emb512.size),
                 "multi_template_sim": round(sim, 4),
+                "impostor_sim": round(imp_sim, 4),
             }
         )
     )
@@ -201,27 +216,32 @@ def run_ipc_loop() -> None:
         if not raw or len(raw) < nbytes:
             break
 
-        rgb_orig = np.frombuffer(raw, dtype=np.uint8).reshape((int(h), int(w), 3))
-        rgb_enhanced, diag = preprocess_adaptive_frame(rgb_orig, is_rgb=True, quality_gate_min=38.0)
+        if not hand_engine.frame_skip_lock.try_acquire():
+            continue
+        try:
+            rgb_orig = np.frombuffer(raw, dtype=np.uint8).reshape((int(h), int(w), 3))
+            rgb_enhanced, diag = preprocess_adaptive_frame(rgb_orig, is_rgb=True, quality_gate_min=38.0)
 
-        face_info = face_engine.detect_and_extract(rgb_enhanced, quality_gate_min_sharpness=38.0)
-        face_boxes = face_info["face_boxes"]
+            face_info = face_engine.detect_and_extract(rgb_enhanced, quality_gate_min_sharpness=38.0)
+            face_boxes = face_info["face_boxes"]
 
-        left_out, right_out = hand_engine.detect_hands(rgb_enhanced, face_boxes)
+            left_out, right_out = hand_engine.detect_hands(rgb_enhanced, face_boxes)
 
-        resp = {
-            "left": left_out,
-            "right": right_out,
-            "face": face_info["face"],
-            "face_eyes": face_info["face_eyes"],
-            "face_5pt": face_info["face_5pt"],
-            "face_emb": face_info["face_emb"],
-            "face_emb_512": face_info["face_emb_512"],
-            "diag": diag.to_dict(),
-        }
-        line = (json.dumps(resp, separators=(",", ":")) + "\n").encode("utf-8")
-        stdout_buf.write(line)
-        stdout_buf.flush()
+            resp = {
+                "left": left_out,
+                "right": right_out,
+                "face": face_info["face"],
+                "face_eyes": face_info["face_eyes"],
+                "face_5pt": face_info["face_5pt"],
+                "face_emb": face_info["face_emb"],
+                "face_emb_512": face_info["face_emb_512"],
+                "diag": diag.to_dict(),
+            }
+            line = (json.dumps(resp, separators=(",", ":")) + "\n").encode("utf-8")
+            stdout_buf.write(line)
+            stdout_buf.flush()
+        finally:
+            hand_engine.frame_skip_lock.release()
 
 
 if __name__ == "__main__":

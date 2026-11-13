@@ -198,7 +198,12 @@ pub fn render_calibration_modal(app: &mut AirTeachApp, ctx: &egui::Context) {
                         }
 
                         ui.add_space(4.0);
-                        let emb_badge = if app.last_live_face_vec.len() == SFACE_EMBEDDING_DIM {
+                        let emb_badge = if app.last_two_hand_frame.detected_face_emb_512.is_some()
+                            || (app.last_two_hand_frame.using_onnx_session
+                                && app.last_live_face_vec.len() == 512)
+                        {
+                            "Vector 512-D ArcFace (5-Point 112x112)"
+                        } else if app.last_live_face_vec.len() == SFACE_EMBEDDING_DIM {
                             "Vector 128-D SFace"
                         } else if !app.last_live_face_vec.is_empty() {
                             "Vector 512-D Dự phòng"

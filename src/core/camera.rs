@@ -207,9 +207,9 @@ pub fn enhance_frame_adaptive_with_diagnostics(
     let underexposed_ratio = under_count as f32 / num_pixels as f32;
     let overexposed_ratio = over_count as f32 / num_pixels as f32;
 
-    let lighting_mode = if mean_luma < 70.0 || mean_luma < 92.0 || underexposed_ratio > 0.35 {
+    let lighting_mode = if mean_luma < 70.0 || underexposed_ratio > 0.55 {
         LightingAdaptationMode::LowLightBoost
-    } else if p95_luma > 235.0 || overexposed_ratio > 0.14 || mean_luma > 175.0 {
+    } else if p95_luma > 235.0 || overexposed_ratio > 0.18 || mean_luma > 185.0 {
         LightingAdaptationMode::GlareSuppression
     } else {
         LightingAdaptationMode::Normal
@@ -1416,6 +1416,26 @@ mod tests {
             b_diag.mean_luma,
             bright_out_mean
         );
+
+        // Normal indoor frame (avg ~82, >= 70.0 and p95 <= 235.0) -> must remain Normal
+        let mut normal_rgba = vec![255u8; (w * h * 4) as usize];
+        for (i, px) in normal_rgba.chunks_exact_mut(4).enumerate() {
+            let v = 74 + ((i % 18) as u8);
+            px[0] = v;
+            px[1] = v;
+            px[2] = v;
+        }
+        let n_diag = enhance_frame_adaptive_with_diagnostics(
+            &mut normal_rgba,
+            &mut luma,
+            &mut blur,
+            w,
+            h,
+            true,
+            2.2,
+            0.75,
+        );
+        assert_eq!(n_diag.lighting_mode, LightingAdaptationMode::Normal);
     }
 
     #[test]

@@ -181,15 +181,15 @@ pub fn is_finger_extended_hysteresis(
 
     let (pip_deg, dip_deg, overall_deg) =
         finger_joint_angles_deg(lm, mcp_idx, pip_idx, dip_idx, tip_idx);
-    let max_chain_deg = pip_deg.max(dip_deg).min(overall_deg * 1.15);
+    let max_chain_deg = pip_deg.max(dip_deg);
     let forward_reach = r_tip;
 
     if was_extended {
         // Hysteresis hold band: tolerates slight natural jitter & 3D tilt without flickering out
-        radial_ratio > 1.05 && max_chain_deg < 77.0 && overall_deg < 73.5 && forward_reach > 1.05
+        radial_ratio > 1.05 && max_chain_deg < 62.0 && overall_deg < 56.0 && forward_reach > 1.05
     } else {
         // Strict enter band: clearly straightened along full 3D bone chain & pointing outward
-        radial_ratio > 1.15 && max_chain_deg < 63.5 && overall_deg < 60.0 && forward_reach > 1.24
+        radial_ratio > 1.15 && max_chain_deg < 48.0 && overall_deg < 44.0 && forward_reach > 1.24
     }
 }
 
@@ -321,12 +321,21 @@ pub fn classify_right_hand_with_hysteresis(
     let is_thumb_pinched = thumb_index_ratio < if was_pinched { 0.36 } else { 0.27 };
     let index_tip_pt = lm[INDEX_TIP].to_2d();
 
-    // 1. Open palm (4-5 fingers extended): Palm Eraser at palm center (LM 9)
-    if index_up && middle_up && ring_up && pinky_up {
+    // 1. Open palm (4-5 fingers extended and not pinched): Palm Eraser at palm center (LM 9)
+    if index_up && middle_up && ring_up && pinky_up && !is_thumb_pinched {
         return (RightGesture::PalmEraser, lm[MIDDLE_MCP].to_2d(), palm_scale);
     }
 
-    // 2. Index + Middle up, Ring & Pinky curled: Hover cursor (cuts stroke smoothly)
+    // 2. Thumb-Index Pinch (`dist(4, 8) / dist(0, 9) < threshold`): Pinch Click / Tool Select
+    if is_thumb_pinched {
+        let pinch_pt = Point2D::new(
+            0.5 * (lm[THUMB_TIP].x + lm[INDEX_TIP].x),
+            0.5 * (lm[THUMB_TIP].y + lm[INDEX_TIP].y),
+        );
+        return (RightGesture::PinchToolSelect, pinch_pt, palm_scale);
+    }
+
+    // 3. Index + Middle up, Ring & Pinky curled: Hover cursor (cuts stroke smoothly)
     if index_up && middle_up && !ring_up {
         let mid_cursor = Point2D::new(
             0.5 * (lm[INDEX_TIP].x + lm[MIDDLE_TIP].x),
@@ -335,20 +344,13 @@ pub fn classify_right_hand_with_hysteresis(
         return (RightGesture::HoverTwoFingers, mid_cursor, palm_scale);
     }
 
-    // 3. Only Index finger up: Draw Stroke at Index Tip (LM 8)
+    // 4. Only Index finger up: Draw Stroke at Index Tip (LM 8)
     if index_up && !middle_up && !ring_up {
         return (RightGesture::DrawStroke, index_tip_pt, palm_scale);
     }
 
-    // 4. All curled -> Pinch Click or Fist Clench
+    // 5. All curled -> Fist Clench
     if !index_up && !middle_up && !ring_up && !pinky_up {
-        if is_thumb_pinched {
-            let pinch_pt = Point2D::new(
-                0.5 * (lm[THUMB_TIP].x + lm[INDEX_TIP].x),
-                0.5 * (lm[THUMB_TIP].y + lm[INDEX_TIP].y),
-            );
-            return (RightGesture::PinchToolSelect, pinch_pt, palm_scale);
-        }
         return (RightGesture::FistClench, lm[MIDDLE_MCP].to_2d(), palm_scale);
     }
 
@@ -962,5 +964,31 @@ mod tests {
         let palm_s = compute_palm_scale(&open_hand.landmarks);
         assert!(is_thumb_extended_hysteresis(&open_hand.landmarks, palm_s, false));
         assert!(compute_pinch_ratio(&open_hand.landmarks) > 0.45);
+
+        // "OK" Pinch Click pose (thumb-index pinched while middle/ring/pinky are relaxed/open)
+        let mut ok_pinch = HandLandmarks::from_pose_preset(
+            Handedness::Right,
+            0.5,
+            0.5,
+            1.0,
+            true,
+            false,
+            true,
+            true,
+            true,
+        );
+        assert_eq!(
+            classify_right_hand_raw(&ok_pinch).0,
+            RightGesture::PinchToolSelect,
+            "OK-style thumb-index pinch must classify as PinchToolSelect"
+        );
+
+        // Zigzag / hooked index finger must be rejected by true 3D joint angle check
+        ok_pinch.landmarks[6].x += 0.08;
+        ok_pinch.landmarks[7].x -= 0.08;
+        assert!(
+            !is_finger_extended(&ok_pinch.landmarks, INDEX_MCP, INDEX_PIP, INDEX_TIP),
+            "Zigzag hooked finger must not pass 3D bone joint angle check"
+        );
     }
 }

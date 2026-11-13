@@ -193,9 +193,9 @@ impl HandLandmarks {
         };
 
         lm[0] = Landmark3D::new(cx, cy + 0.11 * scale, 0.0);
-        lm[1] = Landmark3D::new(cx - 0.035 * dir * scale, cy + 0.07 * scale, -0.01);
-        lm[2] = Landmark3D::new(cx - 0.055 * dir * scale, cy + 0.03 * scale, -0.02);
-        lm[3] = Landmark3D::new(cx - 0.065 * dir * scale, cy - 0.01 * scale, -0.02);
+        lm[1] = Landmark3D::new(cx - 0.035 * dir * scale, cy + 0.07 * scale, -0.01 * scale);
+        lm[2] = Landmark3D::new(cx - 0.055 * dir * scale, cy + 0.03 * scale, -0.02 * scale);
+        lm[3] = Landmark3D::new(cx - 0.065 * dir * scale, cy - 0.01 * scale, -0.02 * scale);
 
         let idx_tip_x = cx - 0.025 * dir * scale;
         let idx_tip_y = if index_open {
@@ -211,7 +211,7 @@ impl HandLandmarks {
             } else {
                 cy - 0.015 * scale
             },
-            -0.01,
+            -0.01 * scale,
         );
         lm[7] = Landmark3D::new(
             cx - 0.025 * dir * scale,
@@ -220,18 +220,28 @@ impl HandLandmarks {
             } else {
                 cy + 0.015 * scale
             },
-            -0.015,
+            -0.015 * scale,
         );
-        lm[8] = Landmark3D::new(idx_tip_x, idx_tip_y, -0.02);
+        lm[8] = Landmark3D::new(idx_tip_x, idx_tip_y, -0.02 * scale);
 
         if thumb_pinched {
-            lm[4] = Landmark3D::new(
-                idx_tip_x - 0.008 * dir * scale,
-                idx_tip_y + 0.008 * scale,
-                -0.02,
-            );
+            if index_open {
+                // Tucked thumb across palm while index finger is extended upward
+                lm[4] = Landmark3D::new(
+                    cx - 0.032 * dir * scale,
+                    cy + 0.005 * scale,
+                    -0.02 * scale,
+                );
+            } else {
+                // True Pinch Click: thumb tip contacts index tip
+                lm[4] = Landmark3D::new(
+                    idx_tip_x - 0.008 * dir * scale,
+                    idx_tip_y + 0.008 * scale,
+                    -0.02 * scale,
+                );
+            }
         } else {
-            lm[4] = Landmark3D::new(cx - 0.095 * dir * scale, cy - 0.02 * scale, -0.02);
+            lm[4] = Landmark3D::new(cx - 0.095 * dir * scale, cy - 0.02 * scale, -0.02 * scale);
         }
 
         lm[9] = Landmark3D::new(cx, cy + 0.005 * scale, 0.0);
@@ -247,10 +257,10 @@ impl HandLandmarks {
             } else {
                 cy - 0.015 * scale
             },
-            -0.01,
+            -0.01 * scale,
         );
-        lm[11] = Landmark3D::new(cx, (lm[9].y + mid_y * 2.0) / 3.0, -0.015);
-        lm[12] = Landmark3D::new(cx + 0.005 * dir * scale, mid_y, -0.02);
+        lm[11] = Landmark3D::new(cx, (lm[9].y + mid_y * 2.0) / 3.0, -0.015 * scale);
+        lm[12] = Landmark3D::new(cx + 0.005 * dir * scale, mid_y, -0.02 * scale);
 
         lm[13] = Landmark3D::new(cx + 0.022 * dir * scale, cy + 0.012 * scale, 0.0);
         let ring_y = if ring_open {
@@ -265,10 +275,10 @@ impl HandLandmarks {
             } else {
                 cy - 0.01 * scale
             },
-            -0.01,
+            -0.01 * scale,
         );
-        lm[15] = Landmark3D::new(lm[13].x, (lm[13].y + ring_y * 2.0) / 3.0, -0.015);
-        lm[16] = Landmark3D::new(lm[13].x, ring_y, -0.02);
+        lm[15] = Landmark3D::new(lm[13].x, (lm[13].y + ring_y * 2.0) / 3.0, -0.015 * scale);
+        lm[16] = Landmark3D::new(lm[13].x, ring_y, -0.02 * scale);
 
         lm[17] = Landmark3D::new(cx + 0.042 * dir * scale, cy + 0.025 * scale, 0.0);
         let pinky_y = if pinky_open {
@@ -283,10 +293,10 @@ impl HandLandmarks {
             } else {
                 cy - 0.005 * scale
             },
-            -0.01,
+            -0.01 * scale,
         );
-        lm[19] = Landmark3D::new(lm[17].x, (lm[17].y + pinky_y * 2.0) / 3.0, -0.015);
-        lm[20] = Landmark3D::new(lm[17].x, pinky_y, -0.02);
+        lm[19] = Landmark3D::new(lm[17].x, (lm[17].y + pinky_y * 2.0) / 3.0, -0.015 * scale);
+        lm[20] = Landmark3D::new(lm[17].x, pinky_y, -0.02 * scale);
 
         Self {
             handedness,
@@ -350,6 +360,25 @@ impl<'de> Deserialize<'de> for ArcFace512Embedding {
     }
 }
 
+/// Exposure & Laplacian Sharpness Diagnostics emitted by the Python `cv_engine` sidecar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct SidecarExposureDiag {
+    #[serde(default)]
+    pub mean_luma: f32,
+    #[serde(default)]
+    pub p5: f32,
+    #[serde(default)]
+    pub p95: f32,
+    #[serde(default)]
+    pub gamma_applied: f32,
+    #[serde(default)]
+    pub clahe_clip_limit: f32,
+    #[serde(default)]
+    pub laplacian_variance: f32,
+    #[serde(default)]
+    pub quality_gate_passed: bool,
+}
+
 /// Output of a single frame's two-hand tracking pass + optional MediaPipe face box, 5-pt alignment & 128-D/512-D embeddings.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct TwoHandFrame {
@@ -360,6 +389,8 @@ pub struct TwoHandFrame {
     pub detected_face_5pt: Option<[f32; 10]>,
     pub detected_face_emb: Option<SFaceEmbedding>,
     pub detected_face_emb_512: Option<ArcFace512Embedding>,
+    #[serde(default)]
+    pub sidecar_diag: Option<SidecarExposureDiag>,
     pub inference_ms: f32,
     pub using_onnx_session: bool,
 }
@@ -383,6 +414,8 @@ struct WorkerResponseJson {
     face_emb: Option<Vec<f32>>,
     #[serde(default)]
     face_emb_512: Option<Vec<f32>>,
+    #[serde(default)]
+    diag: Option<SidecarExposureDiag>,
 }
 
 #[derive(Default)]
@@ -394,6 +427,7 @@ struct WorkerDetectResult {
     face_5pt: Option<[f32; 10]>,
     face_emb: Option<SFaceEmbedding>,
     face_emb_512: Option<ArcFace512Embedding>,
+    sidecar_diag: Option<SidecarExposureDiag>,
 }
 
 struct MediaPipeSubprocessBridge {
@@ -620,6 +654,7 @@ impl MediaPipeSubprocessBridge {
             face_5pt,
             face_emb,
             face_emb_512,
+            sidecar_diag: parsed.diag,
         })
     }
 }
@@ -763,6 +798,7 @@ impl TwoHandTracker {
                 detected_face_5pt: None,
                 detected_face_emb: None,
                 detected_face_emb_512: None,
+                sidecar_diag: None,
                 inference_ms: start.elapsed().as_secs_f32() * 1000.0,
                 using_onnx_session: true,
             };
@@ -780,6 +816,7 @@ impl TwoHandTracker {
         let mut detected_face_5pt = None;
         let mut detected_face_emb = None;
         let mut detected_face_emb_512 = None;
+        let mut sidecar_diag = None;
         let mut active = false;
 
         let min_conf = self.hand_min_confidence;
@@ -794,6 +831,7 @@ impl TwoHandTracker {
                 detected_face_5pt = res.face_5pt;
                 detected_face_emb = res.face_emb;
                 detected_face_emb_512 = res.face_emb_512;
+                sidecar_diag = res.sidecar_diag;
                 active = true;
             } else {
                 self.mp_bridge = None;
@@ -825,6 +863,7 @@ impl TwoHandTracker {
             detected_face_5pt,
             detected_face_emb,
             detected_face_emb_512,
+            sidecar_diag,
             inference_ms: start.elapsed().as_secs_f32() * 1000.0,
             using_onnx_session: active,
         }

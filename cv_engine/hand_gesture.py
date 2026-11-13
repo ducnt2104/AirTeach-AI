@@ -273,6 +273,17 @@ def classify_hand_3d_vectors(
             "fingers": fingers,
         }
 
+    if pinch_ratio < pinch_thresh:
+        px = 0.5 * (float(lm[THUMB_TIP][0]) + float(lm[INDEX_TIP][0]))
+        py = 0.5 * (float(lm[THUMB_TIP][1]) + float(lm[INDEX_TIP][1]))
+        return {
+            "gesture": "CLICK",
+            "cursor_norm": map_box(px, py),
+            "pinch_ratio": round(pinch_ratio, 4),
+            "palm_scale": round(palm_scale, 4),
+            "fingers": fingers,
+        }
+
     if idx_up and mid_up and not ring_up:
         cx = 0.5 * (float(lm[INDEX_TIP][0]) + float(lm[MIDDLE_TIP][0]))
         cy = 0.5 * (float(lm[INDEX_TIP][1]) + float(lm[MIDDLE_TIP][1]))
@@ -288,17 +299,6 @@ def classify_hand_3d_vectors(
         return {
             "gesture": "DRAW",
             "cursor_norm": map_box(lm[INDEX_TIP][0], lm[INDEX_TIP][1]),
-            "pinch_ratio": round(pinch_ratio, 4),
-            "palm_scale": round(palm_scale, 4),
-            "fingers": fingers,
-        }
-
-    if pinch_ratio < pinch_thresh:
-        px = 0.5 * (float(lm[THUMB_TIP][0]) + float(lm[INDEX_TIP][0]))
-        py = 0.5 * (float(lm[THUMB_TIP][1]) + float(lm[INDEX_TIP][1]))
-        return {
-            "gesture": "CLICK",
-            "cursor_norm": map_box(px, py),
             "pinch_ratio": round(pinch_ratio, 4),
             "palm_scale": round(palm_scale, 4),
             "fingers": fingers,
@@ -431,9 +431,9 @@ class GestureFsmEngine:
         min_cutoff: float = 1.35,
         beta: float = 0.015,
     ) -> None:
-        self.min_hold_frames = max(5, int(min_cutoff and min_hold_frames))
-        self.min_hold_sec = max(0.150, float(min_hold_sec))
-        self.grace_period_sec = max(0.150, float(grace_period_sec))
+        self.min_hold_frames = max(1, int(min_hold_frames))
+        self.min_hold_sec = max(0.050, float(min_hold_sec))
+        self.grace_period_sec = max(0.050, float(grace_period_sec))
         self.cursor_filter = OneEuroFilter2D(min_cutoff=min_cutoff, beta=beta)
         self.fsm_state = GestureFsmState.IDLE
         self.active_gesture = "IDLE"
@@ -574,6 +574,9 @@ class HandGestureEngine:
         self.model_complexity = 1
         self.solutions_hands = None
         self.tasks_detector = None
+        self.left_fsm = GestureFsmEngine(min_hold_frames=5, min_hold_sec=0.150, grace_period_sec=0.150)
+        self.right_fsm = GestureFsmEngine(min_hold_frames=5, min_hold_sec=0.150, grace_period_sec=0.150)
+        self.frame_skip_lock = FrameSkipLock()
 
         if hasattr(mp, "solutions") and hasattr(mp.solutions, "hands"):
             try:
@@ -682,6 +685,10 @@ class HandGestureEngine:
             if not roi_res or not roi_res.hand_landmarks or not roi_res.handedness:
                 return lm_coords, orig_score, orig_cat
 
+            orig_cx = float(lm_coords[MIDDLE_MCP][0])
+            orig_cy = float(lm_coords[MIDDLE_MCP][1])
+            max_center_drift = max(bw, bh) * 0.85
+
             best_candidate: Optional[Tuple[List[List[float]], float, str]] = None
             for lms, handed_list in zip(roi_res.hand_landmarks, roi_res.handedness):
                 if not handed_list:
@@ -698,6 +705,10 @@ class HandGestureEngine:
                     for p in lms
                 ]
                 if not self.validate_real_hand(mapped, r_score, face_boxes):
+                    continue
+                cand_cx = float(mapped[MIDDLE_MCP][0])
+                cand_cy = float(mapped[MIDDLE_MCP][1])
+                if math.hypot(cand_cx - orig_cx, cand_cy - orig_cy) > max_center_drift:
                     continue
                 if r_score >= orig_score * 0.90:
                     if best_candidate is None or r_score > best_candidate[1]:
@@ -762,6 +773,37 @@ class HandGestureEngine:
                             left_out = hand_obj
                         else:
                             right_out = hand_obj
+
+                # Update per-hand GestureFsmEngine (IDLE -> CANDIDATE -> ACTIVE -> GRACE_PERIOD)
+                now_sec = time.perf_counter()
+                left_snap = self.left_fsm.update(
+                    left_out["lm"] if left_out is not None else None,  # type: ignore[arg-type]
+                    t_sec=now_sec,
+                )
+                right_snap = self.right_fsm.update(
+                    right_out["lm"] if right_out is not None else None,  # type: ignore[arg-type]
+                    t_sec=now_sec,
+                )
+                if left_out is not None:
+                    left_out["fsm_state"] = left_snap.fsm_state.value
+                    left_out["active_gesture"] = left_snap.active_gesture
+                    if left_snap.cursor_norm is not None:
+                        left_out["cursor_norm"] = [
+                            round(left_snap.cursor_norm[0], 4),
+                            round(left_snap.cursor_norm[1], 4),
+                        ]
+                if right_out is not None:
+                    right_out["fsm_state"] = right_snap.fsm_state.value
+                    right_out["active_gesture"] = right_snap.active_gesture
+                    if right_snap.cursor_norm is not None:
+                        right_out["cursor_norm"] = [
+                            round(right_snap.cursor_norm[0], 4),
+                            round(right_snap.cursor_norm[1], 4),
+                        ]
+            else:
+                now_sec = time.perf_counter()
+                self.left_fsm.update(None, t_sec=now_sec)
+                self.right_fsm.update(None, t_sec=now_sec)
         except RuntimeError as exc:
             _ = exc
 

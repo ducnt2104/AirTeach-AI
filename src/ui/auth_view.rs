@@ -665,8 +665,10 @@ fn render_signin_flow(
                     let right = &mut cols[1];
                     let has_enrolled_face = !app.enrolled_face_embedding.is_empty()
                         || !app.enrolled_face_templates.is_empty();
-                    let using_sface = app.last_live_face_vec.len()
-                        == crate::ai::face_auth::SFACE_EMBEDDING_DIM
+                    let using_sface = app.last_two_hand_frame.using_onnx_session
+                        || app.last_two_hand_frame.detected_face_emb_512.is_some()
+                        || app.last_live_face_vec.len()
+                            == crate::ai::face_auth::SFACE_EMBEDDING_DIM
                         || app
                             .enrolled_face_templates
                             .first()

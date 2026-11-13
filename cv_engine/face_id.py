@@ -175,67 +175,105 @@ class ArcFace512Extractor:
                     _ = exc2
                     self.face_detector = None
 
-        # Check for InsightFace buffalo_l / buffalo_s 512-D ONNX models
-        for candidate_name in ("w600k_r50.onnx", "w600k_mbf.onnx", "buffalo_l.onnx", "buffalo_s.onnx"):
-            cand_path = models_dir / candidate_name
-            if cand_path.exists() and cand_path.stat().st_size > 1_000_000:
-                try:
-                    import onnxruntime as ort  # type: ignore[import-not-found]
-
-                    self.ort_session = ort.InferenceSession(
-                        str(cand_path),
-                        providers=["CPUExecutionProvider"],
-                    )
-                    break
-                except Exception as exc:
-                    _ = exc
+        # Check for InsightFace buffalo_l / buffalo_s 512-D ONNX models in models/ and ~/.insightface/models/
+        candidate_dirs = [
+            models_dir,
+            Path.home() / ".insightface" / "models" / "buffalo_l",
+            Path.home() / ".insightface" / "models" / "buffalo_s",
+        ]
+        for c_dir in candidate_dirs:
+            if self.ort_session is not None or self.arcface_dnn is not None:
+                break
+            for candidate_name in ("w600k_r50.onnx", "w600k_mbf.onnx", "buffalo_l.onnx", "buffalo_s.onnx"):
+                cand_path = c_dir / candidate_name
+                if cand_path.exists() and cand_path.stat().st_size > 1_000_000:
                     try:
-                        self.arcface_dnn = cv2.dnn.readNetFromONNX(str(cand_path))
+                        import onnxruntime as ort  # type: ignore[import-not-found]
+
+                        self.ort_session = ort.InferenceSession(
+                            str(cand_path),
+                            providers=["CPUExecutionProvider"],
+                        )
                         break
-                    except cv2.error as cv_exc:
-                        _ = cv_exc
-                        self.arcface_dnn = None
+                    except Exception as exc:
+                        _ = exc
+                        try:
+                            self.arcface_dnn = cv2.dnn.readNetFromONNX(str(cand_path))
+                            break
+                        except cv2.error as cv_exc:
+                            _ = cv_exc
+                            self.arcface_dnn = None
 
         # Load OpenCV SFace deep neural network (`models/mobilefacenet.onnx`)
+        self.sface_baseline: Optional[np.ndarray] = None
         sface_path = models_dir / "mobilefacenet.onnx"
         if sface_path.exists() and sface_path.stat().st_size > 1_000_000:
             try:
                 self.sface_recognizer = cv2.FaceRecognizerSF_create(str(sface_path), "")
+                neutral_112 = np.full((112, 112, 3), 128, dtype=np.uint8)
+                cv2.circle(neutral_112, (56, 56), 42, (165, 165, 165), -1)
+                cv2.circle(neutral_112, (38, 52), 6, (50, 50, 50), -1)
+                cv2.circle(neutral_112, (74, 52), 6, (50, 50, 50), -1)
+                cv2.line(neutral_112, (42, 92), (70, 92), (70, 70, 70), 3)
+                base_feat = self.sface_recognizer.feature(neutral_112)
+                self.sface_baseline = np.asarray(base_feat, dtype=np.float32).reshape(-1)
             except cv2.error as exc:
                 _ = exc
                 self.sface_recognizer = None
+                self.sface_baseline = None
 
     @staticmethod
-    def _extract_aligned_112_spatial_384d(aligned_rgb_112: np.ndarray) -> np.ndarray:
+    def _zero_mean_unit(arr: np.ndarray) -> np.ndarray:
+        """Zero-center and L2-normalize a 1D feature sub-band so DC lighting offsets never inflate cosine similarity."""
+        v = np.asarray(arr, dtype=np.float32).reshape(-1)
+        v = v - float(np.mean(v))
+        n = float(np.linalg.norm(v))
+        if n > 1e-7:
+            v = v / n
+        return v
+
+    @classmethod
+    def _extract_aligned_112_spatial_384d(cls, aligned_rgb_112: np.ndarray) -> np.ndarray:
         """
-        Extract a 384-D illumination-invariant LAB + Sobel gradient descriptor from the canonical
-        5-point affine-aligned `112x112` face crop (`8x8` grid x 6 channels = 384-D).
+        Extract a 384-D zero-mean, illumination-invariant multi-band facial identity descriptor
+        from the canonical 5-point affine-aligned `112x112` face crop (`6 x 64-D = 384-D`):
+        1. Mid-frequency 2D DCT `[2:10, 2:10]` (64-D) capturing person-specific facial geometry
+        2. Structure tensor `cos(2*theta)` `(Gx^2 - Gy^2) / (|G| + 25)` on `8x8` grid (64-D)
+        3. Structure tensor `sin(2*theta)` `(2*Gx*Gy) / (|G| + 25)` on `8x8` grid (64-D)
+        4. Signed Horizontal Sobel gradient `Gx` on periocular/nasolabial ROI `[24:104, 16:96]` (64-D)
+        5. Signed Vertical Sobel gradient `Gy` on periocular/nasolabial ROI `[24:104, 16:96]` (64-D)
+        6. Opponent chrominance `A/B` + Laplacian curvature on `8x8` grid (64-D)
         """
         lab = cv2.cvtColor(aligned_rgb_112, cv2.COLOR_RGB2LAB)
         l_ch, a_ch, b_ch = cv2.split(lab)
-        l_eq = cv2.equalizeHist(l_ch)
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        l_eq = clahe.apply(l_ch).astype(np.float32)
+        l_smooth = cv2.GaussianBlur(l_eq, (3, 3), 0.8)
 
-        gx = cv2.Sobel(l_eq, cv2.CV_32F, 1, 0, ksize=3)
-        gy = cv2.Sobel(l_eq, cv2.CV_32F, 0, 1, ksize=3)
-        gmag = cv2.magnitude(gx, gy)
+        # Band 1 (64-D): 2D DCT mid-frequency AC spectrum [2:10, 2:10] on 64x64 aligned face
+        l_64 = cv2.resize(l_smooth, (64, 64), interpolation=cv2.INTER_AREA)
+        dct_block = cv2.dct(l_64)[2:10, 2:10].copy()
+        b1_dct = cls._zero_mean_unit(dct_block)
 
-        l_pool = cv2.resize(l_eq, (8, 8), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
-        a_pool = cv2.resize(a_ch, (8, 8), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
-        b_pool = cv2.resize(b_ch, (8, 8), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
-        gx_pool = cv2.resize(np.abs(gx), (8, 8), interpolation=cv2.INTER_AREA) / 255.0
-        gy_pool = cv2.resize(np.abs(gy), (8, 8), interpolation=cv2.INTER_AREA) / 255.0
-        gm_pool = cv2.resize(gmag, (8, 8), interpolation=cv2.INTER_AREA) / 255.0
+        # Band 2 & 3 (64-D each): Magnitude-stabilized structure tensor orientation
+        gx = cv2.Sobel(l_smooth, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(l_smooth, cv2.CV_32F, 0, 1, ksize=3)
+        mag = np.sqrt(gx * gx + gy * gy) + 25.0
+        st1 = (gx * gx - gy * gy) / mag
+        st2 = (2.0 * gx * gy) / mag
+        b2_st1 = cls._zero_mean_unit(cv2.resize(st1, (8, 8), interpolation=cv2.INTER_AREA))
+        b3_st2 = cls._zero_mean_unit(cv2.resize(st2, (8, 8), interpolation=cv2.INTER_AREA))
 
-        vec_384 = np.concatenate(
-            [
-                l_pool.reshape(-1),
-                a_pool.reshape(-1),
-                b_pool.reshape(-1),
-                gx_pool.reshape(-1),
-                gy_pool.reshape(-1),
-                gm_pool.reshape(-1),
-            ]
-        ).astype(np.float32)
+        # Band 4 & 5 (64-D each): Signed Sobel gradients on central periocular-mouth ROI [24:104, 16:96]
+        b4_gx = cls._zero_mean_unit(cv2.resize(gx[24:104, 16:96], (8, 8), interpolation=cv2.INTER_AREA))
+        b5_gy = cls._zero_mean_unit(cv2.resize(gy[24:104, 16:96], (8, 8), interpolation=cv2.INTER_AREA))
+
+        # Band 6 (64-D): Opponent chrominance (A/B)
+        a_32 = cls._zero_mean_unit(cv2.resize(a_ch.astype(np.float32), (6, 6), interpolation=cv2.INTER_AREA))[:32]
+        b_32 = cls._zero_mean_unit(cv2.resize(b_ch.astype(np.float32), (6, 6), interpolation=cv2.INTER_AREA))[:32]
+        b6_chroma = cls._zero_mean_unit(np.concatenate([a_32, b_32]))
+
+        vec_384 = np.concatenate([b1_dct, b2_st1, b3_st2, b4_gx, b5_gy, b6_chroma]).astype(np.float32)
         norm = float(np.linalg.norm(vec_384))
         if norm > 1e-7:
             vec_384 /= norm
@@ -249,9 +287,11 @@ class ArcFace512Extractor:
     ) -> Tuple[np.ndarray, Optional[np.ndarray], np.ndarray]:
         """
         1. Warp face to canonical `112x112` using 5-point affine alignment (`align_face_5pt_112x112`).
-        2. Extract deep neural embedding (`128-D` SFace + `512-D` ArcFace-aligned unit vector).
+        2. Extract deep neural embedding (`128-D` SFace + `512-D` ArcFace-aligned unit vector) directly
+           from the 5-point aligned `112x112` crop.
         Returns `(aligned_112_rgb, emb_128d_or_none, emb_512d)`.
         """
+        _ = bbox_xywh_px
         aligned_112 = align_face_5pt_112x112(rgb_frame, pts_5x2_px)
 
         # Path 1: InsightFace ONNX Runtime 512-D session if available
@@ -261,10 +301,8 @@ class ArcFace512Extractor:
                 in_name = self.ort_session.get_inputs()[0].name
                 out = self.ort_session.run(None, {in_name: blob})[0].reshape(-1).astype(np.float32)
                 if out.size == 512:
-                    n512 = float(np.linalg.norm(out))
-                    if n512 > 1e-7:
-                        out /= n512
-                        return aligned_112, None, out
+                    out = self._zero_mean_unit(out)
+                    return aligned_112, None, out
             except Exception as exc:
                 _ = exc
 
@@ -281,58 +319,35 @@ class ArcFace512Extractor:
                 self.arcface_dnn.setInput(blob)
                 out = self.arcface_dnn.forward().reshape(-1).astype(np.float32)
                 if out.size == 512:
-                    n512 = float(np.linalg.norm(out))
-                    if n512 > 1e-7:
-                        out /= n512
-                        return aligned_112, None, out
+                    out = self._zero_mean_unit(out)
+                    return aligned_112, None, out
             except cv2.error as exc:
                 _ = exc
 
-        # Path 3: OpenCV SFace Deep Neural Network (`models/mobilefacenet.onnx`) + 5-pt 112x112 512-D synthesis
+        # Path 3: OpenCV SFace Deep Neural Network (`models/mobilefacenet.onnx`) fed with the
+        # 5-point aligned `112x112` crop + 384-D zero-mean 5-pt aligned descriptor -> 512-D unit vector
         emb_128: Optional[np.ndarray] = None
         if self.sface_recognizer is not None:
             try:
-                bgr_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-                p = pts_5x2_px.reshape(5, 2)
-                det_vec = np.array(
-                    [
-                        float(bbox_xywh_px[0]),
-                        float(bbox_xywh_px[1]),
-                        float(bbox_xywh_px[2]),
-                        float(bbox_xywh_px[3]),
-                        float(p[0, 0]),
-                        float(p[0, 1]),
-                        float(p[1, 0]),
-                        float(p[1, 1]),
-                        float(p[2, 0]),
-                        float(p[2, 1]),
-                        float(p[3, 0]),
-                        float(p[3, 1]),
-                        float(p[4, 0]),
-                        float(p[4, 1]),
-                        0.99,
-                    ],
-                    dtype=np.float32,
-                )
-                sface_aligned = self.sface_recognizer.alignCrop(bgr_frame, det_vec)
-                feat = self.sface_recognizer.feature(sface_aligned)
+                bgr_aligned_112 = cv2.cvtColor(aligned_112, cv2.COLOR_RGB2BGR)
+                feat = self.sface_recognizer.feature(bgr_aligned_112)
                 vec = np.asarray(feat, dtype=np.float32).reshape(-1)
-                norm = float(np.linalg.norm(vec))
-                if vec.size == 128 and norm > 1e-6:
-                    emb_128 = vec / norm
+                if vec.size == 128 and float(np.std(vec)) > 1e-6:
+                    if self.sface_baseline is not None and self.sface_baseline.size == 128:
+                        vec = vec - self.sface_baseline
+                    emb_128 = self._zero_mean_unit(vec)
             except cv2.error as exc:
                 _ = exc
 
         spatial_384 = self._extract_aligned_112_spatial_384d(aligned_112)
-        if emb_128 is not None:
-            # Combine 128-D deep SFace embedding (85% energy) + 384-D 5-pt aligned descriptor (15% energy) -> 512-D unit vector
+        if emb_128 is not None and float(np.linalg.norm(emb_128)) > 1e-5:
+            # Combine debiased 128-D neural embedding + zero-centered 384-D 5-pt aligned descriptor -> 512-D unit vector
             emb_512 = np.concatenate(
-                [emb_128 * math.sqrt(0.85), spatial_384 * math.sqrt(0.15)]
+                [emb_128 * math.sqrt(0.25), spatial_384 * math.sqrt(0.75)]
             ).astype(np.float32)
         else:
-            # Deterministic 512-D unit vector from 5-pt aligned 112x112 crop
             pad_128 = spatial_384[:128].copy()
-            emb_512 = np.concatenate([pad_128 * math.sqrt(0.5), spatial_384 * math.sqrt(0.5)]).astype(
+            emb_512 = np.concatenate([pad_128 * math.sqrt(0.25), spatial_384 * math.sqrt(0.75)]).astype(
                 np.float32
             )
 

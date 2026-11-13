@@ -99,19 +99,22 @@ def enhance_adaptive_lighting_rgb(rgb_frame: np.ndarray) -> tuple:
 
         l_work = l_chan
         gamma_val = 1.0
-        if mean_l < 70.0:
-            mode = "LOW_LIGHT"
-            l_work = cv2.bilateralFilter(l_work, d=5, sigmaColor=40, sigmaSpace=40)
-            gamma_val = float(np.clip(0.46 + 0.42 * (mean_l / 70.0), 0.46, 0.88))
-            l_work = cv2.LUT(l_work, build_gamma_lut(gamma_val))
-            clip_lim = float(np.clip(2.6 + (70.0 - mean_l) * (1.4 / 70.0), 1.5, 4.0))
-        elif p95 > 235.0:
-            mode = "GLARE"
+        is_low_light = mean_l < 70.0
+        is_glare = p95 > 235.0
+        if is_glare:
             l_f = l_work.astype(np.float32)
             over_mask = l_f > 190.0
             if np.any(over_mask):
                 l_f[over_mask] = 190.0 + 50.0 * np.tanh((l_f[over_mask] - 190.0) / 80.0)
             l_work = np.clip(l_f, 0.0, 255.0).astype(np.uint8)
+
+        if is_low_light:
+            mode = "LOW_LIGHT"
+            gamma_val = float(np.clip(0.46 + 0.42 * (mean_l / 70.0), 0.46, 0.88))
+            l_work = cv2.LUT(l_work, build_gamma_lut(gamma_val))
+            clip_lim = float(np.clip(2.6 + (70.0 - mean_l) * (1.4 / 70.0), 1.5, 4.0))
+        elif is_glare:
+            mode = "GLARE"
             clip_lim = float(np.clip(1.9 - (p95 - 235.0) * 0.015, 1.5, 4.0))
         else:
             mode = "NORMAL"
@@ -119,7 +122,11 @@ def enhance_adaptive_lighting_rgb(rgb_frame: np.ndarray) -> tuple:
 
         clahe = cv2.createCLAHE(clipLimit=clip_lim, tileGridSize=(8, 8))
         l_eq = clahe.apply(l_work)
+        if is_low_light:
+            l_eq = cv2.bilateralFilter(l_eq, d=5, sigmaColor=40, sigmaSpace=40)
         img_eq = cv2.cvtColor(cv2.merge((l_eq, a_chan, b_chan)), cv2.COLOR_LAB2RGB)
+        if is_low_light:
+            img_eq = cv2.bilateralFilter(img_eq, d=5, sigmaColor=40, sigmaSpace=40)
 
         gaussian_blur = cv2.GaussianBlur(img_eq, (0, 0), sigmaX=1.2)
         sharpened = cv2.addWeighted(img_eq, 1.45, gaussian_blur, -0.45, 0.0)
@@ -300,66 +307,51 @@ def extract_face_sface_descriptor(face_recognizer, rgb_frame: np.ndarray, det, w
         borderMode=cv2.BORDER_REPLICATE,
     )
 
+    def zm_unit(arr: np.ndarray) -> np.ndarray:
+        v = np.asarray(arr, dtype=np.float32).reshape(-1)
+        v = v - float(np.mean(v))
+        n = float(np.linalg.norm(v))
+        return v / n if n > 1e-7 else v
+
     emb_128_list = None
     emb_128_arr = None
     if face_recognizer is not None:
-        bb = det.bounding_box
-        det_vec = np.array(
-            [
-                float(bb.origin_x),
-                float(bb.origin_y),
-                float(bb.width),
-                float(bb.height),
-                rex,
-                rey,
-                lex,
-                ley,
-                nx_px,
-                ny_px,
-                rmx,
-                rmy,
-                lmx,
-                lmy,
-                0.99,
-            ],
-            dtype=np.float32,
-        )
         try:
-            bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-            aligned = face_recognizer.alignCrop(bgr, det_vec)
-            feat = face_recognizer.feature(aligned)
+            bgr_112 = cv2.cvtColor(aligned_112, cv2.COLOR_RGB2BGR)
+            feat = face_recognizer.feature(bgr_112)
             vec = np.asarray(feat, dtype=np.float32).reshape(-1)
-            norm = float(np.linalg.norm(vec))
-            if vec.shape[0] == 128 and norm > 1e-6:
-                emb_128_arr = vec / norm
+            if vec.shape[0] == 128 and float(np.std(vec)) > 1e-6:
+                emb_128_arr = zm_unit(vec)
                 emb_128_list = [round(float(v), 5) for v in emb_128_arr]
         except cv2.error as exc:
             _ = exc
 
     lab_112 = cv2.cvtColor(aligned_112, cv2.COLOR_RGB2LAB)
     l_c, a_c, b_c = cv2.split(lab_112)
-    l_eq = cv2.equalizeHist(l_c)
-    gx = cv2.Sobel(l_eq, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(l_eq, cv2.CV_32F, 0, 1, ksize=3)
-    gm = cv2.magnitude(gx, gy)
-    spatial_384 = np.concatenate(
-        [
-            cv2.resize(l_eq, (8, 8), interpolation=cv2.INTER_AREA).astype(np.float32).reshape(-1) / 255.0,
-            cv2.resize(a_c, (8, 8), interpolation=cv2.INTER_AREA).astype(np.float32).reshape(-1) / 255.0,
-            cv2.resize(b_c, (8, 8), interpolation=cv2.INTER_AREA).astype(np.float32).reshape(-1) / 255.0,
-            cv2.resize(np.abs(gx), (8, 8), interpolation=cv2.INTER_AREA).reshape(-1) / 255.0,
-            cv2.resize(np.abs(gy), (8, 8), interpolation=cv2.INTER_AREA).reshape(-1) / 255.0,
-            cv2.resize(gm, (8, 8), interpolation=cv2.INTER_AREA).reshape(-1) / 255.0,
-        ]
-    ).astype(np.float32)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    l_eq = clahe.apply(l_c).astype(np.float32)
+    l_smooth = cv2.GaussianBlur(l_eq, (3, 3), 0.8)
+    l_64 = cv2.resize(l_smooth, (64, 64), interpolation=cv2.INTER_AREA)
+    b1_dct = zm_unit(cv2.dct(l_64)[2:10, 2:10].copy())
+    gx = cv2.Sobel(l_smooth, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(l_smooth, cv2.CV_32F, 0, 1, ksize=3)
+    mag = np.sqrt(gx * gx + gy * gy) + 25.0
+    b2_st1 = zm_unit(cv2.resize((gx * gx - gy * gy) / mag, (8, 8), interpolation=cv2.INTER_AREA))
+    b3_st2 = zm_unit(cv2.resize((2.0 * gx * gy) / mag, (8, 8), interpolation=cv2.INTER_AREA))
+    b4_gx = zm_unit(cv2.resize(gx[24:104, 16:96], (8, 8), interpolation=cv2.INTER_AREA))
+    b5_gy = zm_unit(cv2.resize(gy[24:104, 16:96], (8, 8), interpolation=cv2.INTER_AREA))
+    a_32 = zm_unit(cv2.resize(a_c.astype(np.float32), (6, 6), interpolation=cv2.INTER_AREA))[:32]
+    b_32 = zm_unit(cv2.resize(b_c.astype(np.float32), (6, 6), interpolation=cv2.INTER_AREA))[:32]
+    b6_chroma = zm_unit(np.concatenate([a_32, b_32]))
+    spatial_384 = np.concatenate([b1_dct, b2_st1, b3_st2, b4_gx, b5_gy, b6_chroma]).astype(np.float32)
     sn = float(np.linalg.norm(spatial_384))
     if sn > 1e-7:
         spatial_384 /= sn
 
     if emb_128_arr is not None:
-        emb_512 = np.concatenate([emb_128_arr * math.sqrt(0.85), spatial_384 * math.sqrt(0.15)]).astype(np.float32)
+        emb_512 = np.concatenate([emb_128_arr * math.sqrt(0.25), spatial_384 * math.sqrt(0.75)]).astype(np.float32)
     else:
-        emb_512 = np.concatenate([spatial_384[:128] * math.sqrt(0.5), spatial_384 * math.sqrt(0.5)]).astype(np.float32)
+        emb_512 = np.concatenate([spatial_384[:128] * math.sqrt(0.25), spatial_384 * math.sqrt(0.75)]).astype(np.float32)
     n512 = float(np.linalg.norm(emb_512))
     if n512 > 1e-7:
         emb_512 /= n512

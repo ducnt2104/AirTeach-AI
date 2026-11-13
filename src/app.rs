@@ -855,7 +855,7 @@ impl AirTeachApp {
                         self.last_live_face_vec = arc512.0.to_vec();
                     } else if let Some(sface) = pkt.two_hand_frame.detected_face_emb {
                         self.last_live_face_vec = sface.0.to_vec();
-                    } else {
+                    } else if !pkt.two_hand_frame.using_onnx_session {
                         self.last_live_face_embedding =
                             self.face_auth.extract_512d_aligned_embedding(
                                 &pkt.rgba_bytes,
@@ -871,8 +871,10 @@ impl AirTeachApp {
                         && !self.auth_tab_is_signup
                         && self.signin_face_mode
                         && !self.registered_users.is_empty()
+                        && !self.last_live_face_vec.is_empty()
                     {
-                        let active_thresh = if pkt.two_hand_frame.detected_face_emb_512.is_some()
+                        let active_thresh = if pkt.two_hand_frame.using_onnx_session
+                            || pkt.two_hand_frame.detected_face_emb_512.is_some()
                             || pkt.two_hand_frame.detected_face_emb.is_some()
                             || self.last_live_face_vec.len() == SFACE_EMBEDDING_DIM
                             || enrolled_is_128d

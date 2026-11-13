@@ -123,11 +123,13 @@ def preprocess_adaptive_frame(
     l_work = l_chan
     gamma_applied = 1.0
 
-    # 2 & 3. Denoise-then-Sharpen + Adaptive Gamma / Highlight Roll-off
+    # 2. Adaptive Gamma Correction (mean_luma < 70) & Highlight Roll-off (p95 > 235)
+    # Note: A backlit scene can have both low average luminance (mean_luma < 70) AND window glare (p95 > 235).
+    if is_glare:
+        l_work = apply_highlight_rolloff(l_work, knee=190.0)
+
     if is_low_light:
         lighting_mode = "LOW_LIGHT"
-        # Mandatory edge-preserving Bilateral Filter (d=5, sigmaColor=40, sigmaSpace=40) BEFORE sharpening
-        l_work = cv2.bilateralFilter(l_work, d=5, sigmaColor=40, sigmaSpace=40)
         # Dynamic gamma < 1.0 computed continuously from mean_luma
         gamma_applied = float(np.clip(0.46 + 0.42 * (mean_luma / 70.0), 0.46, 0.88))
         l_work = cv2.LUT(l_work, build_gamma_lut(gamma_applied))
@@ -136,7 +138,6 @@ def preprocess_adaptive_frame(
         clahe_clip = float(np.clip(2.6 + (70.0 - mean_luma) * (1.4 / 70.0), 1.5, 4.0))
     elif is_glare:
         lighting_mode = "GLARE"
-        l_work = apply_highlight_rolloff(l_work, knee=190.0)
         if mean_luma > 180.0:
             gamma_applied = float(np.clip(1.12 + (mean_luma - 180.0) / 180.0, 1.10, 1.38))
             l_work = cv2.LUT(l_work, build_gamma_lut(gamma_applied))
@@ -149,8 +150,16 @@ def preprocess_adaptive_frame(
     clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8))
     l_eq = clahe.apply(l_work)
 
+    # 3. Denoise-then-Sharpen:
+    # In low-light (high ISO grain amplified by gamma + CLAHE), run mandatory Bilateral Filter
+    # (d=5, sigmaColor=40, sigmaSpace=40) to smooth noise while preserving edges BEFORE Unsharp Masking.
+    if is_low_light:
+        l_eq = cv2.bilateralFilter(l_eq, d=5, sigmaColor=40, sigmaSpace=40)
+
     lab_eq = cv2.merge((l_eq, a_chan, b_chan))
     img_eq = cv2.cvtColor(lab_eq, from_lab)
+    if is_low_light:
+        img_eq = cv2.bilateralFilter(img_eq, d=5, sigmaColor=40, sigmaSpace=40)
 
     # Controlled Unsharp Masking: 1.45 * img - 0.45 * gaussian_blur
     gaussian_blur = cv2.GaussianBlur(img_eq, (0, 0), sigmaX=1.2)
