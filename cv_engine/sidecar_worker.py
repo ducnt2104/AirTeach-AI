@@ -162,6 +162,59 @@ def run_self_test() -> int:
     assert lock.skipped_frames == 1
     lock.release()
 
+    # 4. Test 4-Tier Zero-Stray-Stroke Drawing FSM (Schmitt Trigger + Tail Trim + 300ms Cooldown + 400ms Undo)
+    import math as _math
+    from cv_engine.drawing_fsm import DrawingHudMode, ZeroStrayStrokeDrawingFsm
+    from cv_engine.shape_recognizer import beautify_stroke
+
+    dfsm = ZeroStrayStrokeDrawingFsm()
+    # Two pinch frames < 0.28 must still stay HOVER (requires >= 3 frames)
+    u1 = dfsm.step(0.0, True, (100.0, 100.0), 0.24, "PINCH")
+    u2 = dfsm.step(33.0, True, (110.0, 100.0), 0.24, "PINCH")
+    assert u1.hud_mode == DrawingHudMode.HOVER and u2.hud_mode == DrawingHudMode.HOVER
+    # 3rd frame triggers DRAWING
+    u3 = dfsm.step(66.0, True, (120.0, 100.0), 0.24, "PINCH")
+    assert u3.hud_mode == DrawingHudMode.DRAWING and u3.action == "BEGIN_STROKE"
+    for k in range(1, 10):
+        uk = dfsm.step(66.0 + k * 33.0, True, (120.0 + k * 20.0, 100.0), 0.35, "PINCH")
+        assert uk.hud_mode == DrawingHudMode.DRAWING, "Hysteresis <= 0.40 must keep DRAWING"
+    # Inject wild hook points in final ~100ms before release (> 0.40)
+    t_hook = 66.0 + 10 * 33.0
+    dfsm.step(t_hook, True, (320.0, 260.0), 0.38, "PINCH")
+    dfsm.step(t_hook + 33.0, True, (380.0, 350.0), 0.39, "PINCH")
+    u_rel = dfsm.step(t_hook + 66.0, True, (420.0, 420.0), 0.48, "HOVER")
+    assert u_rel.action == "COMMIT_STROKE" and u_rel.hud_mode == DrawingHudMode.HOVER
+    assert max(p[1] for p in u_rel.committed_points) < 200.0, "Tail trimming must remove release hook"
+
+    # Cancel via FIST 150ms -> discards stroke + locks pen 300ms
+    dfsm.reset()
+    for k in range(5):
+        dfsm.step(k * 33.0, True, (100.0 + k * 10.0, 100.0), 0.22, "PINCH")
+    dfsm.step(200.0, True, (150.0, 100.0), 0.22, "FIST")
+    uc = dfsm.step(360.0, True, (150.0, 100.0), 0.22, "FIST")
+    assert uc.action == "CANCEL_STROKE" and uc.hud_mode == DrawingHudMode.LOCKED_COOLDOWN
+    # During 300ms cooldown, pinch < 0.28 must NOT draw
+    ul = dfsm.step(450.0, True, (160.0, 100.0), 0.18, "PINCH")
+    assert ul.hud_mode == DrawingHudMode.LOCKED_COOLDOWN and ul.action == "NONE"
+
+    # 5. Test Hybrid Shape Beautification (Line, Circle, Rotated Ellipse, Rectangle, Freehand gate)
+    line_pts = [(100.0 + i * 8.0, 200.0 + i * 0.2) for i in range(25)]
+    res_line = beautify_stroke(line_pts)
+    assert res_line.shape_type == "LINE", f"Expected LINE, got {res_line.shape_type}"
+
+    circle_pts = [(300.0 + 90.0 * _math.cos(2 * _math.pi * i / 48), 300.0 + 90.0 * _math.sin(2 * _math.pi * i / 48)) for i in range(49)]
+    res_circle = beautify_stroke(circle_pts)
+    assert res_circle.shape_type == "CIRCLE", f"Expected CIRCLE, got {res_circle.shape_type}"
+
+    ell_pts = [(300.0 + 130.0 * _math.cos(2 * _math.pi * i / 48), 300.0 + 60.0 * _math.sin(2 * _math.pi * i / 48)) for i in range(49)]
+    res_ell = beautify_stroke(ell_pts)
+    assert res_ell.shape_type == "ELLIPSE", f"Expected ELLIPSE, got {res_ell.shape_type}"
+
+    # Freehand cursive wave must NOT snap falsely into a box/circle
+    wave_pts = [(50.0 + i * 6.0, 200.0 + 35.0 * _math.sin(i * 0.45) + 0.5 * i) for i in range(55)]
+    res_wave = beautify_stroke(wave_pts)
+    assert res_wave.shape_type == "FREEHAND", f"Wave must stay FREEHAND, got {res_wave.shape_type}"
+
     print(
         json.dumps(
             {
@@ -176,6 +229,8 @@ def run_self_test() -> int:
                 "arcface_embedding_dim": int(emb512.size),
                 "multi_template_sim": round(sim, 4),
                 "impostor_sim": round(imp_sim, 4),
+                "drawing_fsm_tail_pts": len(u_rel.committed_points),
+                "shape_types": [res_line.shape_type, res_circle.shape_type, res_ell.shape_type, res_wave.shape_type],
             }
         )
     )

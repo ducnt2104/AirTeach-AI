@@ -337,6 +337,38 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                     app.storage.save_config(&app.config);
                 }
 
+                if app.config.auto_shape_snap {
+                    let hold_fill = if app.config.hold_to_snap_350ms {
+                        palette.primary
+                    } else {
+                        palette.surface
+                    };
+                    let hold_col = if app.config.hold_to_snap_350ms {
+                        Color32::WHITE
+                    } else {
+                        palette.text_muted
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Giữ 350ms")
+                                    .color(hold_col)
+                                    .font(FontId::proportional(11.5))
+                                    .strong(),
+                            )
+                            .fill(hold_fill)
+                            .stroke(Stroke::new(1.0_f32, palette.border))
+                            .rounding(Rounding::same(7.0))
+                            .min_size(Vec2::new(0.0, 32.0)),
+                        )
+                        .on_hover_text("Bật: vẽ xong giữ tay 350ms mới nắn chuẩn hình")
+                        .clicked()
+                    {
+                        app.config.hold_to_snap_350ms = !app.config.hold_to_snap_350ms;
+                        app.storage.save_config(&app.config);
+                    }
+                }
+
                 ui.separator();
 
                 // GROUP 2: 6 Circular Color Buttons (22x22px) + Thickness Slider (2px - 14px)
@@ -386,7 +418,7 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                 ui.separator();
 
                 // GROUP 3: [Hoàn tác (Undo)] | [Làm lại (Redo)] | [Xóa Bảng]
-                if ui
+                    if ui
                     .add(
                         egui::Button::new(
                             RichText::new("[Hoàn tác (Undo)]")
@@ -399,11 +431,10 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                         .rounding(Rounding::same(7.0))
                         .min_size(Vec2::new(0.0, 32.0)),
                     )
+                    .on_hover_text("Ctrl+Z hoặc xòe 3 ngón (cooldown 400ms)")
                     .clicked()
                 {
-                    if let Some(last) = app.strokes.pop() {
-                        app.redo_strokes.push(last);
-                    }
+                    app.perform_undo_with_cooldown();
                 }
 
                 if ui

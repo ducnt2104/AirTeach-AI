@@ -45,6 +45,19 @@ from cv_engine.face_id import (
     cosine_similarity_vec,
     multi_template_cosine_similarity,
 )
+from cv_engine.drawing_fsm import (
+    DrawingFsmUpdate,
+    DrawingHudMode,
+    StrokeRingBuffer,
+    ZeroStrayStrokeDrawingFsm,
+)
+from cv_engine.shape_recognizer import (
+    BeautifiedShapeResult,
+    beautify_stroke,
+    catmull_rom_spline,
+    rdp_simplify,
+    resample_arc_length,
+)
 
 __all__ = [
     "ExposureDiagnostics",
@@ -67,4 +80,13 @@ __all__ = [
     "align_face_5pt_112x112",
     "cosine_similarity_vec",
     "multi_template_cosine_similarity",
+    "DrawingFsmUpdate",
+    "DrawingHudMode",
+    "StrokeRingBuffer",
+    "ZeroStrayStrokeDrawingFsm",
+    "BeautifiedShapeResult",
+    "beautify_stroke",
+    "catmull_rom_spline",
+    "rdp_simplify",
+    "resample_arc_length",
 ]

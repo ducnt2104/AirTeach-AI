@@ -17,6 +17,36 @@ pub const DEFAULT_MIN_HOLD_SEC: f64 = 0.175;
 /// Grace period preserving active gesture state across brief tracking dropouts (150ms).
 pub const DEFAULT_GRACE_PERIOD_SEC: f64 = 0.150;
 
+/// 4-Tier Zero-Stray-Stroke Drawing FSM Constants (matching Python cv_engine/drawing_fsm.py).
+pub const PINCH_ENTER_THRESHOLD: f32 = 0.28;
+pub const PINCH_EXIT_THRESHOLD: f32 = 0.40;
+pub const PINCH_ENTER_MIN_FRAMES: u8 = 3;
+pub const TAIL_TRIM_MS: f64 = 105.0;
+pub const CANCEL_HOLD_MS: f64 = 150.0;
+pub const POST_COMMIT_CANCEL_WINDOW_MS: f64 = 700.0;
+pub const PEN_LOCK_COOLDOWN_MS: f64 = 300.0;
+pub const UNDO_HOLD_MS: f64 = 220.0;
+pub const UNDO_COOLDOWN_MS: f64 = 400.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DrawingHudMode {
+    Hover,
+    Drawing,
+    LockedCooldown,
+    PanErase,
+}
+
+impl DrawingHudMode {
+    pub const fn label_vi(self) -> &'static str {
+        match self {
+            Self::Hover => "Hover (Di chuyển)",
+            Self::Drawing => "Drawing (Đang vẽ)",
+            Self::LockedCooldown => "Locked/Cooldown (Đã hủy • Khóa tạm)",
+            Self::PanErase => "Pan/Erase (Tẩy / Di chuyển)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeftGesture {
     Idle,
@@ -39,6 +69,7 @@ pub enum RightGesture {
     Idle,
     DrawStroke,
     HoverTwoFingers,
+    ThreeFingerUndo,
     PinchToolSelect,
     PalmEraser,
     LaserPointer,
@@ -50,12 +81,13 @@ impl RightGesture {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Idle => "Chờ tay",
-            Self::DrawStroke => "Đang Vẽ (1 Ngón)",
-            Self::HoverTwoFingers => "Di chuyển (2 Ngón)",
-            Self::PinchToolSelect => "Click (Chụm tay)",
+            Self::DrawStroke => "Đang Vẽ (Kẹp / 1 Ngón)",
+            Self::HoverTwoFingers => "Di chuyển (Mở tay / 2 Ngón)",
+            Self::ThreeFingerUndo => "Hoàn tác (3 Ngón)",
+            Self::PinchToolSelect => "Vẽ Kẹp Ngón (Pinch < 0.28)",
             Self::PalmEraser => "Tẩy (5 Ngón)",
             Self::LaserPointer => "Con trỏ Laser",
-            Self::FistClench => "Ngắt nét (Nắm tay)",
+            Self::FistClench => "Hủy nét (Nắm tay 150ms)",
             Self::SelectBoxVShape => "Khoanh vùng AI",
         }
     }
@@ -63,11 +95,12 @@ impl RightGesture {
     pub const fn short_status(self) -> &'static str {
         match self {
             Self::Idle => "Trạng thái: Chờ tay",
-            Self::DrawStroke => "Trạng thái: Đang Vẽ",
+            Self::DrawStroke | Self::PinchToolSelect => "Trạng thái: Đang Vẽ",
             Self::HoverTwoFingers | Self::LaserPointer | Self::FistClench => {
                 "Trạng thái: Di chuyển"
             }
-            Self::PinchToolSelect | Self::SelectBoxVShape => "Trạng thái: Click",
+            Self::ThreeFingerUndo => "Trạng thái: Hoàn tác",
+            Self::SelectBoxVShape => "Trạng thái: Khoanh vùng AI",
             Self::PalmEraser => "Trạng thái: Tẩy",
         }
     }
@@ -318,15 +351,22 @@ pub fn classify_right_hand_with_hysteresis(
 
     let [index_up, middle_up, ring_up, pinky_up] = *prev_fingers;
     let thumb_index_ratio = lm[THUMB_TIP].dist_3d(lm[INDEX_TIP]) / palm_scale;
-    let is_thumb_pinched = thumb_index_ratio < if was_pinched { 0.36 } else { 0.27 };
+    let index_reach = lm[WRIST].dist_3d(lm[INDEX_TIP]) / palm_scale;
+    let is_thumb_pinched =
+        thumb_index_ratio < if was_pinched { PINCH_EXIT_THRESHOLD } else { PINCH_ENTER_THRESHOLD };
     let index_tip_pt = lm[INDEX_TIP].to_2d();
 
-    // 1. Open palm (4-5 fingers extended and not pinched): Palm Eraser at palm center (LM 9)
-    if index_up && middle_up && ring_up && pinky_up && !is_thumb_pinched {
+    // 1. Open palm (all 4 fingers extended and not pinched): CANCEL while drawing / ERASE when idle
+    if index_up && middle_up && ring_up && pinky_up && thumb_index_ratio > 0.38 {
         return (RightGesture::PalmEraser, lm[MIDDLE_MCP].to_2d(), palm_scale);
     }
 
-    // 2. Thumb-Index Pinch (`dist(4, 8) / dist(0, 9) < threshold`): Pinch Click / Tool Select
+    // 2. Tight Fist (all 4 fingers curled tightly into palm & index reach small): CANCEL
+    if !index_up && !middle_up && !ring_up && !pinky_up && index_reach < 1.15 {
+        return (RightGesture::FistClench, lm[MIDDLE_MCP].to_2d(), palm_scale);
+    }
+
+    // 3. Thumb-Index Pinch (`dist(4, 8) / dist(0, 9) < 0.28` enter, `> 0.40` exit)
     if is_thumb_pinched {
         let pinch_pt = Point2D::new(
             0.5 * (lm[THUMB_TIP].x + lm[INDEX_TIP].x),
@@ -335,7 +375,16 @@ pub fn classify_right_hand_with_hysteresis(
         return (RightGesture::PinchToolSelect, pinch_pt, palm_scale);
     }
 
-    // 3. Index + Middle up, Ring & Pinky curled: Hover cursor (cuts stroke smoothly)
+    // 4. Three Fingers up (Index + Middle + Ring, Pinky curled, unpinched): UNDO trigger
+    if index_up && middle_up && ring_up && !pinky_up && thumb_index_ratio > PINCH_EXIT_THRESHOLD {
+        let mid_cursor = Point2D::new(
+            0.5 * (lm[INDEX_TIP].x + lm[MIDDLE_TIP].x),
+            0.5 * (lm[INDEX_TIP].y + lm[MIDDLE_TIP].y),
+        );
+        return (RightGesture::ThreeFingerUndo, mid_cursor, palm_scale);
+    }
+
+    // 5. Index + Middle up, Ring curled: Hover cursor (cuts stroke smoothly)
     if index_up && middle_up && !ring_up {
         let mid_cursor = Point2D::new(
             0.5 * (lm[INDEX_TIP].x + lm[MIDDLE_TIP].x),
@@ -344,12 +393,12 @@ pub fn classify_right_hand_with_hysteresis(
         return (RightGesture::HoverTwoFingers, mid_cursor, palm_scale);
     }
 
-    // 4. Only Index finger up: Draw Stroke at Index Tip (LM 8)
+    // 6. Only Index finger up: Index Tip pose
     if index_up && !middle_up && !ring_up {
         return (RightGesture::DrawStroke, index_tip_pt, palm_scale);
     }
 
-    // 5. All curled -> Fist Clench
+    // 7. Loose fist fallback
     if !index_up && !middle_up && !ring_up && !pinky_up {
         return (RightGesture::FistClench, lm[MIDDLE_MCP].to_2d(), palm_scale);
     }
@@ -679,6 +728,408 @@ impl GestureDebounceFsm {
     }
 }
 
+/// Timestamped board point inside the pre-release ring buffer.
+#[derive(Debug, Clone, Copy)]
+pub struct TimedBoardPoint {
+    pub pt: Point2D,
+    pub t_ms: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DrawingFsmAction {
+    None,
+    BeginStroke,
+    AppendPoint,
+    CommitStrokeTrimmed(Vec<Point2D>),
+    CancelStrokeDiscard,
+    RollbackLastStroke,
+    UndoWithCooldown,
+    PalmErase,
+    PanActive,
+}
+
+#[derive(Debug, Clone)]
+pub struct DrawingStepResult {
+    pub hud_mode: DrawingHudMode,
+    pub action: DrawingFsmAction,
+    pub cooldown_remaining_ms: f32,
+    pub undo_cooldown_remaining_ms: f32,
+    pub cancel_hold_progress: f32,
+    pub cancel_reason: &'static str,
+}
+
+/// 4-Tier Zero-Stray-Stroke Drawing FSM Controller (Rust runtime parity with cv_engine/drawing_fsm.py).
+/// - Schmitt trigger on pinch_ratio: enter DRAWING < 0.28 for >= 3 frames; release to HOVER > 0.40.
+/// - Pre-release ring buffer tail trimming: drops points in the final 105ms (90-120ms) on release/cancel.
+/// - Instant Cancel via OPEN_PALM (150ms), FIST (150ms), or Esc -> discards/rolls back + 300ms pen lock.
+/// - Undo gesture (3 fingers >= 220ms) or Ctrl+Z / UI Undo -> 400ms cooldown.
+pub struct DrawingController4Tier {
+    pub hud_mode: DrawingHudMode,
+    pub ring_buffer: Vec<TimedBoardPoint>,
+    pub hold_to_snap_ready: bool,
+    pinch_enter_count: u8,
+    locked_until_ms: f64,
+    last_commit_ms: f64,
+    last_undo_ms: f64,
+    cancel_candidate: Option<RightGesture>,
+    cancel_since_ms: Option<f64>,
+    undo_since_ms: Option<f64>,
+    undo_fired_for_hold: bool,
+    eraser_suppress_until_ms: f64,
+    last_motion_ms: f64,
+    last_motion_pt: Option<Point2D>,
+}
+
+impl Default for DrawingController4Tier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DrawingController4Tier {
+    pub fn new() -> Self {
+        Self {
+            hud_mode: DrawingHudMode::Hover,
+            ring_buffer: Vec::with_capacity(2048),
+            hold_to_snap_ready: false,
+            pinch_enter_count: 0,
+            locked_until_ms: -1e9,
+            last_commit_ms: -1e9,
+            last_undo_ms: -1e9,
+            cancel_candidate: None,
+            cancel_since_ms: None,
+            undo_since_ms: None,
+            undo_fired_for_hold: false,
+            eraser_suppress_until_ms: -1e9,
+            last_motion_ms: 0.0,
+            last_motion_pt: None,
+        }
+    }
+
+    pub fn active_points(&self) -> Vec<Point2D> {
+        self.ring_buffer.iter().map(|p| p.pt).collect()
+    }
+
+    fn trim_ring_tail_and_extract(&mut self) -> Vec<Point2D> {
+        if self.ring_buffer.is_empty() {
+            return Vec::new();
+        }
+        let t_end = self.ring_buffer.last().unwrap().t_ms;
+        let cutoff = t_end - TAIL_TRIM_MS;
+        let mut removed = 0usize;
+        while let Some(last) = self.ring_buffer.last() {
+            if last.t_ms > cutoff {
+                if removed >= 6 && self.ring_buffer.len() >= 2 {
+                    break;
+                }
+                self.ring_buffer.pop();
+                removed += 1;
+            } else {
+                break;
+            }
+        }
+        if removed == 0 && self.ring_buffer.len() >= 5 {
+            self.ring_buffer.pop();
+        }
+        let out: Vec<Point2D> = if self.ring_buffer.len() >= 2 {
+            self.ring_buffer.iter().map(|tp| tp.pt).collect()
+        } else {
+            Vec::new()
+        };
+        self.ring_buffer.clear();
+        self.hold_to_snap_ready = false;
+        self.last_motion_pt = None;
+        out
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(
+        &mut self,
+        t_ms: f64,
+        hand_present: bool,
+        cursor_board: Option<Point2D>,
+        pinch_ratio: Option<f32>,
+        raw_pose: RightGesture,
+        left_pan_active: bool,
+        esc_pressed: bool,
+        undo_requested: bool,
+        hold_to_snap_mode: bool,
+    ) -> DrawingStepResult {
+        let was_drawing = self.hud_mode == DrawingHudMode::Drawing;
+        let recently_committed = (t_ms - self.last_commit_ms) <= POST_COMMIT_CANCEL_WINDOW_MS;
+
+        // 1. Keyboard Esc -> Immediate Cancel + 300ms Pen Lock Cooldown
+        if esc_pressed {
+            self.pinch_enter_count = 0;
+            self.locked_until_ms = t_ms + PEN_LOCK_COOLDOWN_MS;
+            self.hud_mode = DrawingHudMode::LockedCooldown;
+            self.ring_buffer.clear();
+            self.hold_to_snap_ready = false;
+            self.last_motion_pt = None;
+            let action = if was_drawing {
+                DrawingFsmAction::CancelStrokeDiscard
+            } else if recently_committed {
+                self.last_commit_ms = -1e9;
+                DrawingFsmAction::RollbackLastStroke
+            } else {
+                DrawingFsmAction::None
+            };
+            return DrawingStepResult {
+                hud_mode: self.hud_mode,
+                action,
+                cooldown_remaining_ms: PEN_LOCK_COOLDOWN_MS as f32,
+                undo_cooldown_remaining_ms: (UNDO_COOLDOWN_MS - (t_ms - self.last_undo_ms)).max(0.0) as f32,
+                cancel_hold_progress: 1.0,
+                cancel_reason: "ESC",
+            };
+        }
+
+        // 2. Active Post-Cancel Pen Lock Cooldown (300ms)
+        if t_ms < self.locked_until_ms {
+            self.hud_mode = DrawingHudMode::LockedCooldown;
+            self.pinch_enter_count = 0;
+            self.ring_buffer.clear();
+            let rem = (self.locked_until_ms - t_ms) as f32;
+            let undo_rem = (UNDO_COOLDOWN_MS - (t_ms - self.last_undo_ms)).max(0.0) as f32;
+            if undo_requested && undo_rem <= 0.0 {
+                self.last_undo_ms = t_ms;
+                return DrawingStepResult {
+                    hud_mode: self.hud_mode,
+                    action: DrawingFsmAction::UndoWithCooldown,
+                    cooldown_remaining_ms: rem,
+                    undo_cooldown_remaining_ms: UNDO_COOLDOWN_MS as f32,
+                    cancel_hold_progress: 0.0,
+                    cancel_reason: "",
+                };
+            }
+            return DrawingStepResult {
+                hud_mode: self.hud_mode,
+                action: DrawingFsmAction::None,
+                cooldown_remaining_ms: rem,
+                undo_cooldown_remaining_ms: undo_rem,
+                cancel_hold_progress: 0.0,
+                cancel_reason: "",
+            };
+        }
+
+        // 3. Cancel Gesture Hold (`OPEN_PALM` or `FIST` held >= 150ms) while drawing or recently committed
+        let mut cancel_progress = 0.0_f32;
+        let can_cancel = was_drawing || recently_committed;
+        let is_cancel_pose = matches!(raw_pose, RightGesture::PalmEraser | RightGesture::FistClench);
+        if hand_present && is_cancel_pose && can_cancel {
+            if self.cancel_candidate != Some(raw_pose) {
+                self.cancel_candidate = Some(raw_pose);
+                self.cancel_since_ms = Some(t_ms);
+            }
+            let held = t_ms - self.cancel_since_ms.unwrap_or(t_ms);
+            cancel_progress = (held / CANCEL_HOLD_MS).clamp(0.0, 1.0) as f32;
+            if held >= CANCEL_HOLD_MS {
+                let reason = if raw_pose == RightGesture::PalmEraser {
+                    "OPEN_PALM"
+                } else {
+                    "FIST"
+                };
+                self.cancel_candidate = None;
+                self.cancel_since_ms = None;
+                self.pinch_enter_count = 0;
+                self.locked_until_ms = t_ms + PEN_LOCK_COOLDOWN_MS;
+                self.eraser_suppress_until_ms = t_ms + 550.0;
+                self.hud_mode = DrawingHudMode::LockedCooldown;
+                self.ring_buffer.clear();
+                self.hold_to_snap_ready = false;
+                self.last_motion_pt = None;
+                let action = if was_drawing {
+                    DrawingFsmAction::CancelStrokeDiscard
+                } else {
+                    self.last_commit_ms = -1e9;
+                    DrawingFsmAction::RollbackLastStroke
+                };
+                return DrawingStepResult {
+                    hud_mode: self.hud_mode,
+                    action,
+                    cooldown_remaining_ms: PEN_LOCK_COOLDOWN_MS as f32,
+                    undo_cooldown_remaining_ms: (UNDO_COOLDOWN_MS - (t_ms - self.last_undo_ms)).max(0.0) as f32,
+                    cancel_hold_progress: 1.0,
+                    cancel_reason: reason,
+                };
+            }
+        } else {
+            self.cancel_candidate = None;
+            self.cancel_since_ms = None;
+        }
+
+        // 4. Undo Gesture (3 Fingers >= 220ms) or Ctrl+Z / UI Undo button with 400ms cooldown
+        let mut gesture_undo = false;
+        if hand_present && !was_drawing && raw_pose == RightGesture::ThreeFingerUndo {
+            if self.undo_since_ms.is_none() {
+                self.undo_since_ms = Some(t_ms);
+                self.undo_fired_for_hold = false;
+            }
+            if (t_ms - self.undo_since_ms.unwrap_or(t_ms)) >= UNDO_HOLD_MS && !self.undo_fired_for_hold {
+                self.undo_fired_for_hold = true;
+                gesture_undo = true;
+            }
+        } else {
+            self.undo_since_ms = None;
+            self.undo_fired_for_hold = false;
+        }
+
+        if (undo_requested || gesture_undo) && (t_ms - self.last_undo_ms) >= UNDO_COOLDOWN_MS {
+            self.last_undo_ms = t_ms;
+            self.hud_mode = DrawingHudMode::Hover;
+            return DrawingStepResult {
+                hud_mode: self.hud_mode,
+                action: DrawingFsmAction::UndoWithCooldown,
+                cooldown_remaining_ms: 0.0,
+                undo_cooldown_remaining_ms: UNDO_COOLDOWN_MS as f32,
+                cancel_hold_progress: cancel_progress,
+                cancel_reason: "",
+            };
+        }
+
+        let undo_rem = (UNDO_COOLDOWN_MS - (t_ms - self.last_undo_ms)).max(0.0) as f32;
+
+        // 5. Schmitt Trigger State Transitions (`< 0.28` >= 3 frames -> Drawing; `> 0.40` -> Hover)
+        if was_drawing {
+            let should_release = !hand_present
+                || cursor_board.is_none()
+                || (pinch_ratio.map(|r| r > PINCH_EXIT_THRESHOLD).unwrap_or(true)
+                    && self.cancel_candidate.is_none());
+            if should_release {
+                let committed = self.trim_ring_tail_and_extract();
+                self.pinch_enter_count = 0;
+                self.hud_mode = DrawingHudMode::Hover;
+                if committed.len() >= 2 {
+                    self.last_commit_ms = t_ms;
+                    return DrawingStepResult {
+                        hud_mode: self.hud_mode,
+                        action: DrawingFsmAction::CommitStrokeTrimmed(committed),
+                        cooldown_remaining_ms: 0.0,
+                        undo_cooldown_remaining_ms: undo_rem,
+                        cancel_hold_progress: cancel_progress,
+                        cancel_reason: "",
+                    };
+                }
+                return DrawingStepResult {
+                    hud_mode: self.hud_mode,
+                    action: DrawingFsmAction::CancelStrokeDiscard,
+                    cooldown_remaining_ms: 0.0,
+                    undo_cooldown_remaining_ms: undo_rem,
+                    cancel_hold_progress: cancel_progress,
+                    cancel_reason: "SHORT_FLICK",
+                };
+            }
+
+            if let Some(pt) = cursor_board {
+                if self.cancel_candidate.is_none() {
+                    let push = self
+                        .ring_buffer
+                        .last()
+                        .map(|last| last.pt.dist_sq(pt) >= 0.6)
+                        .unwrap_or(true);
+                    if push {
+                        self.ring_buffer.push(TimedBoardPoint { pt, t_ms });
+                    }
+                    if hold_to_snap_mode {
+                        let moved = self
+                            .last_motion_pt
+                            .map(|prev| prev.dist(pt) > 5.0)
+                            .unwrap_or(true);
+                        if moved {
+                            self.last_motion_pt = Some(pt);
+                            self.last_motion_ms = t_ms;
+                        } else if (t_ms - self.last_motion_ms) >= 350.0 {
+                            self.hold_to_snap_ready = true;
+                        }
+                    } else {
+                        self.hold_to_snap_ready = true;
+                    }
+                }
+            }
+            self.hud_mode = DrawingHudMode::Drawing;
+            return DrawingStepResult {
+                hud_mode: self.hud_mode,
+                action: DrawingFsmAction::AppendPoint,
+                cooldown_remaining_ms: 0.0,
+                undo_cooldown_remaining_ms: undo_rem,
+                cancel_hold_progress: cancel_progress,
+                cancel_reason: "",
+            };
+        }
+
+        // Not drawing -> check Schmitt Pinch Entry (`pinch_ratio < 0.28` held >= 3 frames)
+        let pinch_down = hand_present
+            && cursor_board.is_some()
+            && pinch_ratio.map(|r| r < PINCH_ENTER_THRESHOLD).unwrap_or(false)
+            && !matches!(
+                raw_pose,
+                RightGesture::PalmEraser | RightGesture::FistClench | RightGesture::ThreeFingerUndo
+            );
+        if pinch_down {
+            self.pinch_enter_count = self.pinch_enter_count.saturating_add(1);
+            if self.pinch_enter_count >= PINCH_ENTER_MIN_FRAMES {
+                self.pinch_enter_count = 0;
+                self.hud_mode = DrawingHudMode::Drawing;
+                self.ring_buffer.clear();
+                self.hold_to_snap_ready = !hold_to_snap_mode;
+                if let Some(pt) = cursor_board {
+                    self.ring_buffer.push(TimedBoardPoint { pt, t_ms });
+                    self.last_motion_pt = Some(pt);
+                    self.last_motion_ms = t_ms;
+                }
+                return DrawingStepResult {
+                    hud_mode: self.hud_mode,
+                    action: DrawingFsmAction::BeginStroke,
+                    cooldown_remaining_ms: 0.0,
+                    undo_cooldown_remaining_ms: undo_rem,
+                    cancel_hold_progress: 0.0,
+                    cancel_reason: "",
+                };
+            }
+        } else {
+            self.pinch_enter_count = 0;
+        }
+
+        if hand_present
+            && raw_pose == RightGesture::PalmEraser
+            && !can_cancel
+            && t_ms >= self.eraser_suppress_until_ms
+        {
+            self.hud_mode = DrawingHudMode::PanErase;
+            return DrawingStepResult {
+                hud_mode: self.hud_mode,
+                action: DrawingFsmAction::PalmErase,
+                cooldown_remaining_ms: 0.0,
+                undo_cooldown_remaining_ms: undo_rem,
+                cancel_hold_progress: cancel_progress,
+                cancel_reason: "",
+            };
+        }
+
+        if left_pan_active {
+            self.hud_mode = DrawingHudMode::PanErase;
+            return DrawingStepResult {
+                hud_mode: self.hud_mode,
+                action: DrawingFsmAction::PanActive,
+                cooldown_remaining_ms: 0.0,
+                undo_cooldown_remaining_ms: undo_rem,
+                cancel_hold_progress: cancel_progress,
+                cancel_reason: "",
+            };
+        }
+
+        self.hud_mode = DrawingHudMode::Hover;
+        DrawingStepResult {
+            hud_mode: self.hud_mode,
+            action: DrawingFsmAction::None,
+            cooldown_remaining_ms: 0.0,
+            undo_cooldown_remaining_ms: undo_rem,
+            cancel_hold_progress: cancel_progress,
+            cancel_reason: "",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -990,5 +1441,217 @@ mod tests {
             !is_finger_extended(&ok_pinch.landmarks, INDEX_MCP, INDEX_PIP, INDEX_TIP),
             "Zigzag hooked finger must not pass 3D bone joint angle check"
         );
+    }
+
+    #[test]
+    fn test_4tier_schmitt_trigger_tail_trim_cancel_and_cooldowns() {
+        let mut ctrl = DrawingController4Tier::new();
+        // 1. Schmitt trigger requires >= 3 frames below 0.28 to start drawing
+        for frame in 0..2 {
+            let res = ctrl.step(
+                frame as f64 * 16.0,
+                true,
+                Some(Point2D { x: 100.0 + frame as f32 * 5.0, y: 200.0 }),
+                Some(0.22),
+                RightGesture::DrawStroke,
+                false,
+                false,
+                false,
+                false,
+            );
+            assert_eq!(res.action, DrawingFsmAction::None);
+            assert_eq!(res.hud_mode, DrawingHudMode::Hover);
+        }
+        let begin_res = ctrl.step(
+            32.0,
+            true,
+            Some(Point2D { x: 115.0, y: 200.0 }),
+            Some(0.22),
+            RightGesture::DrawStroke,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(begin_res.action, DrawingFsmAction::BeginStroke);
+        assert_eq!(begin_res.hud_mode, DrawingHudMode::Drawing);
+
+        // 2. Hysteresis holds drawing in [0.28, 0.40]
+        for (i, t) in [60.0_f64, 95.0, 130.0, 175.0, 210.0, 240.0].iter().enumerate() {
+            let ratio = if i < 2 { 0.34 } else { 0.36 };
+            let y_hook = if *t >= 170.0 { 200.0 - (*t as f32 - 170.0) } else { 200.0 };
+            let r = ctrl.step(
+                *t,
+                true,
+                Some(Point2D { x: 130.0 + i as f32 * 10.0, y: y_hook }),
+                Some(ratio),
+                RightGesture::DrawStroke,
+                false,
+                false,
+                false,
+                false,
+            );
+            assert_eq!(r.action, DrawingFsmAction::AppendPoint);
+            assert_eq!(r.hud_mode, DrawingHudMode::Drawing);
+        }
+
+        // 3. Releasing pinch (> 0.40) commits stroke with 105ms tail trim removing hook points >= 170ms
+        let commit_res = ctrl.step(
+            275.0,
+            true,
+            Some(Point2D { x: 220.0, y: 80.0 }),
+            Some(0.48),
+            RightGesture::HoverTwoFingers,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(commit_res.hud_mode, DrawingHudMode::Hover);
+        match commit_res.action {
+            DrawingFsmAction::CommitStrokeTrimmed(trimmed) => {
+                assert!(!trimmed.is_empty());
+                for pt in &trimmed {
+                    assert!(
+                        (pt.y - 200.0).abs() < 1e-3,
+                        "Tail points from last 105ms must be trimmed, got {:?}",
+                        pt
+                    );
+                }
+            }
+            other => panic!("Expected CommitStrokeTrimmed, got {other:?}"),
+        }
+
+        // 4. Cancel gesture (OpenPalm held >= 150ms) cancels active stroke + activates 300ms pen lock
+        let mut ctrl2 = DrawingController4Tier::new();
+        for i in 0..3 {
+            ctrl2.step(
+                i as f64 * 20.0,
+                true,
+                Some(Point2D { x: 50.0 + i as f32 * 4.0, y: 50.0 }),
+                Some(0.21),
+                RightGesture::DrawStroke,
+                false,
+                false,
+                false,
+                false,
+            );
+        }
+        let early_palm = ctrl2.step(
+            100.0,
+            true,
+            Some(Point2D { x: 80.0, y: 50.0 }),
+            Some(0.65),
+            RightGesture::PalmEraser,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_ne!(early_palm.action, DrawingFsmAction::CancelStrokeDiscard);
+        let cancel_res = ctrl2.step(
+            265.0,
+            true,
+            Some(Point2D { x: 80.0, y: 50.0 }),
+            Some(0.65),
+            RightGesture::PalmEraser,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(cancel_res.action, DrawingFsmAction::CancelStrokeDiscard);
+        assert_eq!(cancel_res.hud_mode, DrawingHudMode::LockedCooldown);
+        assert!(cancel_res.cooldown_remaining_ms > 290.0);
+
+        // 5. During 300ms pen lock, even pinching <0.28 for multiple frames stays LockedCooldown
+        for dt in [300.0_f64, 340.0, 380.0, 420.0] {
+            let blocked = ctrl2.step(
+                dt,
+                true,
+                Some(Point2D { x: 100.0, y: 100.0 }),
+                Some(0.18),
+                RightGesture::DrawStroke,
+                false,
+                false,
+                false,
+                false,
+            );
+            assert_eq!(blocked.hud_mode, DrawingHudMode::LockedCooldown);
+            assert_ne!(blocked.action, DrawingFsmAction::BeginStroke);
+        }
+
+        // 6. After 300ms lock expires, pinching can enter drawing normally
+        for k in 0..3 {
+            let dt = 600.0 + k as f64 * 20.0;
+            let res = ctrl2.step(
+                dt,
+                true,
+                Some(Point2D { x: 110.0 + k as f32 * 5.0, y: 110.0 }),
+                Some(0.20),
+                RightGesture::DrawStroke,
+                false,
+                false,
+                false,
+                false,
+            );
+            if k == 2 {
+                assert_eq!(res.action, DrawingFsmAction::BeginStroke);
+            }
+        }
+
+        // 7. Esc immediate cancel activates 300ms lock & cancels active stroke
+        let esc_res = ctrl2.step(
+            700.0,
+            true,
+            Some(Point2D { x: 120.0, y: 110.0 }),
+            Some(0.20),
+            RightGesture::DrawStroke,
+            false,
+            true,
+            false,
+            false,
+        );
+        assert_eq!(esc_res.action, DrawingFsmAction::CancelStrokeDiscard);
+        assert_eq!(esc_res.hud_mode, DrawingHudMode::LockedCooldown);
+        assert!((esc_res.cooldown_remaining_ms - PEN_LOCK_COOLDOWN_MS as f32).abs() < 1e-3);
+
+        // 8. 400ms Undo cooldown via UI / Ctrl+Z request after lock clears
+        let u1 = ctrl2.step(
+            1100.0,
+            true,
+            Some(Point2D { x: 120.0, y: 110.0 }),
+            Some(0.50),
+            RightGesture::HoverTwoFingers,
+            false,
+            false,
+            true,
+            false,
+        );
+        assert_eq!(u1.action, DrawingFsmAction::UndoWithCooldown);
+        let u2 = ctrl2.step(
+            1250.0,
+            true,
+            Some(Point2D { x: 120.0, y: 110.0 }),
+            Some(0.50),
+            RightGesture::HoverTwoFingers,
+            false,
+            false,
+            true,
+            false,
+        );
+        assert_ne!(u2.action, DrawingFsmAction::UndoWithCooldown);
+        let u3 = ctrl2.step(
+            1520.0,
+            true,
+            Some(Point2D { x: 120.0, y: 110.0 }),
+            Some(0.50),
+            RightGesture::HoverTwoFingers,
+            false,
+            false,
+            true,
+            false,
+        );
+        assert_eq!(u3.action, DrawingFsmAction::UndoWithCooldown);
     }
 }

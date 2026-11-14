@@ -12,7 +12,7 @@
 
 use crate::app::{ActiveBoardTool, AirTeachApp};
 use crate::core::camera::{CameraControlCmd, LightingAdaptationMode};
-use crate::core::gestures::RightGesture;
+use crate::core::gestures::{DrawingHudMode, RightGesture};
 use crate::core::hand_tracker::HandLandmarks;
 use crate::core::stroke_engine::Point2D;
 use crate::ui::brand::ThemeMode;
@@ -311,24 +311,31 @@ pub fn render_left_camera_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
 
             ui.add_space(5.0);
 
-            // 1 single concise status row below Camera Preview
-            let right_g = app.gesture_state.right_gesture;
-            let status_str = if app.gesture_state.no_hand_idle {
-                "Trạng thái: Chờ tay"
+            // 1 single concise 4-Tier FSM status row below Camera Preview
+            let _right_g = app.gesture_state.right_gesture;
+            let status_str = if app.hud_mode == DrawingHudMode::LockedCooldown {
+                format!("Khóa ngòi ({:.0}ms)", app.pen_lock_remaining_ms.max(0.0))
+            } else if app.gesture_state.no_hand_idle {
+                "Trạng thái: Chờ tay".to_string()
             } else {
-                right_g.short_status()
+                app.hud_mode.label_vi().to_string()
             };
-            let status_col = if app.gesture_state.no_hand_idle {
-                palette.text_muted
-            } else if app.gesture_state.in_grace_period {
-                palette.warning
-            } else {
-                Color32::from_rgb(0x00, 0xc8, 0xb0)
+            let status_col = match app.hud_mode {
+                DrawingHudMode::Drawing => Color32::from_rgb(0x00, 0xf5, 0xd4),
+                DrawingHudMode::LockedCooldown => palette.danger,
+                DrawingHudMode::PanErase => palette.warning,
+                DrawingHudMode::Hover => {
+                    if app.gesture_state.no_hand_idle {
+                        palette.text_muted
+                    } else {
+                        Color32::from_rgb(0xfe, 0xe4, 0x40)
+                    }
+                }
             };
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(status_str)
-                        .font(FontId::proportional(12.5))
+                        .font(FontId::proportional(12.0))
                         .color(status_col)
                         .strong(),
                 );
@@ -337,7 +344,10 @@ pub fn render_left_camera_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                         let meta = if app.gesture_state.in_grace_period {
                             "Grace 150ms".to_string()
                         } else {
-                            format!("L:{:.0} S:{:.0}", app.camera_mean_luma, app.camera_sharpness)
+                            format!(
+                                "{:.0}fps L:{:.0}",
+                                app.camera_fps, app.camera_mean_luma
+                            )
                         };
                         ui.label(
                             RichText::new(meta)
@@ -416,31 +426,31 @@ pub fn render_left_camera_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
             ui.add_space(6.0);
 
             // =================================================================
-            // 3. 4 VECTOR-ICON GESTURE CARDS (2x2 GRID)
+            // 3. 4 VECTOR-ICON GESTURE CARDS (2x2 GRID — 4-Tier Drawing FSM)
             // =================================================================
             let hand_active = !app.gesture_state.no_hand_idle;
             let badges = [
                 (
-                    RightGesture::DrawStroke,
-                    hand_active && matches!(right_g, RightGesture::DrawStroke),
-                    "1 Ngón: Vẽ",
+                    RightGesture::PinchToolSelect,
+                    app.hud_mode == DrawingHudMode::Drawing,
+                    "Kẹp <0.28: Vẽ",
                     Color32::from_rgb(0x00, 0xf5, 0xd4),
                 ),
                 (
                     RightGesture::HoverTwoFingers,
-                    hand_active && matches!(right_g, RightGesture::HoverTwoFingers),
-                    "2 Ngón: Di",
+                    hand_active && app.hud_mode == DrawingHudMode::Hover,
+                    "Mở >0.40: Di",
                     Color32::from_rgb(0xfe, 0xe4, 0x40),
                 ),
                 (
-                    RightGesture::PinchToolSelect,
-                    hand_active && matches!(right_g, RightGesture::PinchToolSelect),
-                    "Chụm: Click",
-                    palette.secondary,
+                    RightGesture::FistClench,
+                    app.hud_mode == DrawingHudMode::LockedCooldown,
+                    "Nắm/Xòe: Hủy",
+                    palette.warning,
                 ),
                 (
                     RightGesture::PalmEraser,
-                    hand_active && matches!(right_g, RightGesture::PalmEraser),
+                    app.hud_mode == DrawingHudMode::PanErase,
                     "5 Ngón: Tẩy",
                     palette.danger,
                 ),
@@ -868,28 +878,48 @@ pub fn render_lecture_canvas(app: &mut AirTeachApp, ctx: &egui::Context) {
             }
 
             // =========================================================================
-            // LAYER 5: LIVE TARGET CURSOR OVERLAY
+            // LAYER 5: LIVE 4-MODE TARGET CURSOR OVERLAY (Hover | Drawing | Locked | Pan/Erase)
             // =========================================================================
             if let Some(cursor_board_pt) = app.laser_pointer_board {
                 let cp = Pos2::new(
                     origin.x + pan.x + cursor_board_pt.x * zoom,
                     origin.y + pan.y + cursor_board_pt.y * zoom,
                 );
-                let right_g = app.gesture_state.right_gesture;
                 let right_mouse_down = ctx.input(|i| i.pointer.secondary_down());
-                let hand_erasing =
-                    !app.gesture_state.no_hand_idle && matches!(right_g, RightGesture::PalmEraser);
+                let is_locked = app.hud_mode == DrawingHudMode::LockedCooldown
+                    || app.pen_lock_remaining_ms > 1.0;
                 let is_erasing = app.active_tool == ActiveBoardTool::Eraser
                     || right_mouse_down
-                    || hand_erasing;
+                    || app.hud_mode == DrawingHudMode::PanErase;
                 let is_drawing = !app.active_stroke_raw.is_empty()
-                    || (!app.gesture_state.no_hand_idle
-                        && matches!(right_g, RightGesture::DrawStroke));
-                let is_laser = app.active_tool == ActiveBoardTool::LaserPointer
-                    || (!app.gesture_state.no_hand_idle
-                        && matches!(right_g, RightGesture::LaserPointer));
+                    || app.hud_mode == DrawingHudMode::Drawing;
+                let is_laser = app.active_tool == ActiveBoardTool::LaserPointer;
 
-                if is_erasing {
+                if is_locked {
+                    let lock_col = Color32::from_rgb(0xf5, 0x9e, 0x0b);
+                    painter.circle_filled(
+                        cp,
+                        16.0,
+                        Color32::from_rgba_unmultiplied(0xf5, 0x9e, 0x0b, 48),
+                    );
+                    painter.circle_stroke(cp, 14.0, Stroke::new(2.2_f32, lock_col));
+                    painter.line_segment(
+                        [Pos2::new(cp.x - 8.0, cp.y - 8.0), Pos2::new(cp.x + 8.0, cp.y + 8.0)],
+                        Stroke::new(2.2_f32, palette.danger),
+                    );
+                    painter.line_segment(
+                        [Pos2::new(cp.x - 8.0, cp.y + 8.0), Pos2::new(cp.x + 8.0, cp.y - 8.0)],
+                        Stroke::new(2.2_f32, palette.danger),
+                    );
+                    let lock_lbl = format!("KHÓA NGÒI {:.0}ms", app.pen_lock_remaining_ms.max(0.0));
+                    painter.text(
+                        Pos2::new(cp.x, cp.y - 24.0),
+                        Align2::CENTER_BOTTOM,
+                        lock_lbl,
+                        FontId::proportional(11.0),
+                        lock_col,
+                    );
+                } else if is_erasing {
                     let erase_r = (45.0 * zoom).clamp(24.0, 90.0);
                     painter.circle_filled(
                         cp,
@@ -912,13 +942,14 @@ pub fn render_lecture_canvas(app: &mut AirTeachApp, ctx: &egui::Context) {
                     );
                 } else if is_drawing {
                     let cyan = Color32::from_rgb(0x00, 0xf5, 0xd4);
+                    let nib_r = (app.current_stroke_thickness * zoom * 0.5).clamp(3.0, 10.0);
                     painter.circle_filled(
                         cp,
-                        12.0,
+                        13.0,
                         Color32::from_rgba_unmultiplied(0x00, 0xf5, 0xd4, 70),
                     );
-                    painter.circle_stroke(cp, 8.0, Stroke::new(2.0_f32, cyan));
-                    painter.circle_filled(cp, 4.0, cyan);
+                    painter.circle_stroke(cp, 8.5, Stroke::new(2.0_f32, cyan));
+                    painter.circle_filled(cp, nib_r, cyan);
                 } else if is_laser {
                     painter.circle_filled(
                         cp,
@@ -935,6 +966,56 @@ pub fn render_lecture_canvas(app: &mut AirTeachApp, ctx: &egui::Context) {
                     let hover_yellow = Color32::from_rgb(0xfe, 0xe4, 0x40);
                     painter.circle_stroke(cp, 10.0, Stroke::new(2.0_f32, hover_yellow));
                     painter.circle_stroke(cp, 3.5, Stroke::new(1.2_f32, Color32::WHITE));
+                }
+            }
+
+            // =========================================================================
+            // LAYER 5B: NON-DESTRUCTIVE SHAPE BEAUTIFICATION FLOATING TOAST
+            // =========================================================================
+            let now_ms = app.app_epoch.elapsed().as_secs_f64() * 1000.0;
+            if let (Some(shape_idx), Some(anchor_b)) =
+                (app.last_snapped_shape_index, app.last_snapped_toast_anchor)
+            {
+                if now_ms < app.last_snapped_toast_until_ms && shape_idx < app.strokes.len() {
+                    let label_vi = app.strokes[shape_idx].snapped_shape.label_vi();
+                    let sx = (origin.x + pan.x + anchor_b.x * zoom)
+                        .clamp(canvas_rect.min.x + 16.0, (canvas_rect.max.x - 360.0).max(canvas_rect.min.x + 16.0));
+                    let sy = (origin.y + pan.y + anchor_b.y * zoom - 44.0)
+                        .clamp(canvas_rect.min.y + 46.0, (canvas_rect.max.y - 42.0).max(canvas_rect.min.y + 46.0));
+                    let toast_rect = Rect::from_min_size(Pos2::new(sx, sy), Vec2::new(340.0, 32.0));
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(toast_rect), |ui| {
+                        let palette = app.config.theme_mode.palette();
+                        egui::Frame::none()
+                            .fill(palette.surface_elevated)
+                            .stroke(Stroke::new(1.2_f32, palette.secondary))
+                            .rounding(Rounding::same(8.0))
+                            .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("✨ Đã chuẩn hóa: {label_vi}"))
+                                            .font(FontId::proportional(11.5))
+                                            .color(palette.text_primary)
+                                            .strong(),
+                                    );
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new("Hoàn tác về nét gốc")
+                                                    .font(FontId::proportional(11.0))
+                                                    .color(Color32::WHITE)
+                                                    .strong(),
+                                            )
+                                            .fill(palette.primary)
+                                            .rounding(Rounding::same(5.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        app.revert_last_snapped_shape_to_raw();
+                                    }
+                                });
+                            });
+                    });
                 }
             }
 

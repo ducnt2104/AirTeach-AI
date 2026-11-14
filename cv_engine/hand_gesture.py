@@ -256,7 +256,8 @@ def classify_hand_3d_vectors(
 
     palm_scale = compute_palm_scale_3d(lm)
     pinch_ratio = compute_pinch_ratio_3d(lm)
-    pinch_thresh = 0.36 if was_pinched else 0.28
+    pinch_thresh = 0.40 if was_pinched else 0.28
+    index_reach = dist_3d(lm[WRIST], lm[INDEX_TIP]) / palm_scale
 
     def map_box(x: float, y: float) -> Tuple[float, float]:
         margin = 0.12
@@ -264,49 +265,84 @@ def classify_hand_3d_vectors(
         my = min(1.0, max(0.0, (float(y) - margin) / (1.0 - 2.0 * margin)))
         return (mx, my)
 
-    if idx_up and mid_up and ring_up and pinky_up:
+    # 1. Open Palm (all 4 fingers up, not pinched): CANCEL while drawing / ERASE when idle
+    if idx_up and mid_up and ring_up and pinky_up and pinch_ratio > 0.38:
         return {
             "gesture": "ERASE",
+            "pose_tag": "OPEN_PALM",
             "cursor_norm": map_box(lm[MIDDLE_MCP][0], lm[MIDDLE_MCP][1]),
             "pinch_ratio": round(pinch_ratio, 4),
             "palm_scale": round(palm_scale, 4),
             "fingers": fingers,
         }
 
+    # 2. Tight Fist (all 4 fingers curled tightly into palm & not forward pinching): CANCEL
+    is_tight_fist = (not idx_up and not mid_up and not ring_up and not pinky_up) and index_reach < 1.15
+    if is_tight_fist:
+        return {
+            "gesture": "FIST",
+            "pose_tag": "FIST",
+            "cursor_norm": map_box(lm[MIDDLE_MCP][0], lm[MIDDLE_MCP][1]),
+            "pinch_ratio": round(pinch_ratio, 4),
+            "palm_scale": round(palm_scale, 4),
+            "fingers": fingers,
+        }
+
+    # 3. Thumb-Index Pinch (`dist(4,8)/dist(0,9) < 0.28` enter, `> 0.40` exit via Schmitt Trigger)
     if pinch_ratio < pinch_thresh:
         px = 0.5 * (float(lm[THUMB_TIP][0]) + float(lm[INDEX_TIP][0]))
         py = 0.5 * (float(lm[THUMB_TIP][1]) + float(lm[INDEX_TIP][1]))
         return {
             "gesture": "CLICK",
+            "pose_tag": "PINCH",
             "cursor_norm": map_box(px, py),
             "pinch_ratio": round(pinch_ratio, 4),
             "palm_scale": round(palm_scale, 4),
             "fingers": fingers,
         }
 
-    if idx_up and mid_up and not ring_up:
+    # 4. Three Fingers (Index + Middle + Ring up, Pinky curled, unpinched): UNDO Trigger (220ms)
+    if idx_up and mid_up and ring_up and not pinky_up and pinch_ratio > 0.40:
         cx = 0.5 * (float(lm[INDEX_TIP][0]) + float(lm[MIDDLE_TIP][0]))
         cy = 0.5 * (float(lm[INDEX_TIP][1]) + float(lm[MIDDLE_TIP][1]))
         return {
-            "gesture": "HOVER",
+            "gesture": "UNDO",
+            "pose_tag": "THREE_FINGERS",
             "cursor_norm": map_box(cx, cy),
             "pinch_ratio": round(pinch_ratio, 4),
             "palm_scale": round(palm_scale, 4),
             "fingers": fingers,
         }
 
+    # 5. Two Fingers (Index + Middle up, Ring curled): HOVER cursor
+    if idx_up and mid_up and not ring_up:
+        cx = 0.5 * (float(lm[INDEX_TIP][0]) + float(lm[MIDDLE_TIP][0]))
+        cy = 0.5 * (float(lm[INDEX_TIP][1]) + float(lm[MIDDLE_TIP][1]))
+        return {
+            "gesture": "HOVER",
+            "pose_tag": "TWO_FINGERS",
+            "cursor_norm": map_box(cx, cy),
+            "pinch_ratio": round(pinch_ratio, 4),
+            "palm_scale": round(palm_scale, 4),
+            "fingers": fingers,
+        }
+
+    # 6. Index Extended (unpinched): INDEX pose (points / HOVER under Pinch Schmitt FSM)
     if idx_up and not mid_up and not ring_up:
         return {
             "gesture": "DRAW",
+            "pose_tag": "INDEX",
             "cursor_norm": map_box(lm[INDEX_TIP][0], lm[INDEX_TIP][1]),
             "pinch_ratio": round(pinch_ratio, 4),
             "palm_scale": round(palm_scale, 4),
             "fingers": fingers,
         }
 
+    # 7. Loose curl fallback
     if not idx_up and not mid_up and not ring_up and not pinky_up:
         return {
             "gesture": "FIST",
+            "pose_tag": "FIST",
             "cursor_norm": map_box(lm[MIDDLE_MCP][0], lm[MIDDLE_MCP][1]),
             "pinch_ratio": round(pinch_ratio, 4),
             "palm_scale": round(palm_scale, 4),
@@ -315,6 +351,7 @@ def classify_hand_3d_vectors(
 
     return {
         "gesture": "HOVER",
+        "pose_tag": "HOVER",
         "cursor_norm": map_box(lm[INDEX_TIP][0], lm[INDEX_TIP][1]),
         "pinch_ratio": round(pinch_ratio, 4),
         "palm_scale": round(palm_scale, 4),
@@ -761,6 +798,7 @@ class HandGestureEngine:
                         "score": round(score, 4),
                         "lm": lm_coords,
                         "gesture_3d": vec_info["gesture"],
+                        "pose_tag": vec_info.get("pose_tag", vec_info["gesture"]),
                         "pinch_ratio": vec_info["pinch_ratio"],
                     }
                     valid_hands.append((cat_name, hand_obj))

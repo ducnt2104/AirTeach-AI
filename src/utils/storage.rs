@@ -184,6 +184,8 @@ pub struct AppConfig {
     pub one_euro_d_cutoff: f32,
     pub rdp_epsilon: f32,
     pub auto_shape_snap: bool,
+    #[serde(default)]
+    pub hold_to_snap_350ms: bool,
     pub enable_clahe: bool,
     pub clahe_clip_limit: f32,
     pub unsharp_amount: f32,
@@ -220,7 +222,8 @@ impl Default for AppConfig {
             one_euro_beta: 0.012,
             one_euro_d_cutoff: 1.0,
             rdp_epsilon: 1.8,
-            auto_shape_snap: false,
+            auto_shape_snap: true,
+            hold_to_snap_350ms: false,
             enable_clahe: true,
             clahe_clip_limit: 2.2,
             unsharp_amount: 0.75,

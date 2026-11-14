@@ -1,26 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AIRTEACH AI — CLEAN STUDIO DESKTOP APPLICATION (PySide6 + OpenCV + MediaPipe + Gemini 3.5 Flash)
-Implements the 4 Master Re-Architecture Modules:
-- MODULE 1: Strict Sign-Up First -> Sign-In After Lifecycle (`data/users_db.json` + `data/face_embeddings/<username>.npy`,
-            5-sample 5-point aligned 112x112 L2 Face Embedding, Multi-Template Cosine + Liveness diff, Argon2id/SHA-256 PIN).
-- MODULE 2: Minimalist Clean Studio UI (Single 46px Header Bar with flexible stretch, 270px Left Dock with 250x188 4:3 Camera
-            + 4 compact gesture badges + Mic VU Meter, Clean Smartboard Canvas with `[Ẩn nội dung Slide để lấy bảng trống 100%]`,
-            and 330px Collapsible Right Gemini AI Panel).
-- MODULE 3: Backlight-Resilient Hand Tracking (Adaptive LAB Gamma + Bilateral + LAB CLAHE + USM, MediaPipe Full confidence=0.60/0.70,
-            Neon Cyan `#00F5D4` + Bright Yellow `#FEE440` 21-point skeleton, and 3D vector joint-angle `arccos(dot(u,v)/(|u||v|))` gesture rules).
-- MODULE 4: Zero Fake OCR Labels + Real Cropped PNG Region Analysis
-            via `gemini-3.5-flash` in the Right AI Panel.
+AIRTEACH AI — CLEAN STUDIO DESKTOP APPLICATION (DNT - Victer)
+PySide6 + OpenCV + MediaPipe + ArcFace 5-Point 512D + Zero-Stray FSM + Hybrid Shape + Gemini 3.5 Flash
 """
 
 import os
 import sys
 import time
 import math
+import hmac
 import json
 import wave
 import hashlib
+import secrets
 import urllib.request
 from pathlib import Path
 from datetime import datetime
@@ -32,7 +25,18 @@ os.environ["GLOG_minloglevel"] = "3"
 import cv2
 import numpy as np
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QPointF, QRectF, QByteArray, QBuffer, QIODevice
+from PySide6.QtCore import (
+    Qt,
+    QThread,
+    Signal,
+    QTimer,
+    QPointF,
+    QRectF,
+    QSize,
+    QByteArray,
+    QBuffer,
+    QIODevice,
+)
 from PySide6.QtGui import (
     QImage,
     QPixmap,
@@ -43,6 +47,8 @@ from PySide6.QtGui import (
     QFont,
     QFontDatabase,
     QPainterPath,
+    QKeySequence,
+    QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -64,12 +70,19 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QStackedWidget,
     QSizePolicy,
+    QDialog,
+    QDialogButtonBox,
 )
 
 try:
+    from PySide6.QtSvgWidgets import QSvgWidget
+    from PySide6.QtSvg import QSvgRenderer
+    HAS_QTSVG = True
+except Exception:
+    HAS_QTSVG = False
+
+try:
     import mediapipe as mp
-    from mediapipe.tasks import python as mp_python
-    from mediapipe.tasks.python import vision as mp_vision
     HAS_MEDIAPIPE = True
 except Exception:
     HAS_MEDIAPIPE = False
@@ -87,12 +100,41 @@ try:
 except Exception:
     HAS_GENAI_SDK = False
 
-try:
-    from cv_engine.hand_gesture import classify_hand_3d_vectors
-    from cv_engine.preprocessing import preprocess_adaptive_frame
-    HAS_CV_ENGINE = True
-except Exception:
-    HAS_CV_ENGINE = False
+from cv_engine.drawing_fsm import (
+    DrawingHudMode,
+    DrawingFsmUpdate,
+    ZeroStrayStrokeDrawingFsm,
+    UNDO_COOLDOWN_MS,
+)
+from cv_engine.face_id import (
+    ArcFace512Extractor,
+    DEFAULT_ARCFACE_THRESHOLD,
+    multi_template_cosine_similarity,
+)
+from cv_engine.hand_gesture import HandGestureEngine, classify_hand_3d_vectors
+from cv_engine.preprocessing import preprocess_adaptive_frame
+from cv_engine.shape_recognizer import beautify_stroke, catmull_rom_spline
+
+
+def _load_dotenv_if_present(env_path: Optional[Path] = None) -> None:
+    path = env_path or (Path(__file__).resolve().parent / ".env")
+    if not path.exists():
+        return
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            key = k.strip()
+            val = v.strip().strip('"').strip("'")
+            if key and val and key not in os.environ:
+                os.environ[key] = val
+    except OSError as exc:
+        _ = exc
+
+
+_load_dotenv_if_present()
 
 
 # =============================================================================
@@ -112,11 +154,28 @@ TEXT_MUTED = "#94A3B8"
 DATA_DIR = Path("data")
 FACE_EMB_DIR = DATA_DIR / "face_embeddings"
 USERS_DB_PATH = DATA_DIR / "users_db.json"
+AI_CACHE_PATH = DATA_DIR / "ai_cache.json"
 MODELS_DIR = Path("models")
 RECORDINGS_DIR = Path("recordings")
+BRAND_LOGO_SVG = Path(__file__).resolve().parent / "assets" / "branding" / "airteach_logo.svg"
 
 for d in (DATA_DIR, FACE_EMB_DIR, MODELS_DIR, RECORDINGS_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+
+def make_brand_logo_widget(size: int = 44) -> QWidget:
+    if HAS_QTSVG and BRAND_LOGO_SVG.exists():
+        svg = QSvgWidget(str(BRAND_LOGO_SVG))
+        svg.setFixedSize(QSize(size, size))
+        svg.setStyleSheet("background: transparent;")
+        return svg
+    lbl = QLabel("AT")
+    lbl.setFixedSize(size, size)
+    lbl.setAlignment(Qt.AlignCenter)
+    lbl.setStyleSheet(
+        f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: {max(6, size // 5)}px; font-weight: 800;"
+    )
+    return lbl
 
 HAND_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 FACE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
@@ -152,8 +211,27 @@ def sanitize_username(username: str) -> str:
     return cleaned or "teacher"
 
 
-def hash_pin_sha256(pin: str) -> str:
-    return hashlib.sha256(pin.strip().encode("utf-8")).hexdigest()
+def hash_pin_pbkdf2(pin: str) -> str:
+    salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pin.strip().encode("utf-8"), salt.encode("ascii"), 120_000)
+    return f"pbkdf2_sha256${salt}${dk.hex()}"
+
+
+def verify_pin_hash(pin: str, stored_hash: Optional[str]) -> bool:
+    if not stored_hash:
+        return False
+    clean_pin = pin.strip()
+    if stored_hash.startswith("pbkdf2_sha256$"):
+        parts = stored_hash.split("$")
+        if len(parts) != 3:
+            return False
+        _, salt, expected_hex = parts
+        dk = hashlib.pbkdf2_hmac(
+            "sha256", clean_pin.encode("utf-8"), salt.encode("ascii"), 120_000
+        )
+        return hmac.compare_digest(dk.hex(), expected_hex)
+    legacy = hashlib.sha256(clean_pin.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(legacy, stored_hash)
 
 
 def load_users_db() -> List[Dict[str, Any]]:
@@ -173,42 +251,6 @@ def save_users_db(users: List[Dict[str, Any]]) -> None:
     )
 
 
-def extract_128x128_face_embedding(
-    bgr_frame: np.ndarray, face_bbox_norm: Tuple[float, float, float, float]
-) -> np.ndarray:
-    """
-    MODULE 1.2 Step 2:
-    Crop detected face -> Resize to 128x128 -> Histogram Equalization -> L2-normalized 512-D vector.
-    """
-    h, w = bgr_frame.shape[:2]
-    fx, fy, fw, fh = face_bbox_norm
-    x0 = max(0, min(w - 2, int(fx * w)))
-    y0 = max(0, min(h - 2, int(fy * h)))
-    x1 = max(x0 + 8, min(w, int((fx + fw) * w)))
-    y1 = max(y0 + 8, min(h, int((fy + fh) * h)))
-
-    crop = bgr_frame[y0:y1, x0:x1]
-    if crop.size == 0:
-        vec = np.ones(512, dtype=np.float32)
-        return vec / np.linalg.norm(vec)
-
-    resized = cv2.resize(crop, (128, 128), interpolation=cv2.INTER_AREA)
-    ycrcb = cv2.cvtColor(resized, cv2.COLOR_BGR2YCrCb)
-    y_eq = cv2.equalizeHist(ycrcb[:, :, 0])
-    cr = ycrcb[:, :, 1]
-
-    y_pooled = cv2.resize(y_eq, (16, 16), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
-    cr_pooled = cv2.resize(cr, (16, 16), interpolation=cv2.INTER_AREA).astype(np.float32) / 255.0
-
-    feat = np.empty(512, dtype=np.float32)
-    feat[0::2] = y_pooled.flatten()
-    feat[1::2] = cr_pooled.flatten()
-    norm = float(np.linalg.norm(feat))
-    if norm > 1e-8:
-        feat /= norm
-    return feat
-
-
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     if a is None or b is None or a.size == 0 or b.size == 0:
         return 0.0
@@ -226,28 +268,9 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 # MODULE 3: BACKLIGHT-RESILIENT CAMERA & MEDIAPIPE HAND TRACKING WORKER
 # =============================================================================
 def enhance_backlit_frame(bgr_frame: np.ndarray) -> np.ndarray:
-    """
-    MODULE 3.1: Automatic Multi-Condition Exposure & Sharpening Recovery (`cv_engine.preprocessing`):
-    1. LAB L-channel diagnostics (`mean_luma`, `p5`, `p95`).
-    2. Low-light Bilateral Filter (`d=5, sigmaColor=40, sigmaSpace=40`) + dynamic Gamma (`< 1.0`).
-    3. Glare Highlight Roll-off (`p95 > 235`) + LAB L-channel CLAHE (`tileGridSize=(8,8)`).
-    4. Controlled Unsharp Masking (`1.45 * img - 0.45 * gaussian_blur`).
-    """
-    if HAS_CV_ENGINE:
-        enhanced, _ = preprocess_adaptive_frame(bgr_frame, is_rgb=False, quality_gate_min=38.0)
-        return enhanced
-    gamma = 0.65
-    table = np.array(
-        [((i / 255.0) ** gamma) * 255 for i in np.arange(0, 256)]
-    ).astype("uint8")
-    brightened = cv2.LUT(bgr_frame, table)
-
-    lab = cv2.cvtColor(brightened, cv2.COLOR_BGR2LAB)
-    l_chan, a_chan, b_chan = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-    cl = clahe.apply(l_chan)
-    limg = cv2.merge((cl, a_chan, b_chan))
-    return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+    """Automatic Multi-Condition Exposure & Sharpening Recovery via `cv_engine.preprocessing`."""
+    enhanced, _ = preprocess_adaptive_frame(bgr_frame, is_rgb=False, quality_gate_min=22.0)
+    return enhanced
 
 
 class CameraHandWorker(QThread):
@@ -258,10 +281,21 @@ class CameraHandWorker(QThread):
         self.cam_idx = initial_cam_idx
         self.auto_hdr_backlight = True
         self.running = True
+        self._camera_paused = False
+        self._is_processing = False
         self._switch_requested: Optional[int] = None
+        self._was_pinched = False
 
     def select_camera(self, idx: int) -> None:
+        self._camera_paused = False
         self._switch_requested = idx
+
+    def release_camera_hardware(self) -> None:
+        """Pause streaming and immediately invoke `cap.release()` on next loop tick."""
+        self._camera_paused = True
+
+    def resume_camera_hardware(self) -> None:
+        self._camera_paused = False
 
     def stop(self) -> None:
         self.running = False
@@ -282,57 +316,49 @@ class CameraHandWorker(QThread):
         return None
 
     def run(self) -> None:
-        solutions_hands = None
-        tasks_hand_detector = None
-        tasks_face_detector = None
+        face_extractor = ArcFace512Extractor(models_dir=MODELS_DIR, min_detection_confidence=0.55)
+        hand_engine = HandGestureEngine(
+            models_dir=MODELS_DIR,
+            min_detection_confidence=0.60,
+            min_tracking_confidence=0.70,
+        )
 
-        if HAS_MEDIAPIPE:
-            if hasattr(mp, "solutions") and hasattr(mp.solutions, "hands"):
-                try:
-                    solutions_hands = mp.solutions.hands.Hands(
-                        static_image_mode=False,
-                        max_num_hands=2,
-                        model_complexity=1,
-                        min_detection_confidence=0.60,
-                        min_tracking_confidence=0.70,
-                    )
-                except Exception:
-                    solutions_hands = None
-
-            if solutions_hands is None:
-                hand_model = MODELS_DIR / "hand_landmarker.task"
-                if ensure_model_file(hand_model, HAND_MODEL_URL):
-                    try:
-                        opts = mp_vision.HandLandmarkerOptions(
-                            base_options=mp_python.BaseOptions(model_asset_path=str(hand_model)),
-                            running_mode=mp_vision.RunningMode.IMAGE,
-                            num_hands=2,
-                            min_hand_detection_confidence=0.60,
-                            min_hand_presence_confidence=0.60,
-                            min_tracking_confidence=0.70,
-                        )
-                        tasks_hand_detector = mp_vision.HandLandmarker.create_from_options(opts)
-                    except Exception:
-                        tasks_hand_detector = None
-
-            face_model = MODELS_DIR / "blaze_face_short_range.tflite"
-            if ensure_model_file(face_model, FACE_MODEL_URL):
-                try:
-                    f_opts = mp_vision.FaceDetectorOptions(
-                        base_options=mp_python.BaseOptions(model_asset_path=str(face_model)),
-                        running_mode=mp_vision.RunningMode.IMAGE,
-                        min_detection_confidence=0.55,
-                    )
-                    tasks_face_detector = mp_vision.FaceDetector.create_from_options(f_opts)
-                except Exception:
-                    tasks_face_detector = None
-
-        cap = self._open_camera(self.cam_idx)
+        cap = None if self._camera_paused else self._open_camera(self.cam_idx)
         prev_gray: Optional[np.ndarray] = None
         last_time = time.perf_counter()
         smoothed_fps = 0.0
+        paused_notice_sent = False
 
         while self.running:
+            if self._camera_paused:
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                    paused_notice_sent = False
+                if not paused_notice_sent:
+                    paused_notice_sent = True
+                    self.frame_ready.emit({
+                        "ok": False,
+                        "paused": True,
+                        "cam_idx": self.cam_idx,
+                        "fps": 0.0,
+                        "qimage": None,
+                        "raw_bgr": None,
+                        "lighting": {"mean_luma": 0.0, "laplacian_var": 0.0, "condition": "PAUSED"},
+                        "face_bbox": None,
+                        "face_5pt": None,
+                        "face_emb_512": None,
+                        "liveness_diff": 0.0,
+                        "gesture": "IDLE",
+                        "pose_tag": "IDLE",
+                        "pinch_ratio": None,
+                        "cursor_norm": None,
+                        "left_pan_active": False,
+                    })
+                time.sleep(0.08)
+                continue
+
+            paused_notice_sent = False
             if self._switch_requested is not None:
                 new_idx = self._switch_requested
                 self._switch_requested = None
@@ -345,14 +371,21 @@ class CameraHandWorker(QThread):
             if cap is None or not cap.isOpened():
                 self.frame_ready.emit({
                     "ok": False,
+                    "paused": False,
                     "cam_idx": self.cam_idx,
                     "fps": 0.0,
                     "qimage": None,
                     "raw_bgr": None,
+                    "lighting": {"mean_luma": 0.0, "laplacian_var": 0.0, "condition": "NO_CAM"},
                     "face_bbox": None,
+                    "face_5pt": None,
+                    "face_emb_512": None,
                     "liveness_diff": 0.0,
                     "gesture": "IDLE",
+                    "pose_tag": "IDLE",
+                    "pinch_ratio": None,
                     "cursor_norm": None,
+                    "left_pan_active": False,
                 })
                 time.sleep(0.25)
                 cap = self._open_camera(self.cam_idx)
@@ -360,119 +393,141 @@ class CameraHandWorker(QThread):
 
             ok, frame = cap.read()
             if not ok or frame is None or frame.size == 0:
-                time.sleep(0.03)
+                time.sleep(0.02)
                 continue
 
-            now = time.perf_counter()
-            dt = max(1e-3, now - last_time)
-            last_time = now
-            inst_fps = min(120.0, 1.0 / dt)
-            smoothed_fps = inst_fps if smoothed_fps <= 0.1 else (0.8 * smoothed_fps + 0.2 * inst_fps)
+            if self._is_processing:
+                continue
+            self._is_processing = True
 
-            # Mirror horizontally
-            bgr = cv2.flip(frame, 1)
-            if self.auto_hdr_backlight:
-                bgr = enhance_backlit_frame(bgr)
+            try:
+                now = time.perf_counter()
+                dt = max(1e-3, now - last_time)
+                last_time = now
+                inst_fps = min(120.0, 1.0 / dt)
+                smoothed_fps = inst_fps if smoothed_fps <= 0.1 else (0.8 * smoothed_fps + 0.2 * inst_fps)
 
-            h, w = bgr.shape[:2]
-            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-            if prev_gray is not None and prev_gray.shape == gray.shape:
-                liveness_diff = float(np.mean(cv2.absdiff(gray, prev_gray))) / 12.0
-                liveness_diff = float(np.clip(liveness_diff, 0.0, 1.0))
-            else:
-                liveness_diff = 0.0
-            prev_gray = gray
+                bgr = cv2.flip(frame, 1)
+                if self.auto_hdr_backlight:
+                    bgr, light_diag = preprocess_adaptive_frame(
+                        bgr, is_rgb=False, quality_gate_min=22.0
+                    )
+                    light_metrics = light_diag.to_dict()
+                else:
+                    gray_raw = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                    light_metrics = {
+                        "mean_luma": float(np.mean(gray_raw)),
+                        "laplacian_var": float(cv2.Laplacian(gray_raw, cv2.CV_64F).var()),
+                        "lighting_mode": "RAW",
+                    }
 
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            face_bbox: Optional[Tuple[float, float, float, float]] = None
+                h, w = bgr.shape[:2]
+                gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                if prev_gray is not None and prev_gray.shape == gray.shape:
+                    liveness_diff = float(np.mean(cv2.absdiff(gray, prev_gray))) / 12.0
+                    liveness_diff = float(np.clip(liveness_diff, 0.0, 1.0))
+                else:
+                    liveness_diff = 0.0
+                prev_gray = gray
 
-            if tasks_face_detector is not None:
-                try:
-                    mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                    f_res = tasks_face_detector.detect(mp_img)
-                    if f_res and f_res.detections:
-                        bb = f_res.detections[0].bounding_box
-                        fx = max(0.0, float(bb.origin_x) / w)
-                        fy = max(0.0, float(bb.origin_y) / h)
-                        fw = min(1.0 - fx, float(bb.width) / w)
-                        fh = min(1.0 - fy, float(bb.height) / h)
-                        face_bbox = (fx, fy, fw, fh)
-                except Exception as exc:
-                    _ = exc
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
-            # Hand detection (MODULE 3.2, 3.3 & 3.4)
-            hand_landmarks_list: List[List[Tuple[float, float, float]]] = []
-            if solutions_hands is not None:
-                try:
-                    res = solutions_hands.process(rgb)
-                    if res and res.multi_hand_landmarks:
-                        for lms in res.multi_hand_landmarks:
-                            pts = [(float(p.x), float(p.y), float(p.z)) for p in lms.landmark]
-                            if self._is_valid_hand(pts, face_bbox):
-                                hand_landmarks_list.append(pts)
-                except Exception as exc:
-                    _ = exc
-            elif tasks_hand_detector is not None:
-                try:
-                    mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                    h_res = tasks_hand_detector.detect(mp_img)
-                    if h_res and h_res.hand_landmarks:
-                        for lms in h_res.hand_landmarks:
-                            pts = [(float(p.x), float(p.y), float(p.z)) for p in lms]
-                            if self._is_valid_hand(pts, face_bbox):
-                                hand_landmarks_list.append(pts)
-                except Exception as exc:
-                    _ = exc
+                # Face ID (5-Point Affine 112x112 Alignment + 512-D Deep ArcFace)
+                face_info = face_extractor.detect_and_extract(rgb, quality_gate_min_sharpness=22.0)
+                face_boxes = face_info.get("face_boxes") or []
+                primary_face = face_info.get("face")
+                face_bbox = tuple(primary_face) if primary_face and len(primary_face) == 4 else None
 
-            display_bgr = bgr.copy()
-            gesture = "IDLE"
-            cursor_norm: Optional[Tuple[float, float]] = None
+                # Dual-Hand 3D Tracking + ROI 384x384 Zoom Crop + One-Euro Smoothing
+                left_hand, right_hand = hand_engine.detect_hands(rgb, face_boxes)
 
-            # MODULE 3.3: Draw 21-point Hand Skeleton in Neon Cyan (#00F5D4) & Bright Yellow (#FEE440)
-            for pts in hand_landmarks_list:
-                for i, j in HAND_BONE_PAIRS:
-                    p1 = (int(pts[i][0] * w), int(pts[i][1] * h))
-                    p2 = (int(pts[j][0] * w), int(pts[j][1] * h))
-                    cv2.line(display_bgr, p1, p2, (212, 245, 0), 2, cv2.LINE_AA)
-                for idx, (lx, ly, _) in enumerate(pts):
-                    r = 5 if idx in (4, 8, 12, 16, 20) else 3
-                    cv2.circle(display_bgr, (int(lx * w), int(ly * h)), r, (64, 228, 254), -1, cv2.LINE_AA)
+                display_bgr = bgr.copy()
+                if face_bbox is not None:
+                    fx, fy, fw, fh = face_bbox
+                    cv2.rectangle(
+                        display_bgr,
+                        (int(fx * w), int(fy * h)),
+                        (int((fx + fw) * w), int((fy + fh) * h)),
+                        (212, 245, 0),
+                        1,
+                        cv2.LINE_AA,
+                    )
 
-            if hand_landmarks_list:
-                primary = hand_landmarks_list[0]
-                gesture, cursor_norm = self._classify_gesture(primary)
+                for h_obj in (left_hand, right_hand):
+                    if not h_obj or "lm" not in h_obj:
+                        continue
+                    pts = h_obj["lm"]
+                    for i, j in HAND_BONE_PAIRS:
+                        p1 = (int(pts[i][0] * w), int(pts[i][1] * h))
+                        p2 = (int(pts[j][0] * w), int(pts[j][1] * h))
+                        cv2.line(display_bgr, p1, p2, (212, 245, 0), 2, cv2.LINE_AA)
+                    for idx, pt in enumerate(pts):
+                        r = 5 if idx in (4, 8, 12, 16, 20) else 3
+                        cv2.circle(
+                            display_bgr,
+                            (int(pt[0] * w), int(pt[1] * h)),
+                            r,
+                            (64, 228, 254),
+                            -1,
+                            cv2.LINE_AA,
+                        )
 
-            disp_rgb = cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB)
-            qimg = QImage(
-                disp_rgb.data, w, h, disp_rgb.strides[0], QImage.Format_RGB888
-            ).copy()
+                gesture = "IDLE"
+                pose_tag = "IDLE"
+                pinch_ratio = None
+                cursor_norm = None
+                primary = right_hand or left_hand
+                if primary is not None:
+                    gesture = str(primary.get("gesture", "HOVER"))
+                    pose_tag = str(primary.get("pose_tag", gesture))
+                    pinch_ratio = primary.get("pinch_ratio")
+                    cn = primary.get("cursor_norm")
+                    if cn is not None and len(cn) >= 2:
+                        cursor_norm = (float(cn[0]), float(cn[1]))
+                    self._was_pinched = pose_tag == "PINCH"
+                else:
+                    self._was_pinched = False
 
-            self.frame_ready.emit({
-                "ok": True,
-                "cam_idx": self.cam_idx,
-                "fps": smoothed_fps,
-                "qimage": qimg,
-                "raw_bgr": bgr,
-                "face_bbox": face_bbox,
-                "liveness_diff": liveness_diff,
-                "gesture": gesture,
-                "cursor_norm": cursor_norm,
-            })
-            time.sleep(0.015)
+                left_pan_active = bool(
+                    left_hand and left_hand.get("gesture") in ("HOVER", "PAN")
+                )
+
+                disp_rgb = cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB)
+                qimg = QImage(
+                    disp_rgb.data, w, h, disp_rgb.strides[0], QImage.Format_RGB888
+                ).copy()
+
+                self.frame_ready.emit({
+                    "ok": True,
+                    "paused": False,
+                    "cam_idx": self.cam_idx,
+                    "fps": smoothed_fps,
+                    "qimage": qimg,
+                    "raw_bgr": bgr,
+                    "lighting": light_metrics,
+                    "face_bbox": face_bbox,
+                    "face_5pt": face_info.get("face_5pt"),
+                    "face_emb_512": face_info.get("face_emb_512"),
+                    "liveness_diff": liveness_diff,
+                    "gesture": gesture,
+                    "pose_tag": pose_tag,
+                    "pinch_ratio": pinch_ratio,
+                    "cursor_norm": cursor_norm,
+                    "left_pan_active": left_pan_active,
+                })
+            finally:
+                self._is_processing = False
+            time.sleep(0.012)
 
         if cap is not None:
             cap.release()
+        hand_engine.close()
 
     @staticmethod
     def _is_valid_hand(
         pts: List[Tuple[float, float, float]],
         face_bbox: Optional[Tuple[float, float, float, float]],
     ) -> bool:
-        """
-        MODULE 3.2:
-        - Hand bounding_box_area > 0.008
-        - Palm center (Landmark 9) does not coincide with the detected Face Center
-        """
         if len(pts) < 21:
             return False
         xs = [p[0] for p in pts]
@@ -491,106 +546,196 @@ class CameraHandWorker(QThread):
 
     @staticmethod
     def _classify_gesture(
-        pts: List[Tuple[float, float, float]]
+        pts: List[Tuple[float, float, float]],
+        was_pinched: bool = False,
     ) -> Tuple[str, Tuple[float, float]]:
-        """
-        MODULE 3.4: 3D Vector Joint-Angle & Palm-Normalized Gesture Classification (`cv_engine.hand_gesture`):
-        - Uses 3D bone joint flexion angles `arccos(dot(u, v) / (|u| * |v|))` across MCP-PIP-DIP-TIP
-          and palm-normalized Pinch Ratio `dist(4, 8) / dist(0, 9)`.
-        """
-        if HAS_CV_ENGINE:
-            res = classify_hand_3d_vectors(pts)
-            return (str(res["gesture"]), tuple(res["cursor_norm"]))  # type: ignore[return-value]
-
-        palm = max(1e-4, math.dist(pts[0], pts[9]))
-
-        def is_ext(mcp: int, pip: int, dip: int, tip: int) -> bool:
-            u1 = (pts[pip][0] - pts[mcp][0], pts[pip][1] - pts[mcp][1], pts[pip][2] - pts[mcp][2])
-            u2 = (pts[dip][0] - pts[pip][0], pts[dip][1] - pts[pip][1], pts[dip][2] - pts[pip][2])
-            n1 = max(1e-6, math.sqrt(u1[0] ** 2 + u1[1] ** 2 + u1[2] ** 2))
-            n2 = max(1e-6, math.sqrt(u2[0] ** 2 + u2[1] ** 2 + u2[2] ** 2))
-            cos_a = max(-1.0, min(1.0, (u1[0] * u2[0] + u1[1] * u2[1] + u1[2] * u2[2]) / (n1 * n2)))
-            ang = math.degrees(math.acos(cos_a))
-            return ang < 42.0 and (math.dist(pts[0], pts[tip]) / palm) > 1.20
-
-        idx_up = is_ext(5, 6, 7, 8)
-        mid_up = is_ext(9, 10, 11, 12)
-        ring_up = is_ext(13, 14, 15, 16)
-        pinky_up = is_ext(17, 18, 19, 20)
-
-        def map_box(x: float, y: float) -> Tuple[float, float]:
-            margin = 0.12
-            mx = min(1.0, max(0.0, (x - margin) / (1.0 - 2.0 * margin)))
-            my = min(1.0, max(0.0, (y - margin) / (1.0 - 2.0 * margin)))
-            return (mx, my)
-
-        if idx_up and mid_up and ring_up and pinky_up:
-            return ("ERASE", map_box(pts[9][0], pts[9][1]))
-        if idx_up and mid_up and not ring_up:
-            cx = 0.5 * (pts[8][0] + pts[12][0])
-            cy = 0.5 * (pts[8][1] + pts[12][1])
-            return ("HOVER", map_box(cx, cy))
-        if idx_up and not mid_up and not ring_up:
-            return ("DRAW", map_box(pts[8][0], pts[8][1]))
-
-        pinch_ratio = math.dist(pts[4], pts[8]) / palm
-        if pinch_ratio < 0.28:
-            return ("CLICK", map_box(pts[8][0], pts[8][1]))
-
-        return ("HOVER", map_box(pts[8][0], pts[8][1]))
+        res = classify_hand_3d_vectors(pts, was_pinched=was_pinched)
+        return (str(res["gesture"]), tuple(res["cursor_norm"]))  # type: ignore[return-value]
 
 
 # =============================================================================
-# GEMINI 3.5 FLASH ASYNC WORKER (MODULE 4)
+# GEMINI 3.5 FLASH ASYNC WORKER WITH RETRY, JSON STRUCTURED OUTPUT & CACHE
 # =============================================================================
+def _load_ai_cache() -> Dict[str, Any]:
+    if not AI_CACHE_PATH.exists():
+        return {}
+    try:
+        data = json.loads(AI_CACHE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_ai_cache(cache: Dict[str, Any]) -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if len(cache) > 64:
+            keys = sorted(cache.keys(), key=lambda k: str(cache[k].get("ts", "")))
+            for k in keys[:-64]:
+                cache.pop(k, None)
+        AI_CACHE_PATH.write_text(
+            json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as exc:
+        _ = exc
+
+
 class GeminiVisionWorker(QThread):
     finished_text = Signal(str)
 
-    def __init__(self, api_key: str, prompt: str, png_bytes: Optional[bytes]) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        prompt: str,
+        png_bytes: Optional[bytes],
+        structured_json: bool = False,
+    ) -> None:
         super().__init__()
         self.api_key = api_key.strip()
         self.prompt = prompt
         self.png_bytes = png_bytes
+        self.structured_json = structured_json
+
+    def _build_cache_key(self, model_chain: Tuple[str, ...]) -> str:
+        h = hashlib.sha256()
+        h.update("|".join(model_chain).encode("utf-8"))
+        h.update(f"|json={self.structured_json}|".encode("utf-8"))
+        h.update(self.prompt.encode("utf-8"))
+        if self.png_bytes:
+            h.update(self.png_bytes)
+        return h.hexdigest()
+
+    @staticmethod
+    def _format_structured_response(raw_text: str) -> str:
+        try:
+            obj = json.loads(raw_text)
+            if isinstance(obj, dict):
+                parts = []
+                if obj.get("summary"):
+                    parts.append(f"**Tóm tắt nội dung:**\n{obj['summary']}")
+                if obj.get("steps"):
+                    steps_txt = "\n".join(f"- {s}" for s in obj["steps"])
+                    parts.append(f"**Lời giải / Phân tích từng bước:**\n{steps_txt}")
+                if obj.get("quiz"):
+                    q_txt = "\n".join(f"- {q}" for q in obj["quiz"])
+                    parts.append(f"**Câu hỏi gợi mở:**\n{q_txt}")
+                if parts:
+                    return "\n\n".join(parts)
+        except Exception as exc:
+            _ = exc
+        return raw_text
 
     def run(self) -> None:
+        primary_model = os.environ.get("GEMINI_MODEL_ID", "gemini-3.5-flash").strip() or "gemini-3.5-flash"
+        fallback_raw = os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.0-flash")
+        chain_list = [primary_model]
+        for m in fallback_raw.split(","):
+            ms = m.strip()
+            if ms and ms not in chain_list:
+                chain_list.append(ms)
+        model_chain = tuple(chain_list)
+        cache_key = self._build_cache_key(model_chain)
+        cache = _load_ai_cache()
+
         if not self.api_key:
+            cached = cache.get(cache_key)
+            if cached and cached.get("text"):
+                self.finished_text.emit(
+                    f"*(Offline Cache)*\n\n{cached['text']}"
+                )
+                return
             self.finished_text.emit(
-                "Chưa cấu hình GEMINI_API_KEY. Vui lòng nhập API Key vào ô phía trên của khung Trợ Lý Sư Phạm AI để phân tích ảnh vùng chọn bằng mô hình gemini-3.5-flash."
+                "Chế độ Offline / Chưa cấu hình `GEMINI_API_KEY` trong `.env`.\n"
+                "• Tất cả tính năng Thị giác máy tính (Hands/Face ID), Bảng trắng không chạm, Nắn hình lai và Đăng nhập cục bộ vẫn hoạt động 100%.\n"
+                f"• Để dùng `{primary_model}`, hãy nhập API Key ở ô phía trên."
             )
             return
+
         if not HAS_GENAI_SDK:
             self.finished_text.emit(
                 "Chưa cài đặt thư viện google-genai. Hãy chạy: pip install google-genai"
             )
             return
+
         try:
             client = genai.Client(api_key=self.api_key)
-            contents: List[Any] = [self.prompt]
+            prompt_text = self.prompt
+            if self.structured_json:
+                prompt_text = (
+                    f"{self.prompt}\n\nHãy trả lời bằng JSON hợp lệ gồm các khóa: "
+                    "`summary` (string), `steps` (list string), `quiz` (list string)."
+                )
+            contents: List[Any] = [prompt_text]
             if self.png_bytes:
                 contents.append(
                     genai_types.Part.from_bytes(data=self.png_bytes, mime_type="image/png")
                 )
+
+            cfg = (
+                genai_types.GenerateContentConfig(response_mime_type="application/json")
+                if self.structured_json
+                else None
+            )
+
             resp = None
-            for model_id in ("gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"):
-                try:
-                    resp = client.models.generate_content(
-                        model=model_id,
-                        contents=contents,
-                    )
+            used_model = primary_model
+            last_exc: Optional[Exception] = None
+            for model_id in model_chain:
+                for attempt in range(2):
+                    try:
+                        kwargs: Dict[str, Any] = {"model": model_id, "contents": contents}
+                        if cfg is not None:
+                            kwargs["config"] = cfg
+                        resp = client.models.generate_content(**kwargs)
+                        used_model = model_id
+                        break
+                    except Exception as model_exc:
+                        last_exc = model_exc
+                        if attempt == 0:
+                            time.sleep(0.45)
+                if resp is not None:
                     break
-                except Exception as model_exc:
-                    last_exc = model_exc
+
             if resp is None:
                 raise RuntimeError(str(last_exc))
-            text = getattr(resp, "text", None) or "Không nhận được phản hồi văn bản từ Gemini."
-            self.finished_text.emit(text)
+
+            raw_text = getattr(resp, "text", None) or "Không nhận được phản hồi văn bản từ Gemini."
+            formatted = (
+                self._format_structured_response(raw_text)
+                if self.structured_json
+                else raw_text
+            )
+            cache[cache_key] = {
+                "model": used_model,
+                "text": formatted,
+                "ts": datetime.now().isoformat(),
+            }
+            _save_ai_cache(cache)
+            self.finished_text.emit(f"*[{used_model}]*\n\n{formatted}")
         except Exception as exc:
-            self.finished_text.emit(f"Lỗi gọi Gemini API: {exc}")
+            cached = cache.get(cache_key)
+            if cached and cached.get("text"):
+                self.finished_text.emit(
+                    f"*(Mất kết nối Gemini — Đang dùng bộ nhớ đệm cục bộ)*\n\n{cached['text']}"
+                )
+            else:
+                self.finished_text.emit(
+                    f"Không thể kết nối Gemini AI ({exc}).\nBảng trắng, CV và nắn hình vẫn đang chạy bình thường ở chế độ Offline."
+                )
 
 
 # =============================================================================
 # MODULE 1: TWO-TAB SECURITY GATE (SIGN UP FIRST -> SIGN IN AFTER)
 # =============================================================================
+FACE_ENROLL_ANGLES = [
+    "1/5: Nhìn thẳng vào Camera",
+    "2/5: Hơi xoay đầu sang Trái (~15°)",
+    "3/5: Hơi xoay đầu sang Phải (~15°)",
+    "4/5: Hơi ngẩng đầu lên nhẹ",
+    "5/5: Hơi cúi đầu xuống nhẹ",
+]
+
+
 class AuthGateWidget(QWidget):
     authenticated = Signal(dict)
 
@@ -601,24 +746,38 @@ class AuthGateWidget(QWidget):
         self.signup_samples: List[np.ndarray] = []
         self.last_raw_bgr: Optional[np.ndarray] = None
         self.last_face_bbox: Optional[Tuple[float, float, float, float]] = None
+        self.last_face_emb_512: Optional[List[float]] = None
+        self.last_lighting: Dict[str, Any] = {}
         self.last_liveness_diff: float = 0.0
+        self.last_paused: bool = False
         self._build_ui()
         self._refresh_tabs()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 18, 24, 18)
+        root.setContentsMargins(24, 16, 24, 16)
         root.setSpacing(12)
 
-        title = QLabel("AIRTEACH AI — CỔNG BẢO MẬT ĐĂNG KÝ & ĐĂNG NHẬP GIÁO VIÊN")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet(f"font-size: 20px; font-weight: 700; color: {TEXT_LIGHT};")
-        root.addWidget(title)
+        # Brand Header with SVG Logo (AirTeach AI — DNT - Victer)
+        hdr_row = QHBoxLayout()
+        hdr_row.addStretch(1)
+        hdr_row.addWidget(make_brand_logo_widget(48))
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
+        title = QLabel("AIRTEACH AI — CỔNG ĐĂNG KÝ & ĐĂNG NHẬP GIÁO VIÊN")
+        title.setStyleSheet(f"font-size: 19px; font-weight: 800; color: {TEXT_LIGHT};")
+        sub_lbl = QLabel("Tổ chức DNT - Victer • Face ID 5-điểm (512-D ArcFace) & Bảo mật PBKDF2")
+        sub_lbl.setStyleSheet(f"font-size: 12px; color: {SECONDARY_TEAL}; font-weight: 600;")
+        title_box.addWidget(title)
+        title_box.addWidget(sub_lbl)
+        hdr_row.addLayout(title_box)
+        hdr_row.addStretch(1)
+        root.addLayout(hdr_row)
 
         body = QHBoxLayout()
         body.setSpacing(18)
 
-        # Left Card: Live 4:3 Webcam + Circular Face Guide
+        # Left Card: Live 4:3 Webcam + Circular Face Guide + Multi-Angle Capture
         left_card = QFrame()
         left_card.setStyleSheet(
             f"background: {SURFACE_DARK}; border: 1px solid {BORDER_SLATE}; border-radius: 10px;"
@@ -627,14 +786,19 @@ class AuthGateWidget(QWidget):
         left_layout.setContentsMargins(16, 14, 16, 14)
 
         cam_hdr = QHBoxLayout()
-        self.cam_title_lbl = QLabel("Webcam Xác Thực Khuôn Mặt (4:3 Chuẩn)")
-        self.cam_title_lbl.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 600; font-size: 14px;")
+        self.cam_title_lbl = QLabel("Webcam Face ID (4:3 • 112x112 5-Điểm)")
+        self.cam_title_lbl.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 600; font-size: 13px;")
         cam_hdr.addWidget(self.cam_title_lbl)
         cam_hdr.addStretch(1)
 
+        self.cam_power_btn = QPushButton("Tắt/Mở Cam")
+        self.cam_power_btn.setFixedHeight(28)
+        self.cam_power_btn.clicked.connect(self._on_toggle_auth_camera)
+        cam_hdr.addWidget(self.cam_power_btn)
+
         for idx in (0, 1):
             btn = QPushButton(f"Cam {idx}")
-            btn.setFixedSize(64, 28)
+            btn.setFixedSize(58, 28)
             btn.clicked.connect(lambda _=False, i=idx: self.cam_worker.select_camera(i))
             cam_hdr.addWidget(btn)
         left_layout.addLayout(cam_hdr)
@@ -643,11 +807,16 @@ class AuthGateWidget(QWidget):
         self.cam_preview_lbl.setFixedSize(400, 300)
         self.cam_preview_lbl.setAlignment(Qt.AlignCenter)
         self.cam_preview_lbl.setStyleSheet(
-            f"background: {BG_DARK}; border: 1px solid {BORDER_SLATE}; border-radius: 8px;"
+            f"background: {BG_DARK}; border: 1px solid {BORDER_SLATE}; border-radius: 8px; color: {TEXT_MUTED}; font-weight: 600;"
         )
         left_layout.addWidget(self.cam_preview_lbl, alignment=Qt.AlignCenter)
 
-        self.capture_face_btn = QPushButton("[Chụp & Đăng Ký Khuôn Mặt (0/3 mẫu)]")
+        self.angle_hint_lbl = QLabel(f"Hướng dẫn góc mặt: {FACE_ENROLL_ANGLES[0]}")
+        self.angle_hint_lbl.setAlignment(Qt.AlignCenter)
+        self.angle_hint_lbl.setStyleSheet(f"color: {BRIGHT_YELLOW}; font-size: 12px; font-weight: 700;")
+        left_layout.addWidget(self.angle_hint_lbl)
+
+        self.capture_face_btn = QPushButton("[Chụp Mẫu Khuôn Mặt 5-Góc (0/5 mẫu)]")
         self.capture_face_btn.setFixedHeight(36)
         self.capture_face_btn.setStyleSheet(
             f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; font-weight: 700; border-radius: 8px;"
@@ -658,7 +827,7 @@ class AuthGateWidget(QWidget):
         self.cosine_bar = QProgressBar()
         self.cosine_bar.setRange(0, 100)
         self.cosine_bar.setValue(0)
-        self.cosine_bar.setFormat("Độ khớp Face ID: 0.00 / 0.82")
+        self.cosine_bar.setFormat(f"ArcFace 512-D Cosine: 0.00 / {DEFAULT_ARCFACE_THRESHOLD:.2f}")
         left_layout.addWidget(self.cosine_bar)
 
         body.addWidget(left_card, stretch=1)
@@ -681,7 +850,7 @@ class AuthGateWidget(QWidget):
 
         su_layout.addWidget(QLabel("1. Tên hiển thị:"))
         self.su_fullname_edit = QLineEdit()
-        self.su_fullname_edit.setPlaceholderText("Nhập tên hiển thị của bạn...")
+        self.su_fullname_edit.setPlaceholderText("Nhập họ tên giáo viên...")
         su_layout.addWidget(self.su_fullname_edit)
 
         su_layout.addWidget(QLabel("2. Tên đăng nhập (username):"))
@@ -701,7 +870,7 @@ class AuthGateWidget(QWidget):
         self.su_pin_confirm_edit.setPlaceholderText("Nhập lại mã PIN 4-6 số...")
         su_layout.addWidget(self.su_pin_confirm_edit)
 
-        self.su_complete_btn = QPushButton("[Hoàn Tất Đăng Ký] -> Lưu Hồ Sơ & Sang Đăng Nhập")
+        self.su_complete_btn = QPushButton("[Hoàn Tất Đăng Ký] -> Lưu Hồ Sơ Cục Bộ")
         self.su_complete_btn.setFixedHeight(40)
         self.su_complete_btn.setStyleSheet(
             f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; font-weight: 700; border-radius: 8px;"
@@ -720,14 +889,18 @@ class AuthGateWidget(QWidget):
         self.si_user_combo = QComboBox()
         si_layout.addWidget(self.si_user_combo)
 
-        si_layout.addWidget(QLabel("Nhập mã PIN đã đăng ký (hoặc nhìn vào Webcam để mở khóa Face ID >= 0.82):"))
+        si_layout.addWidget(
+            QLabel(
+                f"Nhập mã PIN đã đăng ký (hoặc bật Camera quét Face ID Cosine >= {DEFAULT_ARCFACE_THRESHOLD:.2f}):"
+            )
+        )
         self.si_pin_edit = QLineEdit()
         self.si_pin_edit.setEchoMode(QLineEdit.Password)
         self.si_pin_edit.setPlaceholderText("Nhập mã PIN 4-6 số...")
         self.si_pin_edit.returnPressed.connect(self._on_signin_with_pin)
         si_layout.addWidget(self.si_pin_edit)
 
-        self.si_login_btn = QPushButton("[ĐĂNG NHẬP BẰNG MÃ PIN] -> Vào Bảng Giảng Dạy")
+        self.si_login_btn = QPushButton("[ĐĂNG NHẬP BẰNG MÃ PIN] -> Vào Studio Giảng Dạy")
         self.si_login_btn.setFixedHeight(40)
         self.si_login_btn.setStyleSheet(
             f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; font-weight: 700; border-radius: 8px;"
@@ -747,6 +920,20 @@ class AuthGateWidget(QWidget):
         self.status_lbl.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {SECONDARY_TEAL};")
         root.addWidget(self.status_lbl)
 
+        # Footer attribution (DNT - Victer)
+        footer_lbl = QLabel("AirTeach AI • Phát triển bởi Tổ chức DNT - Victer • Lưu trữ cục bộ an toàn")
+        footer_lbl.setAlignment(Qt.AlignCenter)
+        footer_lbl.setStyleSheet(f"font-size: 11px; color: {TEXT_MUTED};")
+        root.addWidget(footer_lbl)
+
+    def _on_toggle_auth_camera(self) -> None:
+        if self.cam_worker._camera_paused:
+            self.cam_worker.resume_camera_hardware()
+            self.cam_power_btn.setText("Tắt Cam")
+        else:
+            self.cam_worker.release_camera_hardware()
+            self.cam_power_btn.setText("Bật Cam")
+
     def _refresh_tabs(self) -> None:
         self.users = load_users_db()
         self.si_user_combo.clear()
@@ -756,26 +943,39 @@ class AuthGateWidget(QWidget):
         if not self.users:
             self.tabs.setCurrentIndex(0)
             self.status_lbl.setText(
-                "Chưa có tài khoản trong data/users_db.json. Vui lòng ĐĂNG KÝ tài khoản & khuôn mặt trước."
+                "Cơ sở dữ liệu trống — Vui lòng tạo tài khoản Giáo viên lần đầu (PIN + 3..5 mẫu khuôn mặt)."
             )
         else:
             self.tabs.setCurrentIndex(1)
             self.status_lbl.setText(
-                "Đã tải danh sách tài khoản từ data/users_db.json. Nhìn vào Camera (Cosine >= 0.82) hoặc nhập mã PIN để Đăng nhập."
+                f"Đã sẵn sàng {len(self.users)} tài khoản cục bộ. Nhập PIN hoặc bật Camera quét Face ID (>= {DEFAULT_ARCFACE_THRESHOLD:.2f})."
             )
 
     def on_camera_packet(self, pkt: dict) -> None:
         if not self.isVisible():
             return
+        self.last_paused = bool(pkt.get("paused", False))
         qimg: Optional[QImage] = pkt.get("qimage")
         self.last_raw_bgr = pkt.get("raw_bgr")
         self.last_face_bbox = pkt.get("face_bbox")
+        self.last_face_emb_512 = pkt.get("face_emb_512")
+        self.last_lighting = pkt.get("lighting") or {}
         self.last_liveness_diff = float(pkt.get("liveness_diff") or 0.0)
 
-        if qimg is None:
-            self.cam_preview_lbl.setText("Không tìm thấy Webcam. Hãy chọn Cam 0 / Cam 1.")
+        if self.last_paused:
+            self.cam_power_btn.setText("Bật Cam")
+            self.cam_preview_lbl.setPixmap(QPixmap())
+            self.cam_preview_lbl.setText(
+                "Camera đã giải phóng an toàn.\nBấm [Bật Cam] khi cần quét Face ID."
+            )
             return
 
+        if qimg is None:
+            self.cam_preview_lbl.setPixmap(QPixmap())
+            self.cam_preview_lbl.setText("Chưa tìm thấy Webcam.\nHãy chọn Cam 0 / Cam 1.")
+            return
+
+        self.cam_power_btn.setText("Tắt Cam")
         canvas = qimg.scaled(400, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         painter = QPainter(canvas)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -785,43 +985,72 @@ class AuthGateWidget(QWidget):
         painter.end()
         self.cam_preview_lbl.setPixmap(QPixmap.fromImage(canvas))
 
-        # If on TAB 2 (SIGN IN), evaluate live Face ID against selected user's .npy embedding
-        if self.tabs.currentIndex() == 1 and self.users and self.last_raw_bgr is not None and self.last_face_bbox is not None:
+        # On TAB 2 (SIGN IN), evaluate live 512-D aligned embedding across enrolled multi-angle templates
+        if (
+            self.tabs.currentIndex() == 1
+            and self.users
+            and self.last_face_emb_512 is not None
+        ):
             idx = max(0, self.si_user_combo.currentIndex())
             user = self.users[idx]
             emb_path = Path(user.get("face_embedding_path", ""))
             if emb_path.exists():
                 try:
-                    enrolled = np.load(str(emb_path))
-                    live_emb = extract_128x128_face_embedding(self.last_raw_bgr, self.last_face_bbox)
-                    sim = cosine_similarity(live_emb, enrolled)
+                    enrolled_arr = np.load(str(emb_path))
+                    if enrolled_arr.ndim == 1:
+                        templates = [enrolled_arr.tolist()]
+                    else:
+                        templates = [row.tolist() for row in enrolled_arr]
+                    sim = multi_template_cosine_similarity(
+                        self.last_face_emb_512, templates, mode="top2"
+                    )
                     self.cosine_bar.setValue(int(max(0.0, min(1.0, sim)) * 100))
                     self.cosine_bar.setFormat(
-                        f"Cosine Similarity: {sim:.3f} / 0.82 (Liveness diff: {self.last_liveness_diff:.2f})"
+                        f"ArcFace 5-Pt Cosine: {sim:.3f} / {DEFAULT_ARCFACE_THRESHOLD:.2f} (Liveness: {self.last_liveness_diff:.2f})"
                     )
-                    if sim >= 0.82 and self.last_liveness_diff >= 0.04:
+                    if sim >= DEFAULT_ARCFACE_THRESHOLD and self.last_liveness_diff >= 0.03:
+                        self.cam_worker.resume_camera_hardware()
                         self.authenticated.emit(user)
                 except Exception as exc:
                     _ = exc
 
     def _on_capture_signup_face(self) -> None:
-        if self.last_raw_bgr is None or self.last_face_bbox is None:
-            self.status_lbl.setStyleSheet(f"color: {ALERT_ROSE}; font-weight: 700;")
-            self.status_lbl.setText(
-                "Chưa phát hiện khuôn mặt thật trong khung tròn! Vui lòng nhìn thẳng vào Webcam."
-            )
+        if self.cam_worker._camera_paused:
+            self.cam_worker.resume_camera_hardware()
+            self.status_lbl.setText("Đang khởi động lại Camera... Vui lòng nhìn vào Webcam và bấm chụp lần nữa.")
             return
 
-        self.signup_samples.clear()
-        fx, fy, fw, fh = self.last_face_bbox
-        for jitter in (-0.008, 0.0, 0.008):
-            j_bbox = (max(0.0, fx + jitter), max(0.0, fy + jitter), fw, fh)
-            self.signup_samples.append(extract_128x128_face_embedding(self.last_raw_bgr, j_bbox))
+        if self.last_face_emb_512 is None or self.last_face_bbox is None:
+            sharpness = float(self.last_lighting.get("laplacian_var") or 0.0)
+            self.status_lbl.setStyleSheet(f"color: {ALERT_ROSE}; font-weight: 700;")
+            if self.last_face_bbox is not None and sharpness < 22.0:
+                self.status_lbl.setText(
+                    f"Ảnh đang mờ (Độ nét Laplacian={sharpness:.1f} < 22.0). Vui lòng giữ yên mặt và tăng sáng!"
+                )
+            else:
+                self.status_lbl.setText(
+                    "Chưa phát hiện đủ 5 điểm khuôn mặt sắc nét trong khung tròn! Hãy nhìn thẳng vào Camera."
+                )
+            return
 
-        self.capture_face_btn.setText("[Chụp & Đăng Ký Khuôn Mặt (3/3 mẫu hoàn tất)]")
+        if len(self.signup_samples) >= 5:
+            self.signup_samples.clear()
+
+        vec = np.asarray(self.last_face_emb_512, dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(vec))
+        if norm > 1e-7:
+            vec = vec / norm
+        self.signup_samples.append(vec)
+
+        n = len(self.signup_samples)
+        next_hint = FACE_ENROLL_ANGLES[min(n, 4)]
+        self.angle_hint_lbl.setText(
+            "Đã đủ 5/5 góc khuôn mặt!" if n >= 5 else f"Góc tiếp theo: {next_hint}"
+        )
+        self.capture_face_btn.setText(f"[Chụp Mẫu Khuôn Mặt ({n}/5 mẫu)]")
         self.status_lbl.setStyleSheet("color: #22C55E; font-weight: 700;")
         self.status_lbl.setText(
-            "Đã chụp đủ 3/3 mẫu khuôn mặt thật (128x128 Histogram Equalized). Hãy bấm [Hoàn Tất Đăng Ký]!"
+            f"Đã chụp mẫu {n}/5 (5-Point Affine 112x112 + Quality Gate). {'Có thể Hoàn tất Đăng ký!' if n >= 3 else 'Chụp thêm ít nhất 3/5 góc!'}"
         )
 
     def _on_complete_signup(self) -> None:
@@ -843,30 +1072,25 @@ class AuthGateWidget(QWidget):
             self.status_lbl.setText("Mã PIN và Xác nhận mã PIN không khớp!")
             return
         if len(self.signup_samples) < 3:
-            if self.last_raw_bgr is not None and self.last_face_bbox is not None:
-                self._on_capture_signup_face()
-            else:
-                self.status_lbl.setStyleSheet(f"color: {ALERT_ROSE}; font-weight: 700;")
-                self.status_lbl.setText(
-                    "Vui lòng bấm [Chụp & Đăng Ký Khuôn Mặt (3 mẫu)] trước khi hoàn tất đăng ký!"
-                )
-                return
+            self.status_lbl.setStyleSheet(f"color: {ALERT_ROSE}; font-weight: 700;")
+            self.status_lbl.setText(
+                f"Cần tối thiểu 3/5 mẫu góc khuôn mặt (hiện tại {len(self.signup_samples)}/5). Hãy bấm nút chụp mẫu!"
+            )
+            return
 
         username = sanitize_username(raw_user)
-        avg_emb = np.mean(np.stack(self.signup_samples, axis=0), axis=0).astype(np.float32)
-        norm = float(np.linalg.norm(avg_emb))
-        if norm > 1e-8:
-            avg_emb /= norm
+        tmpl_matrix = np.stack(self.signup_samples, axis=0).astype(np.float32)
 
         FACE_EMB_DIR.mkdir(parents=True, exist_ok=True)
         npy_path = FACE_EMB_DIR / f"{username}.npy"
-        np.save(str(npy_path), avg_emb)
+        np.save(str(npy_path), tmpl_matrix)
 
         user_record = {
             "username": username,
             "full_name": full_name,
-            "pin_sha256": hash_pin_sha256(pin),
+            "pin_hash": hash_pin_pbkdf2(pin),
             "face_embedding_path": str(npy_path).replace("\\", "/"),
+            "template_count": int(tmpl_matrix.shape[0]),
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
@@ -874,12 +1098,15 @@ class AuthGateWidget(QWidget):
         users.append(user_record)
         save_users_db(users)
 
+        self.signup_samples.clear()
+        self.capture_face_btn.setText("[Chụp Mẫu Khuôn Mặt 5-Góc (0/5 mẫu)]")
+        self.angle_hint_lbl.setText(f"Hướng dẫn góc mặt: {FACE_ENROLL_ANGLES[0]}")
         self.su_pin_edit.clear()
         self.su_pin_confirm_edit.clear()
         self._refresh_tabs()
         self.tabs.setCurrentIndex(1)
         self.status_lbl.setStyleSheet("color: #22C55E; font-weight: 700;")
-        self.status_lbl.setText("Đăng ký thành công! Chuyển sang màn hình Đăng nhập")
+        self.status_lbl.setText("Đăng ký thành công! Tài khoản đã lưu cục bộ. Chuyển sang Đăng nhập.")
 
     def _on_signin_with_pin(self) -> None:
         if not self.users:
@@ -888,8 +1115,10 @@ class AuthGateWidget(QWidget):
         idx = max(0, self.si_user_combo.currentIndex())
         user = self.users[idx]
         pin = self.si_pin_edit.text().strip()
-        if hash_pin_sha256(pin) == user.get("pin_sha256"):
+        stored_hash = user.get("pin_hash") or user.get("pin_sha256")
+        if verify_pin_hash(pin, stored_hash):
             self.si_pin_edit.clear()
+            self.cam_worker.resume_camera_hardware()
             self.authenticated.emit(user)
         else:
             self.status_lbl.setStyleSheet(f"color: {ALERT_ROSE}; font-weight: 700;")
@@ -901,6 +1130,8 @@ class AuthGateWidget(QWidget):
 # =============================================================================
 class SmartboardCanvas(QWidget):
     region_cropped_for_ai = Signal(bytes, QPixmap)
+    hud_status_changed = Signal(str, float, str)
+    slides_changed = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -909,73 +1140,65 @@ class SmartboardCanvas(QWidget):
 
         self.grid_enabled = True
         self.slide_visible = True
-        self.smart_shape_enabled = False
+        self.smart_shape_enabled = True
+        self.hold_to_snap_350ms = False
         self.active_tool = "PEN"  # PEN, ERASER, LASER, SELECT_REGION
         self.ink_color = QColor(NEON_CYAN)
         self.pen_thickness = 4
 
+        self.drawing_fsm = ZeroStrayStrokeDrawingFsm()
+        self.hud_mode: DrawingHudMode = DrawingHudMode.HOVER
+        self.cooldown_remaining_ms: float = 0.0
+        self.cancel_hold_progress: float = 0.0
+
         self.strokes: List[Dict[str, Any]] = []
         self.redo_strokes: List[Dict[str, Any]] = []
         self.current_stroke: List[QPointF] = []
+        self._stroke_start_ms: float = 0.0
+        self._last_motion_ms: float = 0.0
+        self._last_motion_pt: Optional[QPointF] = None
+        self._hold_snap_ready: bool = True
+
+        # Non-destructive Auto-Shape notification pill with clickable revert button
+        self.shape_toast: Optional[Dict[str, Any]] = None
+        self.toast_revert_rect: Optional[QRectF] = None
 
         self.cursor_pos: Optional[QPointF] = None
-        self.cursor_mode: str = "HOVER"  # DRAW, HOVER, ERASE, LASER
+        self.cursor_mode: str = "HOVER"  # HOVER, DRAWING, LOCKED_COOLDOWN, PAN_ERASE, LASER
         self.selection_start: Optional[QPointF] = None
         self.selection_end: Optional[QPointF] = None
 
+        # Neutral clean guide slide only (zero personal sample data)
         self.slides: List[Dict[str, Any]] = [
             {
-                "title": "Slide 1: Giải tích & Phương trình Bậc hai",
-                "subtitle": "Khảo sát hàm số y = ax² + bx + c và công thức nghiệm",
+                "title": "DNT - Victer Guide • Hướng dẫn nhanh AirTeach AI",
+                "subtitle": "Bảng trắng không chạm & Nắn chuẩn Hình học Lai + Gemini 3.5 Flash",
                 "bullets": [
-                    "• Biệt thức Δ = b² - 4ac quyết định số nghiệm thực.",
-                    "• Khi Δ > 0: x₁,₂ = (-b ± √Δ) / (2a).",
-                    "• Đỉnh Parabol I(-b / 2a, -Δ / 4a).",
+                    "• Chụm ngón (pinch < 0.28 giữ 3 frame): Vẽ • Nhấc bút (> 0.40): Tự cắt đuôi thừa 105ms.",
+                    "• Hủy nét tức thì: Xòe 5 ngón / Nắm tay 150ms hoặc Esc (Khóa ngòi bút 300ms chống lem).",
+                    "• Tự động nắn chuẩn Đường thẳng, Mũi tên, Tròn, Elip, Tam giác, Vuông/CN/Thoi/Bình hành.",
                 ],
-                "formula": "ax² + bx + c = 0  ⇒  x = (-b ± √(b² - 4ac)) / 2a",
+                "formula": "Ctrl+Z: Hoàn tác (400ms)  |  Kéo [Phân Tích Vùng] -> Gemini 3.5 Flash",
                 "pixmap": None,
-            },
-            {
-                "title": "Slide 2: Định luật II Newton & Cơ năng",
-                "subtitle": "Phương trình động lực học chất điểm",
-                "bullets": [
-                    "• Tổng hợp lực: ΣF = m · a.",
-                    "• Động năng: Wđ = ½ m v² | Thế năng trọng trường: Wt = m g h.",
-                ],
-                "formula": "ΣF = m · a   |   E = ½mv² + mgh = const",
-                "pixmap": None,
-            },
-            {
-                "title": "Slide 3: Hóa học Hữu cơ & Cấu trúc Phân tử",
-                "subtitle": "Phản ứng este hóa và vòng thơm",
-                "bullets": [
-                    "• Aspirin (Axit axetylsalixylic): C₉H₈O₄.",
-                    "• Benzen: C₆H₆ (vòng thơm 6 nguyên tử cacbon liên hợp).",
-                ],
-                "formula": "C₇H₆O₃ + (CH₃CO)₂O  →  C₉H₈O₄ + CH₃COOH",
-                "pixmap": None,
-            },
-            {
-                "title": "Slide 4: Bảng Trắng Tự Do (Smartboard Studio)",
-                "subtitle": "Viết tay bằng 1 ngón trỏ hoặc chuột, khoanh vùng gửi Gemini 2.5 Flash",
-                "bullets": [
-                    "• 1 ngón trỏ: Vẽ nét mực trực tiếp.",
-                    "• 2 ngón (Trỏ + Giữa): Di chuyển con trỏ & ngắt nét.",
-                    "• Xòe cả bàn tay: Tẩy nhanh vùng nét vẽ (r = 45px).",
-                ],
-                "formula": "∫ f(x) dx = F(b) - F(a)",
-                "pixmap": None,
-            },
+                "is_tutorial": True,
+            }
         ]
         self.current_slide_idx = 0
 
-        # Top-Left button: [Ẩn nội dung Slide để lấy bảng trống 100%]
+        # Top-Left buttons: Toggle visibility + Remove clean guide card
         self.toggle_slide_btn = QPushButton("[Ẩn nội dung Slide để lấy bảng trống 100%]", self)
         self.toggle_slide_btn.setGeometry(14, 10, 290, 28)
         self.toggle_slide_btn.setStyleSheet(
             f"background: {SURFACE_DARK}; color: {SECONDARY_TEAL}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; font-weight: 700; font-size: 12px;"
         )
         self.toggle_slide_btn.clicked.connect(self.toggle_slide_visibility)
+
+        self.clear_tutorial_btn = QPushButton("[Xóa hướng dẫn]", self)
+        self.clear_tutorial_btn.setGeometry(312, 10, 128, 28)
+        self.clear_tutorial_btn.setStyleSheet(
+            f"background: {SURFACE_DARK}; color: {TEXT_MUTED}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; font-weight: 600; font-size: 11px;"
+        )
+        self.clear_tutorial_btn.clicked.connect(self.dismiss_tutorial_slides)
 
     def toggle_slide_visibility(self) -> None:
         self.slide_visible = not self.slide_visible
@@ -985,37 +1208,159 @@ class SmartboardCanvas(QWidget):
             self.toggle_slide_btn.setText("[Hiện nội dung Slide bài giảng]")
         self.update()
 
-    def apply_hand_gesture(self, gesture: str, cursor_norm: Optional[Tuple[float, float]]) -> None:
-        if cursor_norm is None or gesture == "IDLE":
-            if self.current_stroke:
-                self._finalize_current_stroke()
-            self.cursor_mode = "HOVER"
-            self.update()
-            return
-
-        pt = QPointF(cursor_norm[0] * max(1, self.width()), cursor_norm[1] * max(1, self.height()))
-        self.cursor_pos = pt
-
-        if gesture == "DRAW":
-            self.cursor_mode = "DRAW"
-            self.current_stroke.append(pt)
-        elif gesture == "ERASE":
-            if self.current_stroke:
-                self._finalize_current_stroke()
-            self.cursor_mode = "ERASE"
-            self._erase_at(pt, 45.0)
-        else:
-            if self.current_stroke:
-                self._finalize_current_stroke()
-            self.cursor_mode = "HOVER"
-
+    def dismiss_tutorial_slides(self) -> None:
+        self.slides = [s for s in self.slides if not s.get("is_tutorial", False)]
+        self.current_slide_idx = min(self.current_slide_idx, max(0, len(self.slides) - 1))
+        self.clear_tutorial_btn.setVisible(any(s.get("is_tutorial") for s in self.slides))
+        self.slides_changed.emit()
         self.update()
+
+    @staticmethod
+    def _now_ms() -> float:
+        return time.monotonic() * 1000.0
+
+    def apply_cv_fsm_packet(self, pkt: dict) -> DrawingFsmUpdate:
+        now_ms = self._now_ms()
+        gesture = str(pkt.get("gesture", "IDLE"))
+        pose_tag = str(pkt.get("pose_tag") or gesture or "IDLE")
+        pinch_ratio = pkt.get("pinch_ratio")
+        cursor_norm = pkt.get("cursor_norm")
+        left_pan = bool(pkt.get("left_pan_active", False))
+        hand_present = cursor_norm is not None and gesture != "IDLE"
+
+        cursor_px: Optional[Tuple[float, float]] = None
+        if cursor_norm is not None:
+            px = float(cursor_norm[0]) * max(1, self.width())
+            py = float(cursor_norm[1]) * max(1, self.height())
+            cursor_px = (px, py)
+            self.cursor_pos = QPointF(px, py)
+
+        # Track hold-to-snap stillness if active
+        if self.hud_mode == DrawingHudMode.DRAWING and cursor_px is not None:
+            qpt = QPointF(cursor_px[0], cursor_px[1])
+            if (
+                self._last_motion_pt is None
+                or math.hypot(qpt.x() - self._last_motion_pt.x(), qpt.y() - self._last_motion_pt.y()) > 5.0
+            ):
+                self._last_motion_pt = qpt
+                self._last_motion_ms = now_ms
+            self._hold_snap_ready = (not self.hold_to_snap_350ms) or ((now_ms - self._last_motion_ms) >= 350.0)
+
+        upd = self.drawing_fsm.step(
+            now_ms,
+            hand_present=hand_present,
+            cursor_xy=cursor_px,
+            pinch_ratio=pinch_ratio,
+            pose_tag=pose_tag,
+            left_pan_active=left_pan,
+        )
+        self._apply_fsm_update(upd, now_ms)
+        return upd
+
+    def _apply_fsm_update(self, upd: DrawingFsmUpdate, now_ms: float) -> None:
+        self.hud_mode = upd.hud_mode
+        self.cooldown_remaining_ms = upd.cooldown_remaining_ms
+        self.cancel_hold_progress = upd.cancel_hold_progress
+        self.cursor_mode = upd.hud_mode.value
+
+        if upd.action in ("BEGIN_STROKE", "APPEND_POINT"):
+            if upd.action == "BEGIN_STROKE":
+                self.redo_strokes.clear()
+                self._stroke_start_ms = now_ms
+                self._last_motion_ms = now_ms
+                self._last_motion_pt = QPointF(upd.cursor_xy[0], upd.cursor_xy[1]) if upd.cursor_xy else None
+                self._hold_snap_ready = not self.hold_to_snap_350ms
+            self.current_stroke = [QPointF(x, y) for (x, y) in upd.active_points]
+        elif upd.action == "COMMIT_STROKE":
+            self.current_stroke = [QPointF(x, y) for (x, y) in upd.committed_points]
+            self._finalize_current_stroke(now_ms=now_ms)
+        elif upd.action == "CANCEL_STROKE":
+            self.current_stroke = []
+        elif upd.action == "ROLLBACK_LAST_STROKE":
+            self.current_stroke = []
+            if self.strokes:
+                self.strokes.pop()
+                self.shape_toast = None
+                self.toast_revert_rect = None
+        elif upd.action == "UNDO":
+            self.undo()
+        elif upd.action == "PALM_ERASE" and upd.cursor_xy is not None:
+            self._erase_at(QPointF(upd.cursor_xy[0], upd.cursor_xy[1]), 45.0)
+
+        self.hud_status_changed.emit(
+            upd.hud_mode.value, float(upd.cooldown_remaining_ms), upd.cancel_reason
+        )
+        self.update()
+
+    def trigger_esc_cancel(self) -> None:
+        now_ms = self._now_ms()
+        if self.current_stroke:
+            # Mouse or CV active stroke cancel + 300ms lock
+            self.current_stroke = []
+        upd = self.drawing_fsm.step(
+            now_ms,
+            hand_present=self.cursor_pos is not None,
+            cursor_xy=(self.cursor_pos.x(), self.cursor_pos.y()) if self.cursor_pos else None,
+            pinch_ratio=None,
+            pose_tag="IDLE",
+            esc_pressed=True,
+        )
+        self._apply_fsm_update(upd, now_ms)
+
+    def request_undo(self) -> bool:
+        now_ms = self._now_ms()
+        upd = self.drawing_fsm.step(
+            now_ms,
+            hand_present=self.cursor_pos is not None,
+            cursor_xy=(self.cursor_pos.x(), self.cursor_pos.y()) if self.cursor_pos else None,
+            pinch_ratio=None,
+            pose_tag="IDLE",
+            undo_requested=True,
+        )
+        if upd.action == "UNDO":
+            self.hud_status_changed.emit(upd.hud_mode.value, float(upd.cooldown_remaining_ms), "UNDO")
+            return True
+        return False
+
+    def revert_last_beautified_stroke(self) -> bool:
+        if not self.strokes:
+            return False
+        target_idx = (
+            self.shape_toast["stroke_idx"]
+            if self.shape_toast and 0 <= self.shape_toast["stroke_idx"] < len(self.strokes)
+            else len(self.strokes) - 1
+        )
+        stroke = self.strokes[target_idx]
+        raw_pts = stroke.get("raw_points")
+        if raw_pts and len(raw_pts) >= 2:
+            stroke["points"] = [QPointF(p) for p in raw_pts]
+            stroke["is_beautified"] = False
+            stroke["shape_type"] = "FREEHAND"
+            stroke["shape_label_vi"] = "Nét gốc mượt"
+        self.shape_toast = None
+        self.toast_revert_rect = None
+        self.update()
+        return True
 
     def mousePressEvent(self, event) -> None:
         pt = QPointF(event.position())
         self.cursor_pos = pt
+
+        # Check clickable "[Hoàn tác về nét gốc]" toast pill
+        if (
+            event.button() == Qt.LeftButton
+            and self.toast_revert_rect is not None
+            and self.shape_toast is not None
+            and self.toast_revert_rect.contains(pt)
+        ):
+            self.revert_last_beautified_stroke()
+            return
+
+        if self.drawing_fsm.hud_mode == DrawingHudMode.LOCKED_COOLDOWN:
+            return
+
         if event.button() == Qt.RightButton:
-            self.cursor_mode = "ERASE"
+            self.cursor_mode = "PAN_ERASE"
             self._erase_at(pt, 45.0)
             self.update()
             return
@@ -1025,21 +1370,30 @@ class SmartboardCanvas(QWidget):
                 self.selection_start = pt
                 self.selection_end = pt
             elif self.active_tool == "ERASER":
-                self.cursor_mode = "ERASE"
+                self.cursor_mode = "PAN_ERASE"
                 self._erase_at(pt, 45.0)
             elif self.active_tool == "LASER":
                 self.cursor_mode = "LASER"
             else:
-                self.cursor_mode = "DRAW"
+                self.cursor_mode = "DRAWING"
                 self.redo_strokes.clear()
+                now_ms = self._now_ms()
+                self._stroke_start_ms = now_ms
+                self._last_motion_ms = now_ms
+                self._last_motion_pt = pt
+                self._hold_snap_ready = not self.hold_to_snap_350ms
                 self.current_stroke = [pt]
             self.update()
 
     def mouseMoveEvent(self, event) -> None:
         pt = QPointF(event.position())
         self.cursor_pos = pt
+        if self.drawing_fsm.hud_mode == DrawingHudMode.LOCKED_COOLDOWN:
+            self.update()
+            return
+
         if event.buttons() & Qt.RightButton:
-            self.cursor_mode = "ERASE"
+            self.cursor_mode = "PAN_ERASE"
             self._erase_at(pt, 45.0)
             self.update()
             return
@@ -1048,10 +1402,18 @@ class SmartboardCanvas(QWidget):
             if self.active_tool == "SELECT_REGION":
                 self.selection_end = pt
             elif self.active_tool == "ERASER":
-                self.cursor_mode = "ERASE"
+                self.cursor_mode = "PAN_ERASE"
                 self._erase_at(pt, 45.0)
             elif self.active_tool == "PEN":
-                self.cursor_mode = "DRAW"
+                self.cursor_mode = "DRAWING"
+                now_ms = self._now_ms()
+                if (
+                    self._last_motion_pt is None
+                    or math.hypot(pt.x() - self._last_motion_pt.x(), pt.y() - self._last_motion_pt.y()) > 5.0
+                ):
+                    self._last_motion_pt = pt
+                    self._last_motion_ms = now_ms
+                self._hold_snap_ready = (not self.hold_to_snap_350ms) or ((now_ms - self._last_motion_ms) >= 350.0)
                 self.current_stroke.append(pt)
         else:
             self.cursor_mode = "LASER" if self.active_tool == "LASER" else "HOVER"
@@ -1064,22 +1426,62 @@ class SmartboardCanvas(QWidget):
                 self.selection_start = None
                 self.selection_end = None
             elif self.current_stroke:
-                self._finalize_current_stroke()
-        self.cursor_mode = "HOVER"
+                now_ms = self._now_ms()
+                if self.hold_to_snap_350ms:
+                    self._hold_snap_ready = (now_ms - self._last_motion_ms) >= 350.0
+                self._finalize_current_stroke(now_ms=now_ms)
+        self.cursor_mode = (
+            "LOCKED_COOLDOWN"
+            if self.drawing_fsm.hud_mode == DrawingHudMode.LOCKED_COOLDOWN
+            else "HOVER"
+        )
         self.update()
 
-    def _finalize_current_stroke(self) -> None:
+    def _finalize_current_stroke(self, now_ms: Optional[float] = None) -> None:
         if len(self.current_stroke) >= 2:
-            pts = self.current_stroke[:]
-            if self.smart_shape_enabled and len(pts) >= 5:
-                chord = math.hypot(pts[-1].x() - pts[0].x(), pts[-1].y() - pts[0].y())
-                if chord > 80.0:
-                    pts = [pts[0], pts[-1]]
+            ts_ms = now_ms if now_ms is not None else self._now_ms()
+            raw_xy = [(p.x(), p.y()) for p in self.current_stroke]
+            smooth_raw_xy = catmull_rom_spline(raw_xy, subdivisions=4)
+            raw_qpts = [QPointF(x, y) for (x, y) in (smooth_raw_xy if len(smooth_raw_xy) >= 2 else raw_xy)]
+
+            should_beautify = self.smart_shape_enabled and (
+                not self.hold_to_snap_350ms or self._hold_snap_ready
+            )
+            if should_beautify and len(raw_xy) >= 3:
+                shape_res = beautify_stroke(raw_xy, closed_gap_ratio=0.18, confidence_gate=0.78)
+                final_qpts = [QPointF(x, y) for (x, y) in shape_res.beautified_points]
+                is_geo = shape_res.is_geometric
+                shape_type = shape_res.shape_type
+                shape_label_vi = shape_res.shape_label_vi
+                confidence = shape_res.confidence
+            else:
+                final_qpts = raw_qpts
+                is_geo = False
+                shape_type = "FREEHAND"
+                shape_label_vi = "Nét mượt tự do"
+                confidence = 0.0
+
             self.strokes.append({
-                "points": pts,
+                "raw_points": raw_qpts,
+                "points": final_qpts,
+                "shape_type": shape_type,
+                "shape_label_vi": shape_label_vi,
+                "confidence": confidence,
+                "is_beautified": is_geo,
                 "color": QColor(self.ink_color),
                 "thickness": self.pen_thickness,
             })
+
+            if is_geo and final_qpts:
+                anchor_x = sum(p.x() for p in final_qpts) / len(final_qpts)
+                anchor_y = min(p.y() for p in final_qpts) - 18.0
+                self.shape_toast = {
+                    "stroke_idx": len(self.strokes) - 1,
+                    "label": shape_label_vi,
+                    "conf": confidence,
+                    "anchor": QPointF(anchor_x, anchor_y),
+                    "until_ms": ts_ms + 4500.0,
+                }
         self.current_stroke = []
 
     def _erase_at(self, pt: QPointF, radius: float) -> None:
@@ -1096,6 +1498,8 @@ class SmartboardCanvas(QWidget):
     def undo(self) -> None:
         if self.strokes:
             self.redo_strokes.append(self.strokes.pop())
+            self.shape_toast = None
+            self.toast_revert_rect = None
             self.update()
 
     def redo(self) -> None:
@@ -1107,6 +1511,8 @@ class SmartboardCanvas(QWidget):
         self.strokes.clear()
         self.redo_strokes.clear()
         self.current_stroke.clear()
+        self.shape_toast = None
+        self.toast_revert_rect = None
         self.update()
 
     def export_board_png(self, rect: Optional[QRectF] = None) -> Tuple[bytes, QPixmap]:
@@ -1145,13 +1551,13 @@ class SmartboardCanvas(QWidget):
                 painter.setPen(major_pen if idx % 5 == 0 else minor_pen)
                 painter.drawLine(0, y, self.width(), y)
 
-        # 2. Optional Slide Content Card (Top-Left, Zero Clutter)
+        # 2. Optional Slide Content Card
         if self.slide_visible and self.slides:
             slide = self.slides[self.current_slide_idx]
             s_w = min(740, max(320, self.width() - 40))
             s_h = int(s_w * 9 / 16)
             s_rect = QRectF(16, 46, s_w, s_h)
-            painter.setBrush(QBrush(QColor(15, 23, 42, 190)))
+            painter.setBrush(QBrush(QColor(15, 23, 42, 195)))
             painter.setPen(QPen(QColor(BORDER_SLATE), 1.2))
             painter.drawRoundedRect(s_rect, 12.0, 12.0)
 
@@ -1168,18 +1574,18 @@ class SmartboardCanvas(QWidget):
                 painter.drawText(QPointF(s_rect.left() + 22, s_rect.top() + 58), slide["subtitle"])
 
                 painter.setPen(QColor(TEXT_LIGHT))
-                painter.setFont(QFont("Segoe UI", 12))
+                painter.setFont(QFont("Segoe UI", 11))
                 for i, b in enumerate(slide["bullets"]):
                     painter.drawText(
-                        QPointF(s_rect.left() + 26, s_rect.top() + 96 + i * 30), b
+                        QPointF(s_rect.left() + 24, s_rect.top() + 94 + i * 28), b
                     )
 
-                f_rect = QRectF(s_rect.left() + 22, s_rect.bottom() - 64, s_rect.width() - 44, 44)
+                f_rect = QRectF(s_rect.left() + 22, s_rect.bottom() - 62, s_rect.width() - 44, 42)
                 painter.setBrush(QBrush(QColor(15, 23, 42, 235)))
                 painter.setPen(QPen(QColor(PRIMARY_INDIGO), 1.2))
                 painter.drawRoundedRect(f_rect, 8.0, 8.0)
                 painter.setPen(QColor(SECONDARY_TEAL))
-                painter.setFont(QFont("Segoe UI", 12, QFont.Bold))
+                painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
                 painter.drawText(f_rect, Qt.AlignCenter, slide["formula"])
 
         # 3. Vector Ink Strokes
@@ -1208,17 +1614,65 @@ class SmartboardCanvas(QWidget):
             painter.setPen(QPen(QColor(ALERT_ROSE), 2.0))
             painter.drawRoundedRect(sel_rect, 8.0, 8.0)
 
-        # 5. Live Cursor Ring Overlay
+        # 5. Floating Auto-Shape Beautify Toast ("Đã chuẩn hóa: ... • [Hoàn tác về nét gốc]")
+        self.toast_revert_rect = None
+        if self.shape_toast is not None:
+            if self._now_ms() <= float(self.shape_toast.get("until_ms", 0.0)):
+                label_txt = f"Đã chuẩn hóa: {self.shape_toast['label']} ({int(self.shape_toast['conf'] * 100)}%)"
+                btn_txt = "Hoàn tác về nét gốc"
+                tx = max(16.0, min(self.width() - 370.0, float(self.shape_toast["anchor"].x()) - 140.0))
+                ty = max(46.0, min(self.height() - 56.0, float(self.shape_toast["anchor"].y()) - 34.0))
+                toast_rect = QRectF(tx, ty, 356.0, 34.0)
+                painter.setBrush(QBrush(QColor(15, 23, 42, 235)))
+                painter.setPen(QPen(QColor(NEON_CYAN), 1.4))
+                painter.drawRoundedRect(toast_rect, 8.0, 8.0)
+
+                painter.setPen(QColor(TEXT_LIGHT))
+                painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                painter.drawText(QRectF(tx + 10.0, ty, 200.0, 34.0), Qt.AlignVCenter | Qt.AlignLeft, label_txt)
+
+                rev_rect = QRectF(tx + 212.0, ty + 5.0, 136.0, 24.0)
+                painter.setBrush(QBrush(QColor(PRIMARY_INDIGO)))
+                painter.setPen(Qt.NoPen)
+                painter.drawRoundedRect(rev_rect, 5.0, 5.0)
+                painter.setPen(QColor(TEXT_LIGHT))
+                painter.setFont(QFont("Segoe UI", 8, QFont.Bold))
+                painter.drawText(rev_rect, Qt.AlignCenter, btn_txt)
+                self.toast_revert_rect = rev_rect
+            else:
+                self.shape_toast = None
+
+        # 6. Live 4-Mode HUD Cursor Overlay
         if self.cursor_pos is not None:
             cp = self.cursor_pos
-            if self.cursor_mode == "ERASE":
+            if self.cursor_mode == "LOCKED_COOLDOWN":
                 painter.setBrush(QBrush(QColor(244, 63, 94, 55)))
-                painter.setPen(QPen(QColor(ALERT_ROSE), 2.0))
+                painter.setPen(QPen(QColor(ALERT_ROSE), 2.4))
+                painter.drawEllipse(cp, 16.0, 16.0)
+                painter.drawLine(cp + QPointF(-6, -6), cp + QPointF(6, 6))
+                painter.drawLine(cp + QPointF(6, -6), cp + QPointF(-6, 6))
+                painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                painter.drawText(
+                    cp + QPointF(20.0, 4.0),
+                    f"KHÓA {int(max(0.0, self.cooldown_remaining_ms))}ms",
+                )
+            elif self.cursor_mode == "PAN_ERASE":
+                painter.setBrush(QBrush(QColor(244, 63, 94, 50)))
+                painter.setPen(QPen(QColor(ALERT_ROSE), 2.0, Qt.DashLine))
                 painter.drawEllipse(cp, 45.0, 45.0)
-            elif self.cursor_mode == "DRAW":
-                painter.setBrush(QBrush(QColor(0, 245, 212, 90)))
-                painter.setPen(QPen(QColor(NEON_CYAN), 2.0))
+            elif self.cursor_mode == "DRAWING":
+                painter.setBrush(QBrush(QColor(0, 245, 212, 95)))
+                painter.setPen(QPen(QColor(NEON_CYAN), 2.2))
                 painter.drawEllipse(cp, 8.0, 8.0)
+                if self.cancel_hold_progress > 0.05:
+                    painter.setBrush(Qt.NoBrush)
+                    painter.setPen(QPen(QColor(ALERT_ROSE), 3.0))
+                    span_deg = int(360.0 * min(1.0, self.cancel_hold_progress) * 16.0)
+                    painter.drawArc(QRectF(cp.x() - 18, cp.y() - 18, 36, 36), 90 * 16, -span_deg)
+            elif self.cursor_mode == "LASER":
+                painter.setBrush(QBrush(QColor(244, 63, 94, 180)))
+                painter.setPen(QPen(QColor("#FFFFFF"), 1.5))
+                painter.drawEllipse(cp, 7.0, 7.0)
             else:
                 painter.setBrush(Qt.NoBrush)
                 painter.setPen(QPen(QColor(BRIGHT_YELLOW), 2.0))
@@ -1228,10 +1682,48 @@ class SmartboardCanvas(QWidget):
 # =============================================================================
 # MODULE 2: MINIMALIST CLEAN STUDIO WINDOW
 # =============================================================================
+class AboutBrandDialog(QDialog):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Giới thiệu — AirTeach AI (DNT - Victer)")
+        self.setFixedWidth(480)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        top = QHBoxLayout()
+        top.addWidget(make_brand_logo_widget(64))
+        info = QVBoxLayout()
+        t = QLabel("AirTeach AI — DNT - Victer")
+        t.setStyleSheet(f"color: {TEXT_LIGHT}; font-size: 18px; font-weight: 800;")
+        s = QLabel("Nền tảng Giảng dạy Không chạm • Thị giác Máy tính & AI")
+        s.setStyleSheet(f"color: {SECONDARY_TEAL}; font-size: 12px; font-weight: 600;")
+        info.addWidget(t)
+        info.addWidget(s)
+        top.addLayout(info)
+        layout.addLayout(top)
+
+        desc = QLabel(
+            "• Nhận diện Tay 3D + ROI 384x384 + One-Euro Smoothing mọi điều kiện sáng.\n"
+            "• Face ID 5-điểm Affine 112x112 (ArcFace 512-D) & bảo mật PIN PBKDF2 cục bộ.\n"
+            "• Máy trạng thái vẽ 4 tầng (Schmitt <0.28 / >0.40, cắt đuôi 105ms, khóa 300ms).\n"
+            "• Chuẩn hóa hình học lai: PCA + FitEllipse + ApproxPolyDP + $1/$P + Catmull-Rom.\n"
+            "• Tích hợp Gemini 3.5 Flash có cache cục bộ & hoạt động offline bền vững."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {TEXT_LIGHT}; font-size: 12px; line-height: 1.45;")
+        layout.addWidget(desc)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        btns.rejected.connect(self.reject)
+        btns.accepted.connect(self.accept)
+        layout.addWidget(btns)
+
+
 class AirTeachMainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("AirTeach AI — Clean Studio Smartboard")
+        self.setWindowTitle("AirTeach AI — Clean Studio Smartboard (DNT - Victer)")
         self.resize(1400, 820)
 
         self.logged_in_user: Dict[str, Any] = {}
@@ -1256,6 +1748,12 @@ class AirTeachMainWindow(QMainWindow):
         self.studio_page = QWidget()
         self._build_studio_ui(self.studio_page)
         self.stack.addWidget(self.studio_page)
+
+        # Global Shortcuts: Esc -> Instant Cancel + 300ms Lock | Ctrl+Z -> 400ms Cooldown Undo
+        self.esc_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self.esc_shortcut.activated.connect(self._on_hotkey_esc)
+        self.undo_shortcut = QShortcut(QKeySequence.Undo, self)
+        self.undo_shortcut.activated.connect(self._on_hotkey_undo)
 
         self.stack.setCurrentIndex(0)
         self.cam_worker.start()
@@ -1292,7 +1790,7 @@ class AirTeachMainWindow(QMainWindow):
         root.setSpacing(0)
 
         # =====================================================================
-        # MODULE 2.1: SINGLE COMPACT HEADER BAR (Height: 46px, Zero Sub-Toolbar)
+        # MODULE 2.1: SINGLE COMPACT HEADER BAR (Height: 46px, Brand Logo + Controls)
         # =====================================================================
         header = QFrame()
         header.setFixedHeight(46)
@@ -1300,10 +1798,18 @@ class AirTeachMainWindow(QMainWindow):
             f"background: {BG_DARK}; border-bottom: 1px solid {BORDER_SLATE};"
         )
         h_layout = QHBoxLayout(header)
-        h_layout.setContentsMargins(12, 6, 12, 6)
-        h_layout.setSpacing(8)
+        h_layout.setContentsMargins(10, 6, 10, 6)
+        h_layout.setSpacing(6)
 
-        # Left Group: [Đăng xuất] | Tên Giáo viên | [Mở PDF/Slide] | [ < ] Slide 1/4 [ > ] | [Bật/Tắt Lưới Caro]
+        h_layout.addWidget(make_brand_logo_widget(28))
+        brand_lbl = QLabel("AirTeach AI")
+        brand_lbl.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 800; font-size: 13px;")
+        h_layout.addWidget(brand_lbl)
+
+        about_btn = QPushButton("[Giới thiệu]")
+        about_btn.clicked.connect(self._on_show_about)
+        h_layout.addWidget(about_btn)
+
         logout_btn = QPushButton("[Đăng xuất]")
         logout_btn.setStyleSheet(
             f"background: {SURFACE_DARK}; color: {ALERT_ROSE}; border: 1px solid {ALERT_ROSE}; border-radius: 6px; padding: 4px 10px; font-weight: 700;"
@@ -1317,46 +1823,42 @@ class AirTeachMainWindow(QMainWindow):
         )
         h_layout.addWidget(self.teacher_name_lbl)
 
-        open_slide_btn = QPushButton("[Mở PDF/Slide]")
+        open_slide_btn = QPushButton("[Mở Ảnh/Slide]")
         open_slide_btn.clicked.connect(self._on_open_slide_file)
         h_layout.addWidget(open_slide_btn)
 
         prev_btn = QPushButton("<")
-        prev_btn.setFixedWidth(30)
+        prev_btn.setFixedWidth(28)
         prev_btn.clicked.connect(self._on_prev_slide)
         h_layout.addWidget(prev_btn)
 
-        self.slide_counter_lbl = QLabel("Slide 1/4")
+        self.slide_counter_lbl = QLabel("Slide 1/1")
         self.slide_counter_lbl.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 700;")
         h_layout.addWidget(self.slide_counter_lbl)
 
         next_btn = QPushButton(">")
-        next_btn.setFixedWidth(30)
+        next_btn.setFixedWidth(28)
         next_btn.clicked.connect(self._on_next_slide)
         h_layout.addWidget(next_btn)
 
-        grid_btn = QPushButton("[Bật/Tắt Lưới Caro]")
+        grid_btn = QPushButton("[Lưới Caro]")
         grid_btn.clicked.connect(self._on_toggle_grid)
         h_layout.addWidget(grid_btn)
 
-        # Middle Stretchable Spacer (MODULE 2.1: Never overlap!)
         h_layout.addStretch(1)
 
-        # Right Group: [Ghi Âm Bài Giảng] | [Ẩn/Hiện Camera] | [Trợ Lý AI (Đóng/Mở)]
-        self.rec_btn = QPushButton("[Ghi Âm Bài Giảng]")
+        self.rec_btn = QPushButton("[Ghi Âm]")
         self.rec_btn.setStyleSheet(
             f"background: {ALERT_ROSE}; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 10px; font-weight: 700;"
         )
         self.rec_btn.clicked.connect(self._on_toggle_recording)
         h_layout.addWidget(self.rec_btn)
 
-        toggle_cam_btn = QPushButton("[Ẩn/Hiện Camera]")
-        toggle_cam_btn.clicked.connect(
-            lambda: self.left_dock.setVisible(not self.left_dock.isVisible())
-        )
-        h_layout.addWidget(toggle_cam_btn)
+        self.toggle_cam_btn = QPushButton("[Tắt/Mở Camera]")
+        self.toggle_cam_btn.clicked.connect(self._on_toggle_studio_camera)
+        h_layout.addWidget(self.toggle_cam_btn)
 
-        toggle_ai_btn = QPushButton("[Trợ Lý AI (Đóng/Mở)]")
+        toggle_ai_btn = QPushButton("[Trợ Lý AI]")
         toggle_ai_btn.setStyleSheet(
             f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 10px; font-weight: 700;"
         )
@@ -1374,7 +1876,6 @@ class AirTeachMainWindow(QMainWindow):
         workspace.setContentsMargins(0, 0, 0, 0)
         workspace.setSpacing(0)
 
-        # MODULE 2.2: Minimalist Left Dock (Fixed Width: 270px)
         self.left_dock = QFrame()
         self.left_dock.setFixedWidth(270)
         self.left_dock.setStyleSheet(
@@ -1382,24 +1883,26 @@ class AirTeachMainWindow(QMainWindow):
         )
         l_layout = QVBoxLayout(self.left_dock)
         l_layout.setContentsMargins(10, 10, 10, 10)
-        l_layout.setSpacing(8)
+        l_layout.setSpacing(7)
 
-        # 1. 4:3 Camera Preview (250x188px) + 1 concise status line
         self.pip_cam_lbl = QLabel()
         self.pip_cam_lbl.setFixedSize(250, 188)
         self.pip_cam_lbl.setAlignment(Qt.AlignCenter)
         self.pip_cam_lbl.setStyleSheet(
-            f"background: {BG_DARK}; border: 1px solid {BORDER_SLATE}; border-radius: 8px;"
+            f"background: {BG_DARK}; border: 1px solid {BORDER_SLATE}; border-radius: 8px; color: {TEXT_MUTED};"
         )
         l_layout.addWidget(self.pip_cam_lbl)
 
-        self.hand_status_lbl = QLabel("Trạng thái: Chờ tay")
+        self.hand_status_lbl = QLabel("Trạng thái: Hover (Di chuyển)")
         self.hand_status_lbl.setStyleSheet(
-            f"color: {NEON_CYAN}; font-weight: 700; font-size: 13px;"
+            f"color: {NEON_CYAN}; font-weight: 700; font-size: 12px;"
         )
         l_layout.addWidget(self.hand_status_lbl)
 
-        # 2. Camera Selector (Cam 0 / Cam 1) + Backlight Toggle (Ngược sáng Auto-HDR)
+        self.telemetry_lbl = QLabel("Ánh sáng: -- | Độ nét: -- | FPS: --")
+        self.telemetry_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; font-weight: 600;")
+        l_layout.addWidget(self.telemetry_lbl)
+
         cam_ctrl_row = QHBoxLayout()
         for c_idx in (0, 1):
             b = QPushButton(f"Cam {c_idx}")
@@ -1407,21 +1910,21 @@ class AirTeachMainWindow(QMainWindow):
             b.clicked.connect(lambda _=False, i=c_idx: self.cam_worker.select_camera(i))
             cam_ctrl_row.addWidget(b)
 
-        self.hdr_chk = QCheckBox("Ngược sáng (Auto-HDR)")
+        self.hdr_chk = QCheckBox("Auto-HDR")
         self.hdr_chk.setChecked(True)
         self.hdr_chk.toggled.connect(self._on_toggle_hdr)
         cam_ctrl_row.addWidget(self.hdr_chk)
         l_layout.addLayout(cam_ctrl_row)
 
-        # 3. 4 Compact Gesture Badges (2x2 Grid)
+        # 4 Compact 4-Tier HUD Mode & Gesture Badges (2x2 Grid)
         badge_grid = QGridLayout()
         badge_grid.setSpacing(6)
         self.gesture_badges: Dict[str, QLabel] = {}
         badge_specs = [
-            ("DRAW", "[1 Ngón: Vẽ]", 0, 0),
-            ("HOVER", "[2 Ngón: Di chuyển]", 0, 1),
-            ("CLICK", "[Chụm tay: Click]", 1, 0),
-            ("ERASE", "[5 Ngón: Tẩy]", 1, 1),
+            ("DRAWING", "[Chụm <0.28: Vẽ]", 0, 0),
+            ("HOVER", "[Mở >0.40: Di]", 0, 1),
+            ("LOCKED_COOLDOWN", "[Xòe/Nắm: Hủy]", 1, 0),
+            ("PAN_ERASE", "[5 Ngón: Tẩy]", 1, 1),
         ]
         for key, text, r, c in badge_specs:
             lbl = QLabel(text)
@@ -1436,7 +1939,6 @@ class AirTeachMainWindow(QMainWindow):
 
         l_layout.addStretch(1)
 
-        # 4. Compact Mic Volume Bar (VU Meter) at bottom
         vu_hdr = QHBoxLayout()
         vu_hdr.addWidget(QLabel("Mic VU Meter"))
         vu_hdr.addStretch(1)
@@ -1453,12 +1955,13 @@ class AirTeachMainWindow(QMainWindow):
 
         workspace.addWidget(self.left_dock)
 
-        # MODULE 2.3: Clean Center Smartboard Canvas
+        # Center Smartboard Canvas
         self.canvas = SmartboardCanvas()
         self.canvas.region_cropped_for_ai.connect(self._on_region_cropped_for_ai)
+        self.canvas.slides_changed.connect(self._update_slide_counter)
         workspace.addWidget(self.canvas, stretch=1)
 
-        # MODULE 2.4: Right Dock (Trợ Lý Sư Phạm Gemini AI, Width = 330px)
+        # Right Dock (Trợ Lý Sư Phạm Gemini 3.5 Flash)
         self.right_dock = QFrame()
         self.right_dock.setFixedWidth(330)
         self.right_dock.setStyleSheet(
@@ -1469,17 +1972,16 @@ class AirTeachMainWindow(QMainWindow):
         r_layout.setSpacing(6)
 
         ai_hdr = QHBoxLayout()
-        ai_title = QLabel("Trợ Lý Sư Phạm Gemini AI")
+        ai_title = QLabel("Trợ Lý Gemini 3.5 Flash")
         ai_title.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 700; font-size: 13px;")
         ai_hdr.addWidget(ai_title)
         ai_hdr.addStretch(1)
-        self.change_key_btn = QPushButton("[Đổi API Key]")
+        self.change_key_btn = QPushButton("[API Key]")
         self.change_key_btn.setFixedHeight(24)
         self.change_key_btn.clicked.connect(lambda: self.api_key_frame.setVisible(True))
         ai_hdr.addWidget(self.change_key_btn)
         r_layout.addLayout(ai_hdr)
 
-        # Compact API Key row (auto-hides once key is saved)
         self.api_key_frame = QFrame()
         kf_layout = QHBoxLayout(self.api_key_frame)
         kf_layout.setContentsMargins(0, 0, 0, 0)
@@ -1494,19 +1996,21 @@ class AirTeachMainWindow(QMainWindow):
         r_layout.addWidget(self.api_key_frame)
         self.api_key_frame.setVisible(not bool(self.api_key))
 
-        # 3 Clear Pedagogical Action Buttons
-        for label, prompt_prefix in [
+        for label, prompt_prefix, struct_json in [
             (
                 "[1. Giải & Chữa Bài Trên Bảng]",
                 "Hãy đọc toàn bộ chữ viết tay/công thức trên bảng, kiểm tra lỗi sai nếu có và giải chi tiết từng bước.",
+                False,
             ),
             (
-                "[2. Tóm Tắt & Tạo Trắc Nghiệm]",
+                "[2. Tóm Tắt & Trắc Nghiệm (JSON)]",
                 "Hãy tóm tắt trọng tâm bài giảng trên bảng và tạo 3 câu hỏi trắc nghiệm 4 lựa chọn có đáp án giải thích.",
+                True,
             ),
             (
                 "[3. Hỏi Đáp Sư Phạm]",
                 "Hãy gợi ý phương pháp giảng dạy trực quan và ví dụ thực tế cho nội dung trên bảng.",
+                False,
             ),
         ]:
             btn = QPushButton(label)
@@ -1514,26 +2018,26 @@ class AirTeachMainWindow(QMainWindow):
             btn.setStyleSheet(
                 f"background: {BG_DARK}; color: {TEXT_LIGHT}; border: 1px solid {PRIMARY_INDIGO}; border-radius: 6px; font-weight: 700;"
             )
-            btn.clicked.connect(lambda _=False, p=prompt_prefix: self._analyze_full_board(p))
+            btn.clicked.connect(
+                lambda _=False, p=prompt_prefix, sj=struct_json: self._analyze_full_board(p, sj)
+            )
             r_layout.addWidget(btn)
 
-        # Cropped Region Preview Thumbnail
         self.crop_preview_lbl = QLabel()
         self.crop_preview_lbl.setFixedHeight(90)
         self.crop_preview_lbl.setAlignment(Qt.AlignCenter)
-        self.crop_preview_lbl.setVisible(False)
         self.crop_preview_lbl.setStyleSheet(
             f"background: {BG_DARK}; border: 1px solid {SECONDARY_TEAL}; border-radius: 6px;"
         )
+        self.crop_preview_lbl.setVisible(False)
         r_layout.addWidget(self.crop_preview_lbl)
 
-        # Clean AI Output Browser
         self.ai_output = QTextBrowser()
         self.ai_output.setStyleSheet(
             f"background: {BG_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 8px; padding: 8px; font-size: 13px;"
         )
         self.ai_output.setPlainText(
-            "Sẵn sàng phân tích bảng vẽ.\n• Dùng công cụ [Phân Tích Vùng] ở thanh dưới cùng để khoanh vùng nét vẽ gửi tới gemini-2.5-flash.\n• Hoặc bấm 1 trong 3 nút chức năng bên trên."
+            "Sẵn sàng phân tích bảng vẽ.\n• Dùng công cụ [Phân Tích Vùng] bên dưới để khoanh vùng gửi tới gemini-3.5-flash.\n• Mất mạng vẫn vẽ bảng, nắn hình & CV 100%."
         )
         r_layout.addWidget(self.ai_output, stretch=1)
 
@@ -1549,7 +2053,7 @@ class AirTeachMainWindow(QMainWindow):
             f"background: {BG_DARK}; border-top: 1px solid {BORDER_SLATE};"
         )
         b_layout = QHBoxLayout(bottom)
-        b_layout.setContentsMargins(12, 8, 12, 8)
+        b_layout.setContentsMargins(10, 8, 10, 8)
         b_layout.setSpacing(6)
 
         for tool_id, label in [
@@ -1563,12 +2067,19 @@ class AirTeachMainWindow(QMainWindow):
             btn.clicked.connect(lambda _=False, t=tool_id: self._set_tool(t))
             b_layout.addWidget(btn)
 
-        self.smart_shape_btn = QPushButton("[Nắn hình: TẮT]")
+        self.smart_shape_btn = QPushButton("[Nắn hình: BẬT]")
         self.smart_shape_btn.setFixedHeight(32)
+        self.smart_shape_btn.setStyleSheet(
+            f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 8px; font-weight: 700;"
+        )
         self.smart_shape_btn.clicked.connect(self._on_toggle_smart_shape)
         b_layout.addWidget(self.smart_shape_btn)
 
-        # 6 Circular Color Buttons (22x22px)
+        self.hold_snap_btn = QPushButton("[Giữ 350ms: TẮT]")
+        self.hold_snap_btn.setFixedHeight(32)
+        self.hold_snap_btn.clicked.connect(self._on_toggle_hold_snap)
+        b_layout.addWidget(self.hold_snap_btn)
+
         for hex_col in ("#00F5D4", "#FEE440", "#FFFFFF", "#38B000", "#FF007F", "#FF6D00"):
             c_btn = QPushButton("")
             c_btn.setFixedSize(22, 22)
@@ -1585,14 +2096,14 @@ class AirTeachMainWindow(QMainWindow):
         thick_slider = QSlider(Qt.Horizontal)
         thick_slider.setRange(2, 14)
         thick_slider.setValue(4)
-        thick_slider.setFixedWidth(90)
+        thick_slider.setFixedWidth(84)
         thick_slider.valueChanged.connect(self._on_thickness_changed)
         b_layout.addWidget(thick_slider)
 
         b_layout.addStretch(1)
 
-        undo_btn = QPushButton("[Hoàn tác (Undo)]")
-        undo_btn.clicked.connect(self.canvas.undo)
+        undo_btn = QPushButton("[Hoàn tác (Ctrl+Z)]")
+        undo_btn.clicked.connect(self._on_hotkey_undo)
         b_layout.addWidget(undo_btn)
 
         redo_btn = QPushButton("[Làm lại (Redo)]")
@@ -1608,14 +2119,39 @@ class AirTeachMainWindow(QMainWindow):
 
         root.addWidget(bottom)
 
+    def _on_show_about(self) -> None:
+        AboutBrandDialog(self).exec()
+
+    def _on_hotkey_esc(self) -> None:
+        if self.stack.currentIndex() == 1:
+            self.canvas.trigger_esc_cancel()
+
+    def _on_hotkey_undo(self) -> None:
+        if self.stack.currentIndex() == 1 and self.canvas.request_undo():
+            self.canvas.undo()
+
     def _on_user_authenticated(self, user: Dict[str, Any]) -> None:
         self.logged_in_user = user
         self.teacher_name_lbl.setText(f"GV: {user.get('full_name', 'Giáo viên')}")
+        self.cam_worker.resume_camera_hardware()
         self.stack.setCurrentIndex(1)
 
     def _on_logout(self) -> None:
+        # Release webcam hardware cleanly when logging out
+        self.cam_worker.release_camera_hardware()
+        self.canvas.drawing_fsm.reset()
+        self.logged_in_user = {}
         self.auth_gate._refresh_tabs()
         self.stack.setCurrentIndex(0)
+
+    def _on_toggle_studio_camera(self) -> None:
+        if self.cam_worker._camera_paused:
+            self.cam_worker.resume_camera_hardware()
+            self.left_dock.setVisible(True)
+        elif not self.left_dock.isVisible():
+            self.left_dock.setVisible(True)
+        else:
+            self.cam_worker.release_camera_hardware()
 
     def _on_camera_packet(self, pkt: dict) -> None:
         if self.stack.currentIndex() == 0:
@@ -1623,53 +2159,64 @@ class AirTeachMainWindow(QMainWindow):
             return
 
         qimg: Optional[QImage] = pkt.get("qimage")
-        gesture: str = pkt.get("gesture", "IDLE")
-        cursor_norm = pkt.get("cursor_norm")
+        paused: bool = bool(pkt.get("paused", False))
+        light: Dict[str, Any] = pkt.get("lighting") or {}
+        fps: float = float(pkt.get("fps") or 0.0)
 
-        if qimg is not None:
+        if paused:
+            self.pip_cam_lbl.setPixmap(QPixmap())
+            self.pip_cam_lbl.setText("Camera đã giải phóng an toàn")
+        elif qimg is not None:
             scaled = qimg.scaled(250, 188, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.pip_cam_lbl.setPixmap(QPixmap.fromImage(scaled))
         else:
+            self.pip_cam_lbl.setPixmap(QPixmap())
             self.pip_cam_lbl.setText("Chưa kết nối Webcam")
 
-        status_map = {
-            "DRAW": "Trạng thái: Đang Vẽ",
-            "HOVER": "Trạng thái: Di chuyển",
-            "CLICK": "Trạng thái: Click",
-            "ERASE": "Trạng thái: Tẩy",
-            "IDLE": "Trạng thái: Chờ tay",
-        }
-        self.hand_status_lbl.setText(status_map.get(gesture, "Trạng thái: Chờ tay"))
+        luma = float(light.get("mean_luma") or 0.0)
+        sharp = float(light.get("laplacian_var") or 0.0)
+        self.telemetry_lbl.setText(f"Sáng: {luma:.0f} | Nét: {sharp:.0f} | {fps:.1f} FPS")
+
+        fsm_upd = self.canvas.apply_cv_fsm_packet(pkt)
+        hud_key = fsm_upd.hud_mode.value
+        if hud_key == "LOCKED_COOLDOWN":
+            self.hand_status_lbl.setText(
+                f"Khóa ngòi bút ({int(max(0.0, fsm_upd.cooldown_remaining_ms))}ms) • {fsm_upd.cancel_reason or 'Cooldown'}"
+            )
+            self.hand_status_lbl.setStyleSheet(f"color: {ALERT_ROSE}; font-weight: 700; font-size: 12px;")
+        else:
+            self.hand_status_lbl.setText(f"Chế độ: {fsm_upd.hud_mode.label_vi}")
+            self.hand_status_lbl.setStyleSheet(f"color: {NEON_CYAN}; font-weight: 700; font-size: 12px;")
 
         for key, lbl in self.gesture_badges.items():
-            if key == gesture:
+            if key == hud_key:
+                accent = ALERT_ROSE if key == "LOCKED_COOLDOWN" else NEON_CYAN
                 lbl.setStyleSheet(
-                    f"background: {NEON_CYAN}; color: {BG_DARK}; border-radius: 6px; font-size: 11px; font-weight: 700;"
+                    f"background: {accent}; color: {BG_DARK}; border-radius: 6px; font-size: 11px; font-weight: 700;"
                 )
             else:
                 lbl.setStyleSheet(
                     f"background: {BG_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; font-size: 11px; font-weight: 700;"
                 )
 
-        self.canvas.apply_hand_gesture(gesture, cursor_norm)
-
     def _on_toggle_hdr(self, checked: bool) -> None:
         self.cam_worker.auto_hdr_backlight = checked
+
+    def _update_slide_counter(self) -> None:
+        total = len(self.canvas.slides)
+        idx = self.canvas.current_slide_idx + 1 if total > 0 else 0
+        self.slide_counter_lbl.setText(f"Slide {idx}/{total}")
 
     def _on_prev_slide(self) -> None:
         if self.canvas.current_slide_idx > 0:
             self.canvas.current_slide_idx -= 1
-            self.slide_counter_lbl.setText(
-                f"Slide {self.canvas.current_slide_idx + 1}/{len(self.canvas.slides)}"
-            )
+            self._update_slide_counter()
             self.canvas.update()
 
     def _on_next_slide(self) -> None:
         if self.canvas.current_slide_idx + 1 < len(self.canvas.slides):
             self.canvas.current_slide_idx += 1
-            self.slide_counter_lbl.setText(
-                f"Slide {self.canvas.current_slide_idx + 1}/{len(self.canvas.slides)}"
-            )
+            self._update_slide_counter()
             self.canvas.update()
 
     def _on_toggle_grid(self) -> None:
@@ -1689,21 +2236,20 @@ class AirTeachMainWindow(QMainWindow):
                     "bullets": [],
                     "formula": "",
                     "pixmap": pm,
+                    "is_tutorial": False,
                 })
                 self.canvas.current_slide_idx = len(self.canvas.slides) - 1
-                self.slide_counter_lbl.setText(
-                    f"Slide {self.canvas.current_slide_idx + 1}/{len(self.canvas.slides)}"
-                )
+                self._update_slide_counter()
                 self.canvas.update()
 
     def _on_toggle_recording(self) -> None:
         if not self.is_recording_audio:
             self.audio_frames.clear()
             self.is_recording_audio = True
-            self.rec_btn.setText("[Dừng & Lưu Ghi Âm]")
+            self.rec_btn.setText("[Dừng Ghi Âm]")
         else:
             self.is_recording_audio = False
-            self.rec_btn.setText("[Ghi Âm Bài Giảng]")
+            self.rec_btn.setText("[Ghi Âm]")
             if self.audio_frames:
                 RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
                 out_wav = RECORDINGS_DIR / f"lecture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
@@ -1729,13 +2275,25 @@ class AirTeachMainWindow(QMainWindow):
 
     def _on_toggle_smart_shape(self) -> None:
         self.canvas.smart_shape_enabled = not self.canvas.smart_shape_enabled
-        self.smart_shape_btn.setText(
-            "[Nắn hình: BẬT]" if self.canvas.smart_shape_enabled else "[Nắn hình: TẮT]"
+        if self.canvas.smart_shape_enabled:
+            self.smart_shape_btn.setText("[Nắn hình: BẬT]")
+            self.smart_shape_btn.setStyleSheet(
+                f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 8px; font-weight: 700;"
+            )
+        else:
+            self.smart_shape_btn.setText("[Nắn hình: TẮT]")
+            self.smart_shape_btn.setStyleSheet("")
+
+    def _on_toggle_hold_snap(self) -> None:
+        self.canvas.hold_to_snap_350ms = not self.canvas.hold_to_snap_350ms
+        self.hold_snap_btn.setText(
+            "[Giữ 350ms: BẬT]" if self.canvas.hold_to_snap_350ms else "[Giữ 350ms: TẮT]"
         )
 
     def _on_save_api_key(self) -> None:
         self.api_key = self.api_key_edit.text().strip()
         if self.api_key:
+            os.environ["GEMINI_API_KEY"] = self.api_key
             self.api_key_frame.setVisible(False)
 
     def _on_region_cropped_for_ai(self, png_bytes: bytes, cropped_pm: QPixmap) -> None:
@@ -1744,22 +2302,26 @@ class AirTeachMainWindow(QMainWindow):
         self.crop_preview_lbl.setPixmap(
             cropped_pm.scaled(300, 86, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )
-        self.ai_output.setPlainText("Đang phân tích nét vẽ vùng chọn...")
+        self.ai_output.setPlainText("Đang phân tích nét vẽ vùng chọn với Gemini 3.5 Flash...")
         prompt = "Hãy đọc chính xác chữ viết tay hoặc công thức toán/hóa trong ảnh vùng chọn này và giải thích từng bước."
-        self._start_gemini_worker(prompt, png_bytes)
+        self._start_gemini_worker(prompt, png_bytes, structured_json=False)
 
-    def _analyze_full_board(self, prompt: str) -> None:
+    def _analyze_full_board(self, prompt: str, structured_json: bool = False) -> None:
         self.right_dock.setVisible(True)
         png_bytes, cropped_pm = self.canvas.export_board_png(None)
         self.crop_preview_lbl.setVisible(True)
         self.crop_preview_lbl.setPixmap(
             cropped_pm.scaled(300, 86, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )
-        self.ai_output.setPlainText("Đang phân tích nét vẽ trên bảng với Gemini 3.5 Flash...")
-        self._start_gemini_worker(prompt, png_bytes)
+        self.ai_output.setPlainText("Đang phân tích toàn bảng với Gemini 3.5 Flash...")
+        self._start_gemini_worker(prompt, png_bytes, structured_json=structured_json)
 
-    def _start_gemini_worker(self, prompt: str, png_bytes: Optional[bytes]) -> None:
-        self.gemini_worker = GeminiVisionWorker(self.api_key, prompt, png_bytes)
+    def _start_gemini_worker(
+        self, prompt: str, png_bytes: Optional[bytes], structured_json: bool = False
+    ) -> None:
+        self.gemini_worker = GeminiVisionWorker(
+            self.api_key, prompt, png_bytes, structured_json=structured_json
+        )
         self.gemini_worker.finished_text.connect(self.ai_output.setMarkdown)
         self.gemini_worker.start()
 
@@ -1770,6 +2332,7 @@ class AirTeachMainWindow(QMainWindow):
                 self.audio_stream.close()
             except Exception as exc:
                 _ = exc
+        self.cam_worker.release_camera_hardware()
         self.cam_worker.stop()
         super().closeEvent(event)
 

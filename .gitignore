@@ -29,6 +29,8 @@ secrets/
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.airteach/
 .venv/
 venv/
 env/

@@ -27,7 +27,9 @@ use crate::ai::subtitles_engine::{LiveSubtitlesEngine, TranscriptSegmentEvent};
 use crate::core::audio_recorder::{AudioRecorder, RecordingState};
 use crate::core::camera::{CameraControlCmd, CameraSubsystem, LightingAdaptationMode};
 use crate::core::gestures::{
-    DualHandGestureState, GestureDebounceFsm, LeftGesture, RightGesture, RightTransitionEvent,
+    classify_right_hand_raw, compute_pinch_ratio, DrawingController4Tier, DrawingFsmAction,
+    DrawingHudMode, DualHandGestureState, GestureDebounceFsm, LeftGesture, RightGesture,
+    RightTransitionEvent, UNDO_COOLDOWN_MS,
 };
 use crate::core::hand_tracker::TwoHandFrame;
 use crate::core::stroke_engine::{Point2D, SnappedShape, StrokeEngine};
@@ -169,8 +171,12 @@ pub struct AirTeachApp {
     pub pin_input_buffer: String,
     pub auth_error_msg: String,
 
-    // Dual-Hand Gesture FSM & Navigation State
+    // Dual-Hand Gesture FSM, 4-Tier Drawing FSM & Navigation State
     pub gesture_fsm: GestureDebounceFsm,
+    pub drawing_fsm: DrawingController4Tier,
+    pub hud_mode: DrawingHudMode,
+    pub pen_lock_remaining_ms: f32,
+    pub last_undo_ms: f64,
     pub gesture_state: DualHandGestureState,
     pub prev_left_hand_norm: Option<Point2D>,
     pub prev_left_pinch_span: Option<f32>,
@@ -200,6 +206,9 @@ pub struct AirTeachApp {
     pub render_scratch_pos2: Vec<Pos2>,
     pub stroke_latency_ms: f32,
     pub last_snapped_shape_banner: String,
+    pub last_snapped_shape_index: Option<usize>,
+    pub last_snapped_toast_anchor: Option<Point2D>,
+    pub last_snapped_toast_until_ms: f64,
 
     pub laser_pointer_board: Option<Point2D>,
     pub selection_anchor_board: Option<Point2D>,
@@ -234,8 +243,7 @@ impl AirTeachApp {
         let storage = LocalStorage::open_default();
         let face_auth = FaceAuthEngine::new();
 
-        let mut config = storage.load_or_init_config();
-        config.auto_shape_snap = false;
+        let config = storage.load_or_init_config();
         config.theme_mode.palette().apply_to_egui(&cc.egui_ctx);
         storage.save_config(&config);
 
@@ -451,6 +459,10 @@ impl AirTeachApp {
             pin_input_buffer: String::new(),
             auth_error_msg: String::new(),
             gesture_fsm,
+            drawing_fsm: DrawingController4Tier::new(),
+            hud_mode: DrawingHudMode::Hover,
+            pen_lock_remaining_ms: 0.0,
+            last_undo_ms: -1e9,
             gesture_state: DualHandGestureState {
                 left_gesture: LeftGesture::Idle,
                 right_gesture: RightGesture::Idle,
@@ -487,6 +499,9 @@ impl AirTeachApp {
             render_scratch_pos2: Vec::with_capacity(2048),
             stroke_latency_ms: 0.2,
             last_snapped_shape_banner: String::new(),
+            last_snapped_shape_index: None,
+            last_snapped_toast_anchor: None,
+            last_snapped_toast_until_ms: -1e9,
             laser_pointer_board: None,
             selection_anchor_board: None,
             selection_rect_board: None,
@@ -905,38 +920,97 @@ impl AirTeachApp {
             }
         }
 
-        if self.screen == AppScreen::LectureMode && self.camera_using_hardware {
-            let state = self.gesture_fsm.update(
-                self.last_two_hand_frame.left_hand.as_ref(),
-                self.last_two_hand_frame.right_hand.as_ref(),
-            );
-            self.gesture_state = state;
-            // Never interrupt or override active mouse/touchpad drawing or erasing
+        if self.screen == AppScreen::LectureMode {
+            let esc_pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+            let ctrl_z_pressed =
+                ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z));
             let mouse_button_down = ctx.input(|i| i.pointer.any_down());
-            if !mouse_button_down {
-                self.apply_two_hand_gestures_to_board(state);
+
+            if self.camera_using_hardware {
+                let state = self.gesture_fsm.update(
+                    self.last_two_hand_frame.left_hand.as_ref(),
+                    self.last_two_hand_frame.right_hand.as_ref(),
+                );
+                self.gesture_state = state;
+                if !mouse_button_down {
+                    self.apply_two_hand_gestures_to_board(state, esc_pressed, ctrl_z_pressed);
+                } else if esc_pressed {
+                    self.cancel_active_stroke("ESC");
+                }
+            } else {
+                if esc_pressed {
+                    self.cancel_active_stroke("ESC");
+                }
+                if ctrl_z_pressed {
+                    self.perform_undo_with_cooldown();
+                }
             }
         }
     }
 
-    fn apply_two_hand_gestures_to_board(&mut self, state: DualHandGestureState) {
+    pub fn cancel_active_stroke(&mut self, reason: &str) {
+        if !self.active_stroke_raw.is_empty() {
+            self.active_stroke_raw.clear();
+            self.last_snapped_shape_banner = format!("Đã hủy nét ({reason}) • Khóa ngòi 300ms");
+        }
+        self.selection_anchor_board = None;
+        self.selection_rect_board = None;
+    }
+
+    pub fn perform_undo_with_cooldown(&mut self) -> bool {
+        let now_ms = self.app_epoch.elapsed().as_secs_f64() * 1000.0;
+        if (now_ms - self.last_undo_ms) < UNDO_COOLDOWN_MS {
+            return false;
+        }
+        self.last_undo_ms = now_ms;
+        if let Some(last) = self.strokes.pop() {
+            self.redo_strokes.push(last);
+            self.last_snapped_shape_index = None;
+            self.last_snapped_toast_anchor = None;
+            self.last_snapped_shape_banner = "Đã hoàn tác nét vẽ gần nhất".to_string();
+            return true;
+        }
+        false
+    }
+
+    pub fn revert_last_snapped_shape_to_raw(&mut self) {
+        if let Some(idx) = self.last_snapped_shape_index {
+            if let Some(stroke) = self.strokes.get_mut(idx) {
+                let mut smooth = Vec::with_capacity(stroke.raw_points.len() * 4);
+                let saved_snap = self.stroke_engine.auto_shape_snap;
+                self.stroke_engine.auto_shape_snap = false;
+                let _ = self.stroke_engine.finalize_stroke(&stroke.raw_points, &mut smooth);
+                self.stroke_engine.auto_shape_snap = saved_snap;
+                if smooth.len() >= 2 {
+                    stroke.display_points = smooth;
+                } else {
+                    stroke.display_points = stroke.raw_points.clone();
+                }
+                stroke.snapped_shape = SnappedShape::Freehand;
+                self.last_snapped_shape_banner = "Đã hoàn tác về nét vẽ tay gốc".to_string();
+            }
+        }
+        self.last_snapped_shape_index = None;
+        self.last_snapped_toast_anchor = None;
+    }
+
+    fn apply_two_hand_gestures_to_board(
+        &mut self,
+        state: DualHandGestureState,
+        esc_pressed: bool,
+        ctrl_z_pressed: bool,
+    ) {
         let Some(canvas_rect) = self.last_canvas_rect else {
             return;
         };
 
-        if state.no_hand_idle {
-            if !self.active_stroke_raw.is_empty() {
-                self.finish_pointer_gesture();
-            }
-            return;
-        }
-
+        // Update Left-hand pan/zoom navigation cleanly
+        let left_pan_active = matches!(state.left_gesture, LeftGesture::PinchDragZoom);
         match state.left_gesture {
             LeftGesture::PalmOpenAnchor => {
                 if let Some(cur) = state.left_cursor_norm {
                     self.left_anchor_origin = Vec2::new(cur.x, cur.y);
                     self.prev_left_hand_norm = Some(cur);
-                    // Palm-open gesture also expands the floating glassmorphic toolbar
                     self.floating_toolbar_collapsed = false;
                 }
             }
@@ -968,84 +1042,97 @@ impl AirTeachApp {
             }
         }
 
-        let Some(r_norm) = state.right_cursor_norm else {
-            return;
-        };
+        // Compute raw Right-hand landmarks, 3D pose, pinch_ratio, and mapped board coordinates
+        let right_hand_opt = self.last_two_hand_frame.right_hand.as_ref();
+        let hand_present = !state.no_hand_idle && right_hand_opt.is_some();
+        let pinch_ratio = right_hand_opt.map(|rh| compute_pinch_ratio(&rh.landmarks));
+        let raw_pose = right_hand_opt
+            .map(|rh| classify_right_hand_raw(rh).0)
+            .unwrap_or(RightGesture::Idle);
 
-        // MODULE 3.2: Active Control Box Mapping (12% Margin)
-        // Maps [0.12, 0.88] of camera viewport to [0.0, 1.0] of the Smartboard Canvas
-        let margin = 0.12_f32;
-        let mapped_x = ((r_norm.x - margin) / (1.0 - 2.0 * margin)).clamp(0.0, 1.0);
-        let mapped_y = ((r_norm.y - margin) / (1.0 - 2.0 * margin)).clamp(0.0, 1.0);
-
-        let screen_x = canvas_rect.min.x + mapped_x * canvas_rect.width();
-        let screen_y = canvas_rect.min.y + mapped_y * canvas_rect.height();
-        let board_pt = Point2D::new(
-            (screen_x - canvas_rect.min.x - self.canvas_pan.x) / self.canvas_zoom,
-            (screen_y - canvas_rect.min.y - self.canvas_pan.y) / self.canvas_zoom,
-        );
-        self.laser_pointer_board = Some(board_pt);
-
-        match state.right_event {
-            RightTransitionEvent::BeganStroke => {
-                self.begin_board_stroke(board_pt);
-            }
-            RightTransitionEvent::EndedStrokeAndSnap => {
-                self.finish_pointer_gesture();
-            }
-            RightTransitionEvent::BeganSelection => {
-                self.selection_anchor_board = Some(board_pt);
-                self.selection_rect_board = Some((board_pt, board_pt));
-            }
-            RightTransitionEvent::CompletedSelection | RightTransitionEvent::None => {}
+        let board_pt_opt = state.right_cursor_norm.map(|r_norm| {
+            let margin = 0.12_f32;
+            let mapped_x = ((r_norm.x - margin) / (1.0 - 2.0 * margin)).clamp(0.0, 1.0);
+            let mapped_y = ((r_norm.y - margin) / (1.0 - 2.0 * margin)).clamp(0.0, 1.0);
+            let screen_x = canvas_rect.min.x + mapped_x * canvas_rect.width();
+            let screen_y = canvas_rect.min.y + mapped_y * canvas_rect.height();
+            Point2D::new(
+                (screen_x - canvas_rect.min.x - self.canvas_pan.x) / self.canvas_zoom,
+                (screen_y - canvas_rect.min.y - self.canvas_pan.y) / self.canvas_zoom,
+            )
+        });
+        if let Some(bp) = board_pt_opt {
+            self.laser_pointer_board = Some(bp);
         }
 
-        match state.right_gesture {
-            RightGesture::DrawStroke => {
-                if self.active_stroke_raw.is_empty() {
-                    self.begin_board_stroke(board_pt);
+        let t_ms = self.app_epoch.elapsed().as_secs_f64() * 1000.0;
+        let step_res = self.drawing_fsm.step(
+            t_ms,
+            hand_present,
+            board_pt_opt,
+            pinch_ratio,
+            raw_pose,
+            left_pan_active,
+            esc_pressed,
+            ctrl_z_pressed,
+            self.config.hold_to_snap_350ms,
+        );
+        self.hud_mode = step_res.hud_mode;
+        self.pen_lock_remaining_ms = step_res.cooldown_remaining_ms;
+
+        match step_res.action {
+            DrawingFsmAction::BeginStroke => {
+                if let Some(bp) = board_pt_opt {
+                    self.begin_board_stroke(bp);
+                }
+            }
+            DrawingFsmAction::AppendPoint => {
+                if let Some(bp) = board_pt_opt {
+                    if self.active_stroke_raw.is_empty() {
+                        self.begin_board_stroke(bp);
+                    } else {
+                        self.append_board_stroke(bp);
+                    }
+                }
+            }
+            DrawingFsmAction::CommitStrokeTrimmed(trimmed_pts) => {
+                self.active_stroke_raw = trimmed_pts;
+                let allow_snap = !self.config.hold_to_snap_350ms || self.drawing_fsm.hold_to_snap_ready;
+                self.finish_pointer_gesture_internal(allow_snap);
+            }
+            DrawingFsmAction::CancelStrokeDiscard => {
+                self.active_stroke_raw.clear();
+                self.last_snapped_shape_banner = if step_res.cancel_reason.is_empty() {
+                    "Đã hủy nét • Khóa ngòi 300ms".to_string()
                 } else {
-                    self.append_board_stroke(board_pt);
+                    format!("Đã hủy nét ({}) • Khóa ngòi 300ms", step_res.cancel_reason)
+                };
+            }
+            DrawingFsmAction::RollbackLastStroke => {
+                self.active_stroke_raw.clear();
+                let popped = self.strokes.pop();
+                if popped.is_some() {
+                    self.last_snapped_shape_index = None;
+                    self.last_snapped_toast_anchor = None;
+                    self.last_snapped_shape_banner = format!(
+                        "Đã thu hồi nét ({}) • Khóa ngòi 300ms",
+                        step_res.cancel_reason
+                    );
                 }
             }
-            RightGesture::HoverTwoFingers | RightGesture::LaserPointer => {
-                if !self.active_stroke_raw.is_empty() {
-                    self.finish_pointer_gesture();
-                }
-                self.laser_pointer_board = Some(board_pt);
+            DrawingFsmAction::UndoWithCooldown => {
+                self.perform_undo_with_cooldown();
             }
-            RightGesture::PalmEraser => {
-                if !self.active_stroke_raw.is_empty() {
-                    self.finish_pointer_gesture();
-                }
-                self.laser_pointer_board = Some(board_pt);
-                let erase_r = 45.0 / self.canvas_zoom.max(0.5);
-                self.strokes.retain(|s| {
-                    !s.display_points
-                        .iter()
-                        .any(|p| p.dist(board_pt) < erase_r)
-                });
-                self.annotations
-                    .retain(|a| a.position.dist(board_pt) >= erase_r);
-            }
-            RightGesture::PinchToolSelect => {
-                if !self.active_stroke_raw.is_empty() {
-                    self.finish_pointer_gesture();
-                }
-                self.laser_pointer_board = Some(board_pt);
-            }
-            RightGesture::SelectBoxVShape => {
-                if let Some(anchor) = self.selection_anchor_board {
-                    let min_p = Point2D::new(anchor.x.min(board_pt.x), anchor.y.min(board_pt.y));
-                    let max_p = Point2D::new(anchor.x.max(board_pt.x), anchor.y.max(board_pt.y));
-                    self.selection_rect_board = Some((min_p, max_p));
+            DrawingFsmAction::PalmErase => {
+                if let Some(bp) = board_pt_opt {
+                    let erase_r = 45.0 / self.canvas_zoom.max(0.5);
+                    self.strokes.retain(|s| {
+                        !s.display_points.iter().any(|p| p.dist(bp) < erase_r)
+                    });
+                    self.annotations.retain(|a| a.position.dist(bp) >= erase_r);
                 }
             }
-            RightGesture::FistClench | RightGesture::Idle => {
-                if !self.active_stroke_raw.is_empty() {
-                    self.finish_pointer_gesture();
-                }
-            }
+            DrawingFsmAction::PanActive | DrawingFsmAction::None => {}
         }
     }
 
@@ -1075,6 +1162,10 @@ impl AirTeachApp {
     }
 
     pub fn finish_pointer_gesture(&mut self) {
+        self.finish_pointer_gesture_internal(true);
+    }
+
+    pub fn finish_pointer_gesture_internal(&mut self, allow_snap_if_enabled: bool) {
         if self.active_stroke_raw.len() < 2 {
             self.active_stroke_raw.clear();
             return;
@@ -1082,28 +1173,45 @@ impl AirTeachApp {
 
         let t0 = Instant::now();
         let timestamp_ms = self.current_recording_timestamp_ms();
+        let prev_auto = self.stroke_engine.auto_shape_snap;
+        if !allow_snap_if_enabled {
+            self.stroke_engine.auto_shape_snap = false;
+        }
         let snapped_shape = self
             .stroke_engine
             .finalize_stroke(&self.active_stroke_raw, &mut self.finalize_scratch_points);
+        self.stroke_engine.auto_shape_snap = prev_auto;
 
-        self.last_snapped_shape_banner = match snapped_shape {
-            SnappedShape::Freehand => "Đã làm mượt One-Euro + Đường cong Bézier".to_string(),
-            SnappedShape::Line { .. } => "Đã nắn thành Đoạn thẳng chuẩn".to_string(),
-            SnappedShape::Arrow { .. } => "Đã nắn thành Mũi tên chuẩn".to_string(),
-            SnappedShape::Circle { .. } => "Đã nắn thành Hình tròn chuẩn".to_string(),
-            SnappedShape::Rectangle { .. } => "Đã nắn thành Hình chữ nhật chuẩn".to_string(),
-            SnappedShape::Triangle { .. } => "Đã nắn thành Hình tam giác chuẩn".to_string(),
+        self.last_snapped_shape_banner = if snapped_shape.is_geometric() {
+            format!("Đã chuẩn hóa: {}", snapped_shape.label_vi())
+        } else {
+            "Đã làm mượt One-Euro + Đường cong Bézier".to_string()
         };
 
         self.redo_strokes.clear();
+        let new_idx = self.strokes.len();
+        let anchor_pt = self
+            .finalize_scratch_points
+            .first()
+            .copied()
+            .or_else(|| self.active_stroke_raw.first().copied());
         self.strokes.push(PersistedStroke {
             timestamp_ms,
             raw_points: self.active_stroke_raw.clone(),
             display_points: self.finalize_scratch_points.clone(),
             color_rgba: self.current_ink_color,
             thickness: self.current_stroke_thickness,
-            snapped_shape,
+            snapped_shape: snapped_shape.clone(),
         });
+        if snapped_shape.is_geometric() {
+            self.last_snapped_shape_index = Some(new_idx);
+            self.last_snapped_toast_anchor = anchor_pt;
+            self.last_snapped_toast_until_ms =
+                self.app_epoch.elapsed().as_secs_f64() * 1000.0 + 7000.0;
+        } else {
+            self.last_snapped_shape_index = None;
+            self.last_snapped_toast_anchor = None;
+        }
         self.active_stroke_raw.clear();
         self.stroke_latency_ms =
             self.last_two_hand_frame.inference_ms + t0.elapsed().as_secs_f32() * 1000.0;
