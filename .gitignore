@@ -1,13 +1,14 @@
 # Rust build outputs & native Windows binaries
 /target/
 *.exe
+!/AirTeach-AI.exe
 *.dll
 *.pdb
 *.lib
 **/*.rs.bk
 
-# Downloaded runtime AI weights (compile-time placeholders in assets/models/ remain tracked)
-/models/
+# Runtime AI weights (pre-bundled in /models/; ignore incomplete partial downloads)
+/models/*.part
 
 # Local user databases, sessions, face vectors, recordings & temp slides
 /data/
