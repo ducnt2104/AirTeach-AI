@@ -450,36 +450,58 @@ impl MediaPipeSubprocessBridge {
             fallback_script
         };
 
-        let mut cmd = Command::new("python");
-        cmd.arg(entry_script)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+        let candidates: [&str; 5] = [
+            ".venv/Scripts/python.exe",
+            "venv/Scripts/python.exe",
+            "python",
+            "python3",
+            "py",
+        ];
 
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
+        for py_bin in candidates {
+            if py_bin.contains('/') && !Path::new(py_bin).exists() {
+                continue;
+            }
+            let mut cmd = Command::new(py_bin);
+            cmd.arg(entry_script)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+
+            let Ok(mut child) = cmd.spawn() else {
+                continue;
+            };
+            let Some(stdin) = child.stdin.take() else {
+                let _ = child.kill();
+                continue;
+            };
+            let Some(stdout) = child.stdout.take() else {
+                let _ = child.kill();
+                continue;
+            };
+            let mut reader = BufReader::new(stdout);
+
+            let mut ready_line = String::new();
+            if reader.read_line(&mut ready_line).is_err() || !ready_line.contains("READY") {
+                let _ = child.kill();
+                continue;
+            }
+
+            return Some(Self {
+                child,
+                stdin,
+                stdout: reader,
+                rgb_buf: vec![0u8; 8 + 640 * 480 * 3],
+            });
         }
-
-        let mut child = cmd.spawn().ok()?;
-        let stdin = child.stdin.take()?;
-        let stdout = child.stdout.take()?;
-        let mut reader = BufReader::new(stdout);
-
-        let mut ready_line = String::new();
-        if reader.read_line(&mut ready_line).is_err() || !ready_line.contains("READY") {
-            let _ = child.kill();
-            return None;
-        }
-
-        Some(Self {
-            child,
-            stdin,
-            stdout: reader,
-            rgb_buf: vec![0u8; 8 + 640 * 480 * 3],
-        })
+        None
     }
 
     fn compute_ipc_dimensions(width: u32, height: u32) -> (u32, u32) {

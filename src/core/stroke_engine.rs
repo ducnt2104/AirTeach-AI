@@ -373,6 +373,60 @@ pub fn generate_cubic_bezier_spline_into(
     }
 }
 
+pub const DEFAULT_INTERP_STEP_PX: f32 = 10.0;
+
+/// Interpolate smooth intermediate points between `p_start` and `p_end` when moving fast or bridging a brief dropout.
+/// Uses Catmull-Rom tangent Hermite interpolation when `p_before` is available so fast curves stay smooth.
+/// Excludes `p_start` and always ends at `p_end`.
+pub fn interpolate_bridge_points_2d(
+    p_before: Option<Point2D>,
+    p_start: Point2D,
+    p_end: Point2D,
+    max_step_px: f32,
+) -> Vec<Point2D> {
+    let dist = p_start.dist(p_end);
+    let step_px = max_step_px.max(2.0);
+    if dist <= step_px {
+        return vec![p_end];
+    }
+    let steps = ((dist / step_px).ceil() as usize).clamp(2, 40);
+    let mut out = Vec::with_capacity(steps);
+
+    if let Some(pb) = p_before {
+        let tan_x = (p_start.x - pb.x).clamp(-dist * 1.2, dist * 1.2);
+        let tan_y = (p_start.y - pb.y).clamp(-dist * 1.2, dist * 1.2);
+        let dx = p_end.x - p_start.x;
+        let dy = p_end.y - p_start.y;
+        let t0x = (tan_x + dx) * 0.5;
+        let t0y = (tan_y + dy) * 0.5;
+        let t1x = dx;
+        let t1y = dy;
+        for s in 1..=steps {
+            let t = s as f32 / steps as f32;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+            let h10 = t3 - 2.0 * t2 + t;
+            let h01 = -2.0 * t3 + 3.0 * t2;
+            let h11 = t3 - t2;
+            out.push(Point2D::new(
+                h00 * p_start.x + h10 * t0x + h01 * p_end.x + h11 * t1x,
+                h00 * p_start.y + h10 * t0y + h01 * p_end.y + h11 * t1y,
+            ));
+        }
+        return out;
+    }
+
+    for s in 1..=steps {
+        let t = s as f32 / steps as f32;
+        out.push(Point2D::new(
+            p_start.x + (p_end.x - p_start.x) * t,
+            p_start.y + (p_end.y - p_start.y) * t,
+        ));
+    }
+    out
+}
+
 /// Fine-grained quadrilateral subtype from polygon angle & edge invariant solver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuadKind {
@@ -1892,5 +1946,16 @@ mod tests {
             .collect();
         let (snapped_w, _) = engine.finalize_stroke_with_confidence(&wave, &mut out);
         assert!(matches!(snapped_w, SnappedShape::Freehand), "Wave snapped falsely: {snapped_w:?}");
+    }
+
+    #[test]
+    fn test_interpolate_bridge_points_2d_smooth_and_bounded() {
+        let pb = Point2D::new(0.0, 0.0);
+        let p0 = Point2D::new(40.0, 20.0);
+        let p1 = Point2D::new(140.0, 60.0);
+        let bridged = interpolate_bridge_points_2d(Some(pb), p0, p1, 10.0);
+        assert!(bridged.len() >= 10);
+        assert!((bridged.last().unwrap().x - p1.x).abs() < 1e-3);
+        assert!((bridged.last().unwrap().y - p1.y).abs() < 1e-3);
     }
 }

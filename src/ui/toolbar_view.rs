@@ -452,9 +452,7 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                     )
                     .clicked()
                 {
-                    if let Some(restored) = app.redo_strokes.pop() {
-                        app.strokes.push(restored);
-                    }
+                    app.perform_redo();
                 }
 
                 if ui
@@ -474,6 +472,7 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                 {
                     app.strokes.clear();
                     app.redo_strokes.clear();
+                    app.redo_replace_flags.clear();
                     app.annotations.clear();
                 }
             });

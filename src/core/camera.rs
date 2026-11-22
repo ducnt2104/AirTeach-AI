@@ -1186,11 +1186,11 @@ impl CameraSubsystem {
             let _ = frame_tx.try_send(packet);
 
             let cost = loop_start.elapsed();
-            let target = Duration::from_millis(30);
+            let target = Duration::from_millis(16);
             if cost < target {
                 thread::sleep(target - cost);
             } else {
-                thread::sleep(Duration::from_millis(2));
+                thread::sleep(Duration::from_millis(1));
             }
         }
 

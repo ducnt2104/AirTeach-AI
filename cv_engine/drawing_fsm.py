@@ -47,6 +47,9 @@ PINCH_EXIT_THRESHOLD = 0.40
 PINCH_ENTER_MIN_FRAMES = 3
 TAIL_TRIM_MS = 105.0
 TAIL_TRIM_MAX_POINTS = 4
+DRAWING_GRACE_PERIOD_MS = 150.0
+MAX_JUMP_DISTANCE_PX = 260.0
+INTERP_STEP_PX = 10.0
 CANCEL_HOLD_MS = 150.0
 POST_COMMIT_CANCEL_WINDOW_MS = 700.0
 PEN_LOCK_COOLDOWN_MS = 300.0
@@ -54,11 +57,62 @@ UNDO_HOLD_MS = 220.0
 UNDO_COOLDOWN_MS = 400.0
 
 
+def interpolate_bridge_points(
+    p_before: Optional[Tuple[float, float]],
+    p_start: Tuple[float, float],
+    p_end: Tuple[float, float],
+    max_step_px: float = INTERP_STEP_PX,
+) -> List[Tuple[float, float]]:
+    """
+    Generate smooth intermediate points between `p_start` and `p_end` (excluding `p_start`,
+    including `p_end`) using velocity-guided Quadratic/Hermite blend when `p_before` exists,
+    or linear spacing otherwise, so fast hand motion or brief tracking gaps never leave jagged
+    polygons or broken strokes.
+    """
+    dx = p_end[0] - p_start[0]
+    dy = p_end[1] - p_start[1]
+    dist = (dx * dx + dy * dy) ** 0.5
+    if dist <= max_step_px:
+        return [p_end]
+
+    steps = max(2, min(48, int(dist / max(2.0, max_step_px)) + 1))
+    # Tangent at p_start estimated from (p_start - p_before) blended toward chord (p_end - p_start)
+    if p_before is not None:
+        vx0 = p_start[0] - p_before[0]
+        vy0 = p_start[1] - p_before[1]
+        v0_len = (vx0 * vx0 + vy0 * vy0) ** 0.5
+        if v0_len > 1e-4:
+            # Normalize initial tangent to ~0.45 * dist for gentle C1 continuity without overshoot
+            scale = min(0.45 * dist, v0_len * 2.0) / v0_len
+            tx0 = vx0 * scale
+            ty0 = vy0 * scale
+        else:
+            tx0, ty0 = dx, dy
+    else:
+        tx0, ty0 = dx, dy
+
+    tx1, ty1 = dx, dy
+    out: List[Tuple[float, float]] = []
+    for k in range(1, steps + 1):
+        t = k / float(steps)
+        t2 = t * t
+        t3 = t2 * t
+        h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+        h10 = t3 - 2.0 * t2 + t
+        h01 = -2.0 * t3 + 3.0 * t2
+        h11 = t3 - t2
+        x = h00 * p_start[0] + h10 * tx0 + h01 * p_end[0] + h11 * tx1
+        y = h00 * p_start[1] + h10 * ty0 + h01 * p_end[1] + h11 * ty1
+        out.append((x, y))
+    return out
+
+
 @dataclass
 class TimedPoint:
     x: float
     y: float
     t_ms: float
+    interpolated: bool = False
 
 
 class StrokeRingBuffer:
@@ -70,8 +124,14 @@ class StrokeRingBuffer:
     def clear(self) -> None:
         self._buf.clear()
 
-    def append(self, x: float, y: float, t_ms: float) -> None:
-        self._buf.append(TimedPoint(float(x), float(y), float(t_ms)))
+    def append(self, x: float, y: float, t_ms: float, interpolated: bool = False) -> None:
+        self._buf.append(TimedPoint(float(x), float(y), float(t_ms), bool(interpolated)))
+
+    def last_point(self) -> Optional[TimedPoint]:
+        return self._buf[-1] if self._buf else None
+
+    def prev_point(self) -> Optional[TimedPoint]:
+        return self._buf[-2] if len(self._buf) >= 2 else None
 
     def points_xy(self) -> List[Tuple[float, float]]:
         return [(p.x, p.y) for p in self._buf]
@@ -94,17 +154,17 @@ class StrokeRingBuffer:
         cutoff = t_end - max(90.0, min(120.0, tail_trim_ms))
 
         trimmed = list(self._buf)
-        removed = 0
-        # Always trim time-windowed tail up to max_trim_points (or full window if >60fps)
+        removed_real = 0
+        # Always trim time-windowed tail up to max real sample cap so dense interpolated points in the tail are fully stripped
         while len(trimmed) > 0 and trimmed[-1].t_ms > cutoff:
-            # Avoid emptying a valid multi-segment high-fps tail partially unless whole buffer is short flicker
-            if removed >= max(max_trim_points, 6) and len(trimmed) >= 2:
+            if removed_real >= max(max_trim_points, 6) and len(trimmed) >= 2:
                 break
-            trimmed.pop()
-            removed += 1
+            popped = trimmed.pop()
+            if not popped.interpolated:
+                removed_real += 1
 
         # If timing had sparse timestamps (>35ms step), ensure at least 1-3 release transition frames are evaluated
-        if removed == 0 and len(trimmed) >= 5:
+        if removed_real == 0 and len(trimmed) >= 5:
             trimmed.pop()
 
         self._buf.clear()
@@ -125,13 +185,18 @@ class DrawingFsmUpdate:
     cancel_reason: str = ""
     pinch_ratio: Optional[float] = None
     cancel_hold_progress: float = 0.0
+    in_grace_period: bool = False
+    gap_bridged: bool = False
 
 
 class ZeroStrayStrokeDrawingFsm:
     """
     Deterministic 4-tier drawing state machine for AirTeach AI.
     Accepts explicit timestamps (`t_ms`) so real-time camera streams and headless unit tests
-    produce bit-exact state transitions.
+    produce bit-exact state transitions, including:
+    - 150ms Grace Period across transient hand dropouts while drawing
+    - Velocity/Hermite Gap Bridging when tracking resumes within `max_jump_distance`
+    - Automatic fast-stroke densification + anti-stray-jump protection
     """
 
     def __init__(
@@ -143,6 +208,9 @@ class ZeroStrayStrokeDrawingFsm:
         cancel_hold_ms: float = CANCEL_HOLD_MS,
         pen_lock_cooldown_ms: float = PEN_LOCK_COOLDOWN_MS,
         undo_cooldown_ms: float = UNDO_COOLDOWN_MS,
+        grace_period_ms: float = DRAWING_GRACE_PERIOD_MS,
+        max_jump_distance: float = MAX_JUMP_DISTANCE_PX,
+        interp_step_px: float = INTERP_STEP_PX,
     ) -> None:
         self.pinch_enter = float(pinch_enter)
         self.pinch_exit = float(pinch_exit)
@@ -151,6 +219,9 @@ class ZeroStrayStrokeDrawingFsm:
         self.cancel_hold_ms = float(cancel_hold_ms)
         self.pen_lock_cooldown_ms = float(pen_lock_cooldown_ms)
         self.undo_cooldown_ms = float(undo_cooldown_ms)
+        self.grace_period_ms = max(120.0, min(200.0, float(grace_period_ms)))
+        self.max_jump_distance = max(60.0, float(max_jump_distance))
+        self.interp_step_px = max(3.0, float(interp_step_px))
 
         self.hud_mode: DrawingHudMode = DrawingHudMode.HOVER
         self.buffer = StrokeRingBuffer()
@@ -159,6 +230,8 @@ class ZeroStrayStrokeDrawingFsm:
         self._locked_until_ms: float = -1e9
         self._last_commit_ms: float = -1e9
         self._last_undo_ms: float = -1e9
+        self._last_drawing_seen_ms: float = -1e9
+        self._in_grace_dropout: bool = False
 
         self._cancel_candidate: str = ""
         self._cancel_since_ms: Optional[float] = None
@@ -173,11 +246,44 @@ class ZeroStrayStrokeDrawingFsm:
         self._locked_until_ms = -1e9
         self._last_commit_ms = -1e9
         self._last_undo_ms = -1e9
+        self._last_drawing_seen_ms = -1e9
+        self._in_grace_dropout = False
         self._cancel_candidate = ""
         self._cancel_since_ms = None
         self._undo_since_ms = None
         self._undo_fired_for_hold = False
         self._eraser_suppress_until_ms = -1e9
+
+    def _append_with_interpolation(self, x: float, y: float, t_ms: float) -> Tuple[bool, bool]:
+        """
+        Append `(x, y, t_ms)` into the stroke ring buffer.
+        Returns `(jump_overflowed, bridged)` where `jump_overflowed=True` means distance exceeded
+        `max_jump_distance` (caller must split stroke instead of drawing a stray line across screen).
+        """
+        last = self.buffer.last_point()
+        if last is None:
+            self.buffer.append(x, y, t_ms, interpolated=False)
+            return False, False
+
+        dist = ((x - last.x) ** 2 + (y - last.y) ** 2) ** 0.5
+        if dist > self.max_jump_distance:
+            return True, False
+
+        if dist > self.interp_step_px:
+            prev = self.buffer.prev_point()
+            p_before = (prev.x, prev.y) if prev is not None else None
+            pts = interpolate_bridge_points(p_before, (last.x, last.y), (x, y), max_step_px=self.interp_step_px)
+            n_pts = len(pts)
+            t_start = last.t_ms
+            for idx, (ix, iy) in enumerate(pts):
+                frac = (idx + 1) / float(n_pts)
+                it_ms = t_start + (t_ms - t_start) * frac
+                is_final = idx == n_pts - 1
+                self.buffer.append(ix, iy, it_ms, interpolated=not is_final)
+            return False, (n_pts > 1)
+
+        self.buffer.append(x, y, t_ms, interpolated=False)
+        return False, False
 
     def step(
         self,
@@ -339,18 +445,33 @@ class ZeroStrayStrokeDrawingFsm:
         undo_rem = max(0.0, self.undo_cooldown_ms - (t_ms - self._last_undo_ms))
 
         if was_drawing:
-            # Stay in DRAWING until pinch_ratio explicitly opens past PINCH_EXIT_THRESHOLD (> 0.40) or hand vanishes.
-            # Defer release briefly while an active cancel hold (OPEN_PALM/FIST) is accumulating toward 150ms.
-            should_release = (
-                not hand_present
-                or cursor_xy is None
-                or (
+            # Check transient tracking dropout (<= grace_period_ms) BEFORE releasing stroke
+            if not hand_present or cursor_xy is None:
+                if (t_ms - self._last_drawing_seen_ms) <= self.grace_period_ms:
+                    self._in_grace_dropout = True
+                    self.hud_mode = DrawingHudMode.DRAWING
+                    last_pt = self.buffer.last_point()
+                    fallback_xy = (last_pt.x, last_pt.y) if last_pt is not None else None
+                    return DrawingFsmUpdate(
+                        hud_mode=self.hud_mode,
+                        action="HOLD_GRACE",
+                        cursor_xy=fallback_xy,
+                        active_points=self.buffer.points_xy(),
+                        undo_cooldown_remaining_ms=undo_rem,
+                        pinch_ratio=pinch_ratio,
+                        cancel_hold_progress=cancel_progress,
+                        in_grace_period=True,
+                    )
+                should_release = True
+            else:
+                should_release = (
                     pinch_ratio is not None
                     and pinch_ratio > self.pinch_exit
                     and not self._cancel_candidate
                 )
-            )
+
             if should_release:
+                self._in_grace_dropout = False
                 committed = self.buffer.trim_and_extract(self.tail_trim_ms)
                 self._pinch_hold_count = 0
                 self.hud_mode = DrawingHudMode.HOVER
@@ -375,9 +496,41 @@ class ZeroStrayStrokeDrawingFsm:
                     cancel_hold_progress=cancel_progress,
                 )
 
-            # Still pinching (`pinch_ratio <= 0.40`): append live point unless FIST hold already starting to cancel
-            if self._cancel_candidate == "":
-                self.buffer.append(cursor_xy[0], cursor_xy[1], t_ms)
+            # Still pinching (`pinch_ratio <= 0.40`): bridge gap / interpolate fast motion unless cancelling
+            self._last_drawing_seen_ms = t_ms
+            bridged = False
+            if self._cancel_candidate == "" and cursor_xy is not None:
+                jump_overflow, did_bridge = self._append_with_interpolation(
+                    cursor_xy[0], cursor_xy[1], t_ms
+                )
+                bridged = did_bridge or self._in_grace_dropout
+                if jump_overflow:
+                    # Distance exceeded max_jump_distance: commit prior stroke cleanly instead of drawing a stray line
+                    self._in_grace_dropout = False
+                    committed = self.buffer.trim_and_extract(self.tail_trim_ms)
+                    self._pinch_hold_count = 0
+                    self.hud_mode = DrawingHudMode.HOVER
+                    if len(committed) >= 2:
+                        self._last_commit_ms = t_ms
+                        return DrawingFsmUpdate(
+                            hud_mode=self.hud_mode,
+                            action="COMMIT_STROKE",
+                            cursor_xy=cursor_xy,
+                            committed_points=committed,
+                            undo_cooldown_remaining_ms=undo_rem,
+                            pinch_ratio=pinch_ratio,
+                            cancel_hold_progress=cancel_progress,
+                        )
+                    return DrawingFsmUpdate(
+                        hud_mode=self.hud_mode,
+                        action="CANCEL_STROKE",
+                        cursor_xy=cursor_xy,
+                        undo_cooldown_remaining_ms=undo_rem,
+                        cancel_reason="JUMP_GUARD",
+                        pinch_ratio=pinch_ratio,
+                        cancel_hold_progress=cancel_progress,
+                    )
+            self._in_grace_dropout = False
             self.hud_mode = DrawingHudMode.DRAWING
             return DrawingFsmUpdate(
                 hud_mode=self.hud_mode,
@@ -387,6 +540,7 @@ class ZeroStrayStrokeDrawingFsm:
                 undo_cooldown_remaining_ms=undo_rem,
                 pinch_ratio=pinch_ratio,
                 cancel_hold_progress=cancel_progress,
+                gap_bridged=bridged,
             )
 
         # Currently NOT drawing (`HOVER` or `PAN_ERASE`):
@@ -400,9 +554,11 @@ class ZeroStrayStrokeDrawingFsm:
             self._pinch_hold_count += 1
             if self._pinch_hold_count >= self.pinch_enter_frames:
                 self._pinch_hold_count = 0
+                self._in_grace_dropout = False
+                self._last_drawing_seen_ms = t_ms
                 self.hud_mode = DrawingHudMode.DRAWING
                 self.buffer.clear()
-                self.buffer.append(cursor_xy[0], cursor_xy[1], t_ms)
+                self.buffer.append(cursor_xy[0], cursor_xy[1], t_ms, interpolated=False)
                 return DrawingFsmUpdate(
                     hud_mode=self.hud_mode,
                     action="BEGIN_STROKE",

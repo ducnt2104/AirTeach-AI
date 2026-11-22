@@ -458,6 +458,8 @@ class GestureFsmEngine:
     """
     Production Gesture Finite State Machine:
     `IDLE -> CANDIDATE (hold >= 5 frames / >= 150ms) -> ACTIVE -> GRACE_PERIOD (150ms) -> IDLE`
+    Includes dedicated One-Euro 3D filters for Thumb Tip (LM4) and Index Finger Tip (LM8)
+    plus palm/resolution-normalized Deadzone suppression against stationary micro-jitter.
     """
 
     def __init__(
@@ -467,11 +469,17 @@ class GestureFsmEngine:
         grace_period_sec: float = 0.150,
         min_cutoff: float = 1.35,
         beta: float = 0.015,
+        frame_size: Tuple[int, int] = (640, 480),
+        deadzone_px: float = 2.0,
     ) -> None:
         self.min_hold_frames = max(1, int(min_hold_frames))
         self.min_hold_sec = max(0.050, float(min_hold_sec))
         self.grace_period_sec = max(0.050, float(grace_period_sec))
+        self.frame_size = (max(1, int(frame_size[0])), max(1, int(frame_size[1])))
+        self.deadzone_px = max(0.0, float(deadzone_px))
         self.cursor_filter = OneEuroFilter2D(min_cutoff=min_cutoff, beta=beta)
+        self.thumb_tip_filter = OneEuroFilter3D(min_cutoff=min_cutoff, beta=beta)
+        self.index_tip_filter = OneEuroFilter3D(min_cutoff=min_cutoff, beta=beta)
         self.fsm_state = GestureFsmState.IDLE
         self.active_gesture = "IDLE"
         self.candidate_gesture = "IDLE"
@@ -479,7 +487,25 @@ class GestureFsmEngine:
         self.candidate_since_sec: Optional[float] = None
         self.last_seen_sec: Optional[float] = None
         self.last_cursor: Optional[Tuple[float, float]] = None
+        self.deadzone_cursor: Optional[Tuple[float, float]] = None
+        self.last_smoothed_pinch_ratio: Optional[float] = None
         self.prev_fingers: List[bool] = [False] * 5
+
+    def _apply_deadzone(
+        self,
+        pt: Tuple[float, float],
+        palm_scale: float,
+    ) -> Tuple[float, float]:
+        px_thresh = self.deadzone_px / float(max(self.frame_size))
+        palm_thresh = max(0.002, min(0.009, palm_scale * 0.022))
+        thresh = max(px_thresh, palm_thresh)
+        if self.deadzone_cursor is not None:
+            dx = pt[0] - self.deadzone_cursor[0]
+            dy = pt[1] - self.deadzone_cursor[1]
+            if math.hypot(dx, dy) < thresh:
+                return self.deadzone_cursor
+        self.deadzone_cursor = pt
+        return pt
 
     def update(
         self,
@@ -490,12 +516,19 @@ class GestureFsmEngine:
 
         if landmarks is not None and len(landmarks) >= 21:
             self.last_seen_sec = now
+            # Smooth critical drawing tips (Thumb Tip 4 & Index Finger Tip 8) with One-Euro 3D
+            lm_filtered = [list(p) for p in landmarks]
+            lm_filtered[THUMB_TIP] = self.thumb_tip_filter.filter(landmarks[THUMB_TIP], now)
+            lm_filtered[INDEX_TIP] = self.index_tip_filter.filter(landmarks[INDEX_TIP], now)
+
             was_pinched = self.active_gesture == "CLICK"
-            info = classify_hand_3d_vectors(landmarks, self.prev_fingers, was_pinched=was_pinched)
+            info = classify_hand_3d_vectors(lm_filtered, self.prev_fingers, was_pinched=was_pinched)
             self.prev_fingers = list(info["fingers"])  # type: ignore[arg-type]
+            self.last_smoothed_pinch_ratio = float(info["pinch_ratio"])  # type: ignore[arg-type]
+            palm_scale = float(info["palm_scale"])  # type: ignore[arg-type]
             raw_gesture = str(info["gesture"])
             raw_cursor = info["cursor_norm"]  # type: ignore[assignment]
-            smoothed_cursor = self.cursor_filter.filter(raw_cursor, now)  # type: ignore[arg-type]
+            smoothed_cursor = self._apply_deadzone((float(raw_cursor[0]), float(raw_cursor[1])), palm_scale)
             self.last_cursor = smoothed_cursor
 
             if raw_gesture == self.active_gesture:
@@ -554,7 +587,11 @@ class GestureFsmEngine:
         self.candidate_since_sec = None
         self.prev_fingers = [False] * 5
         self.last_cursor = None
+        self.deadzone_cursor = None
+        self.last_smoothed_pinch_ratio = None
         self.cursor_filter.reset()
+        self.thumb_tip_filter.reset()
+        self.index_tip_filter.reset()
         return GestureFsmSnapshot(
             fsm_state=GestureFsmState.IDLE,
             active_gesture="IDLE",
@@ -813,6 +850,9 @@ class HandGestureEngine:
                             right_out = hand_obj
 
                 # Update per-hand GestureFsmEngine (IDLE -> CANDIDATE -> ACTIVE -> GRACE_PERIOD)
+                h_px, w_px = rgb_frame.shape[:2]
+                self.left_fsm.frame_size = (max(1, int(w_px)), max(1, int(h_px)))
+                self.right_fsm.frame_size = (max(1, int(w_px)), max(1, int(h_px)))
                 now_sec = time.perf_counter()
                 left_snap = self.left_fsm.update(
                     left_out["lm"] if left_out is not None else None,  # type: ignore[arg-type]
@@ -825,6 +865,13 @@ class HandGestureEngine:
                 if left_out is not None:
                     left_out["fsm_state"] = left_snap.fsm_state.value
                     left_out["active_gesture"] = left_snap.active_gesture
+                    left_out["gesture"] = (
+                        left_snap.active_gesture
+                        if left_snap.active_gesture != "IDLE"
+                        else str(left_out.get("gesture_3d", "HOVER"))
+                    )
+                    if self.left_fsm.last_smoothed_pinch_ratio is not None:
+                        left_out["pinch_ratio"] = round(self.left_fsm.last_smoothed_pinch_ratio, 4)
                     if left_snap.cursor_norm is not None:
                         left_out["cursor_norm"] = [
                             round(left_snap.cursor_norm[0], 4),
@@ -833,6 +880,13 @@ class HandGestureEngine:
                 if right_out is not None:
                     right_out["fsm_state"] = right_snap.fsm_state.value
                     right_out["active_gesture"] = right_snap.active_gesture
+                    right_out["gesture"] = (
+                        right_snap.active_gesture
+                        if right_snap.active_gesture != "IDLE"
+                        else str(right_out.get("gesture_3d", "HOVER"))
+                    )
+                    if self.right_fsm.last_smoothed_pinch_ratio is not None:
+                        right_out["pinch_ratio"] = round(self.right_fsm.last_smoothed_pinch_ratio, 4)
                     if right_snap.cursor_norm is not None:
                         right_out["cursor_norm"] = [
                             round(right_snap.cursor_norm[0], 4),
@@ -846,3 +900,18 @@ class HandGestureEngine:
             _ = exc
 
         return left_out, right_out
+
+    def close(self) -> None:
+        """Release underlying MediaPipe HandLandmarker resources cleanly."""
+        if self.tasks_detector is not None and hasattr(self.tasks_detector, "close"):
+            try:
+                self.tasks_detector.close()
+            except Exception as exc:
+                _ = exc
+            self.tasks_detector = None
+        if self.solutions_hands is not None and hasattr(self.solutions_hands, "close"):
+            try:
+                self.solutions_hands.close()
+            except Exception as exc:
+                _ = exc
+            self.solutions_hands = None

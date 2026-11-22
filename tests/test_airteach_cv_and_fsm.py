@@ -14,7 +14,7 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 import cv2
 import numpy as np
@@ -427,3 +427,315 @@ def test_main_security_brand_svg_and_clean_whiteboard() -> None:
     worker.run()
     assert len(msgs) == 1
     assert "Offline" in msgs[0] or "GEMINI_API_KEY" in msgs[0]
+
+
+# =============================================================================
+# 5. UPGRADED VISION, STROKE COMPLETION, 2-STEP UNDO & RESILIENT GEMINI CLIENT
+# =============================================================================
+def test_backlit_and_normal_fastpath_preprocessing() -> None:
+    # Backlit scene: bright window glare (p95 > 235) + dark foreground shadows (p5 < 48)
+    backlit = np.full((180, 240, 3), 24, dtype=np.uint8)
+    backlit[:, 140:] = 250
+    cv2.putText(backlit, "A", (40, 110), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (55, 55, 55), 3)
+    enh_b, diag_b = preprocess_adaptive_frame(
+        backlit, is_rgb=False, quality_gate_min=5.0, auto_lightweight_normal=True
+    )
+    assert diag_b.lighting_mode == "BACKLIT"
+    assert diag_b.gamma_applied < 1.0
+    assert float(np.mean(enh_b[:, :120])) > float(np.mean(backlit[:, :120]))
+
+    # Balanced lighting scene: fast path returns cleanly when auto_lightweight_normal=True
+    normal = np.full((160, 220, 3), 128, dtype=np.uint8)
+    normal[:, :60] = 60
+    normal[:, 160:] = 200
+    cv2.line(normal, (70, 30), (150, 140), (185, 185, 185), 3)
+    enh_n, diag_n = preprocess_adaptive_frame(
+        normal, is_rgb=False, quality_gate_min=5.0, auto_lightweight_normal=True
+    )
+    assert diag_n.lighting_mode == "NORMAL"
+    assert diag_n.gamma_applied == 1.0
+    assert enh_n.shape == normal.shape
+
+
+def test_one_euro_tip_smoothing_and_deadzone_fsm() -> None:
+    from cv_engine.hand_gesture import GestureFsmEngine, GestureFsmState  # noqa: E402
+
+    fsm = GestureFsmEngine(
+        min_hold_frames=4,
+        min_hold_sec=0.120,
+        grace_period_sec=0.150,
+        frame_size=(640, 480),
+        deadzone_px=3.0,
+    )
+    base_draw = _make_3d_hand_landmarks("PINCH_DRAW")
+
+    # 1. Brief 1-frame noisy flicker to OPEN_PALM/HOVER must NOT promote from IDLE to ACTIVE
+    hover_lm = _make_3d_hand_landmarks("INDEX_HOVER")
+    snap_flicker = fsm.update(hover_lm, t_sec=0.010)
+    assert snap_flicker.fsm_state != GestureFsmState.ACTIVE
+
+    # 2. Holding PINCH across >= 4 frames and >= 120ms promotes to ACTIVE; let tip converge
+    t = 0.050
+    for _ in range(12):
+        snap = fsm.update(base_draw, t_sec=t)
+        t += 0.035
+    assert snap.fsm_state == GestureFsmState.ACTIVE
+    c0 = snap.cursor_norm
+    assert c0 is not None
+
+    # 3. Stationary micro-tremor (< ~2px) is suppressed by normalized deadzone
+    jitter_lm = [list(pt) for pt in base_draw]
+    jitter_lm[8][0] += 0.0005
+    jitter_lm[8][1] -= 0.0004
+    snap_jitter = fsm.update(jitter_lm, t_sec=t)
+    assert snap_jitter.cursor_norm == c0
+
+
+def test_drawing_fsm_grace_period_gap_bridging_and_max_jump_guard() -> None:
+    fsm = ZeroStrayStrokeDrawingFsm()
+
+    # Enter DRAWING via 3 pinch frames
+    for idx in range(3):
+        upd = fsm.step(
+            idx * 20.0,
+            hand_present=True,
+            cursor_xy=(80.0 + idx * 8.0, 120.0),
+            pinch_ratio=0.19,
+            pose_tag="PINCH",
+        )
+    assert upd.hud_mode == DrawingHudMode.DRAWING
+    assert upd.action == "BEGIN_STROKE"
+
+    # Brief occlusion (<= 150ms Grace Period) retains DRAWING via HOLD_GRACE
+    grace = fsm.step(
+        110.0,
+        hand_present=False,
+        cursor_xy=None,
+        pinch_ratio=None,
+        pose_tag="IDLE",
+    )
+    assert grace.hud_mode == DrawingHudMode.DRAWING
+    assert grace.action == "HOLD_GRACE"
+    assert grace.in_grace_period is True
+
+    # Reacquire within max_jump_distance (<= 260px): velocity bridge fills intermediate points smoothly
+    resumed = fsm.step(
+        145.0,
+        hand_present=True,
+        cursor_xy=(216.0, 120.0),
+        pinch_ratio=0.21,
+        pose_tag="PINCH",
+    )
+    assert resumed.hud_mode == DrawingHudMode.DRAWING
+    assert resumed.action == "APPEND_POINT"
+    assert resumed.gap_bridged is True
+    assert len(resumed.active_points) >= 12
+
+    # Release -> tail cutoff trims last ~105ms but keeps main bridged body
+    fsm.step(300.0, hand_present=True, cursor_xy=(225.0, 120.0), pinch_ratio=0.21, pose_tag="PINCH")
+    fsm.step(340.0, hand_present=True, cursor_xy=(230.0, 190.0), pinch_ratio=0.22, pose_tag="PINCH")
+    commit = fsm.step(360.0, hand_present=True, cursor_xy=(235.0, 210.0), pinch_ratio=0.50, pose_tag="HOVER")
+    assert commit.action == "COMMIT_STROKE"
+    assert len(commit.committed_points) >= 6
+    assert max(y for (_, y) in commit.committed_points) < 160.0
+
+    # Large jump (> 260px) while drawing must split cleanly via JUMP_GUARD instead of crossing screen
+    for idx in range(3):
+        fsm.step(500.0 + idx * 20.0, hand_present=True, cursor_xy=(60.0 + idx * 5.0, 80.0), pinch_ratio=0.20, pose_tag="PINCH")
+    jump = fsm.step(600.0, hand_present=True, cursor_xy=(760.0, 520.0), pinch_ratio=0.20, pose_tag="PINCH")
+    assert jump.hud_mode == DrawingHudMode.HOVER
+    assert jump.cancel_reason == "JUMP_GUARD"
+
+
+def test_smartboard_canvas_2step_ctrl_z_undo_and_snapshot_compression() -> None:
+    import main  # noqa: E402
+    from PySide6.QtCore import QPointF  # noqa: E402
+    from PySide6.QtWidgets import QApplication  # noqa: E402
+    from cv_engine.gemini_client import compress_snapshot_png  # noqa: E402
+
+    _ = QApplication.instance() or QApplication([])
+    canvas = main.SmartboardCanvas()
+    canvas.smart_shape_enabled = True
+    canvas.hold_to_snap_350ms = False
+
+    # Draw a noisy circle & finalize -> snaps to geometric CIRCLE
+    cx, cy, r = 240.0, 220.0, 65.0
+    pts = []
+    for i in range(42):
+        th = 2.0 * math.pi * i / 41.0
+        jitter = 1.5 * math.sin(th * 5.0)
+        pts.append(QPointF(cx + (r + jitter) * math.cos(th), cy + (r + jitter) * math.sin(th)))
+    canvas.current_stroke = pts
+    canvas._finalize_current_stroke(now_ms=1000.0)
+    assert len(canvas.strokes) == 1
+    assert canvas.strokes[0]["is_beautified"] is True
+    assert canvas.strokes[0]["shape_type"] == "CIRCLE"
+
+    # Ctrl+Z Step 1: reverts geometric shape back to smoothed hand-drawn stroke
+    canvas.undo()
+    assert len(canvas.strokes) == 1
+    assert canvas.strokes[0]["is_beautified"] is False
+    assert canvas.strokes[0]["shape_type"] == "FREEHAND"
+
+    # Redo restores snapped geometric shape cleanly
+    canvas.redo()
+    assert len(canvas.strokes) == 1
+    assert canvas.strokes[0]["is_beautified"] is True
+    assert canvas.strokes[0]["shape_type"] == "CIRCLE"
+
+    # Ctrl+Z x2 deletes the stroke completely
+    canvas.undo()
+    assert canvas.strokes[0]["is_beautified"] is False
+    canvas.undo()
+    assert len(canvas.strokes) == 0
+
+    # Snapshot compression caps >1024px PNG down proportionally
+    large_img = np.full((1200, 1800, 3), 240, dtype=np.uint8)
+    ok, encoded = cv2.imencode(".png", large_img)
+    assert ok
+    compressed = compress_snapshot_png(encoded.tobytes(), max_dim=1024)
+    assert compressed is not None
+    dec = cv2.imdecode(np.frombuffer(compressed, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert dec is not None
+    assert max(dec.shape[:2]) == 1024
+
+
+def test_gemini_client_layered_keys_masking_health_check_backoff_and_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cv_engine.gemini_client import (  # noqa: E402
+        ApiConnectionStatus,
+        ResilientGeminiClient,
+        clear_ui_api_key,
+        mask_api_key,
+        resolve_api_key_layered,
+        save_ui_api_settings,
+    )
+
+    assert mask_api_key("AIzaSyD1234567890abcd") == "AIza••••••abcd"
+    assert mask_api_key("") == ""
+
+    settings_file = tmp_path / "api_settings.json"
+    env_file = tmp_path / ".env"
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    # 1. Test Connection before any key is configured -> UNCONFIGURED
+    res_unconf = ResilientGeminiClient().test_connection(api_key="")
+    assert res_unconf.status == ApiConnectionStatus.UNCONFIGURED
+
+    env_file.write_text("GEMINI_API_KEY=AIzaDotEnvSecret1234\n", encoding="utf-8")
+
+    # Layer (2) .env used when no UI key saved
+    res_env = resolve_api_key_layered(settings_path=settings_file, env_path=env_file)
+    assert res_env.source == "env"
+    assert res_env.key == "AIzaDotEnvSecret1234"
+    assert res_env.masked == "AIza••••••1234"
+
+    # Layer (1) UI key overrides .env
+    save_ui_api_settings(ui_api_key="AIzaUiOverrideKey9876", settings_path=settings_file)
+    res_ui = resolve_api_key_layered(settings_path=settings_file, env_path=env_file)
+    assert res_ui.source == "ui"
+    assert res_ui.key == "AIzaUiOverrideKey9876"
+
+    # Clear UI key falls back cleanly to .env
+    clear_ui_api_key(settings_path=settings_file)
+    res_after_del = resolve_api_key_layered(settings_path=settings_file, env_path=env_file)
+    assert res_after_del.source == "env"
+
+    class FakeResp:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    # 2. Live health check with 404 fallback -> primary fails 404, secondary returns OK
+    calls: List[Tuple[str, Any]] = []
+
+    class FakeModels404ThenOk:
+        def generate_content(self, **kwargs):
+            calls.append((kwargs["model"], kwargs.get("config")))
+            if kwargs["model"] == "gemini-3.8-flash":
+                raise RuntimeError("404 NOT_FOUND: model not found")
+            return FakeResp("OK")
+
+    class FakeClient404:
+        models = FakeModels404ThenOk()
+
+    hc_ok = ResilientGeminiClient(client_factory=lambda _k: FakeClient404()).test_connection(
+        api_key="AIzaFakeKey1234567890",
+        primary_model="gemini-3.8-flash",
+        fallback_models=("gemini-3.5-flash",),
+    )
+    assert hc_ok.status == ApiConnectionStatus.CONNECTED
+    assert hc_ok.model_used == "gemini-3.5-flash"
+
+    # 3. HTTP 401/403 Auth error -> fails fast without wasting retries
+    auth_calls = 0
+
+    class FakeModels401:
+        def generate_content(self, **kwargs):
+            nonlocal auth_calls
+            auth_calls += 1
+            raise RuntimeError("403 PERMISSION_DENIED: API_KEY_INVALID")
+
+    class FakeClient401:
+        models = FakeModels401()
+
+    r_auth = ResilientGeminiClient(client_factory=lambda _k: FakeClient401()).generate_multimodal(
+        api_key="AIzaBadKey000000",
+        prompt="Hi",
+        primary_model="gemini-3.8-flash",
+        fallback_models=("gemini-3.5-flash",),
+    )
+    assert not r_auth.ok
+    assert auth_calls == 1
+    assert "API Key" in r_auth.error_message_vi
+
+    # 4. HTTP 429 Quota -> Exponential Backoff [1.0, 2.0, 4.0] then succeeds cleanly
+    sleeps: List[float] = []
+    attempt_count = 0
+
+    class FakeModels429ThenOk:
+        def generate_content(self, **kwargs):
+            nonlocal attempt_count
+            attempt_count += 1
+            if attempt_count <= 3:
+                raise RuntimeError("429 RESOURCE_EXHAUSTED: Quota exceeded")
+            return FakeResp("Đáp án x = 2")
+
+    class FakeClient429:
+        models = FakeModels429ThenOk()
+
+    r_429 = ResilientGeminiClient(
+        client_factory=lambda _k: FakeClient429(),
+        sleep_fn=sleeps.append,
+    ).generate_multimodal(
+        api_key="AIzaQuotaTest1234",
+        prompt="Giải phương trình",
+        primary_model="gemini-3.8-flash",
+        fallback_models=("gemini-3.5-flash",),
+    )
+    assert r_429.ok
+    assert r_429.text == "Đáp án x = 2"
+    assert sleeps == [1.0, 2.0, 4.0]
+
+    # 5. Network failure never crashes
+    class FakeModelsNetErr:
+        def generate_content(self, **kwargs):
+            raise ConnectionError("NameResolutionError: Failed to resolve generativelanguage.googleapis.com")
+
+    class FakeClientNet:
+        models = FakeModelsNetErr()
+
+    r_net = ResilientGeminiClient(
+        client_factory=lambda _k: FakeClientNet(),
+        sleep_fn=lambda _s: None,
+    ).generate_multimodal(
+        api_key="AIzaOfflineTest1234",
+        prompt="Test offline safety",
+        primary_model="gemini-3.8-flash",
+        fallback_models=(),
+    )
+    assert not r_net.ok
+    assert "mạng" in r_net.error_message_vi.lower()
+

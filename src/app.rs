@@ -16,7 +16,8 @@ use crate::ai::face_auth::{
     ENROLL_ANGLE_PROMPTS, MAX_FACE_ENROLL_SAMPLES, MIN_FACE_ENROLL_SAMPLES, SFACE_EMBEDDING_DIM,
 };
 use crate::ai::gemini_chat::{
-    ChatMessage, ChatStreamEvent, GeminiChatClient, PedagogicalAnalysisMode, SubjectAssistantMode,
+    mask_api_key, ApiConnectionStatus, ChatMessage, ChatStreamEvent, GeminiChatClient,
+    GeminiHealthCheckResult, PedagogicalAnalysisMode, SubjectAssistantMode,
     PEDAGOGICAL_INSPECTOR_SYSTEM_PROMPT,
 };
 use crate::ai::latex_engine::{LatexEngine, LatexRecognitionResult};
@@ -32,7 +33,9 @@ use crate::core::gestures::{
     RightTransitionEvent, UNDO_COOLDOWN_MS,
 };
 use crate::core::hand_tracker::TwoHandFrame;
-use crate::core::stroke_engine::{Point2D, SnappedShape, StrokeEngine};
+use crate::core::stroke_engine::{
+    interpolate_bridge_points_2d, Point2D, SnappedShape, StrokeEngine, DEFAULT_INTERP_STEP_PX,
+};
 use crate::ui::brand::{render_about_modal, ui_brand_logo, ThemeMode};
 use crate::ui::toolbar_view::{
     ALERT_ROSE, BG_DARK, BORDER_SLATE, PRIMARY_INDIGO, SECONDARY_TEAL, SURFACE_DARK, TEXT_LIGHT,
@@ -200,6 +203,7 @@ pub struct AirTeachApp {
     pub stroke_engine: StrokeEngine,
     pub strokes: Vec<PersistedStroke>,
     pub redo_strokes: Vec<PersistedStroke>,
+    pub redo_replace_flags: Vec<bool>,
     pub annotations: Vec<BoardTextAnnotation>,
     pub active_stroke_raw: Vec<Point2D>,
     pub finalize_scratch_points: Vec<Point2D>,
@@ -209,6 +213,7 @@ pub struct AirTeachApp {
     pub last_snapped_shape_index: Option<usize>,
     pub last_snapped_toast_anchor: Option<Point2D>,
     pub last_snapped_toast_until_ms: f64,
+    prev_board_hand_present: bool,
 
     pub laser_pointer_board: Option<Point2D>,
     pub selection_anchor_board: Option<Point2D>,
@@ -221,6 +226,11 @@ pub struct AirTeachApp {
 
     // Gemini Multimodal Streaming Chat Assistant
     pub gemini_client: GeminiChatClient,
+    pub api_connection_status: ApiConnectionStatus,
+    pub api_status_detail_vi: String,
+    pub api_test_in_flight: bool,
+    api_health_tx: Sender<GeminiHealthCheckResult>,
+    api_health_rx: Receiver<GeminiHealthCheckResult>,
     pub subject_mode: SubjectAssistantMode,
     pub chat_drawer_open: bool,
     pub chat_messages: Vec<ChatMessage>,
@@ -356,6 +366,7 @@ impl AirTeachApp {
             .expect("Failed to spawn OCR/LaTeX background thread");
 
         let (chat_event_tx, chat_event_rx) = unbounded::<ChatStreamEvent>();
+        let (api_health_tx, api_health_rx) = unbounded::<GeminiHealthCheckResult>();
         let (stt_event_tx, stt_event_rx) = unbounded::<Result<TranscriptSegmentEvent, String>>();
 
         let mut stroke_engine = StrokeEngine::new(
@@ -493,6 +504,7 @@ impl AirTeachApp {
             stroke_engine,
             strokes: Vec::with_capacity(256),
             redo_strokes: Vec::with_capacity(128),
+            redo_replace_flags: Vec::with_capacity(128),
             annotations: Vec::with_capacity(64),
             active_stroke_raw: Vec::with_capacity(1024),
             finalize_scratch_points: Vec::with_capacity(1024),
@@ -502,6 +514,7 @@ impl AirTeachApp {
             last_snapped_shape_index: None,
             last_snapped_toast_anchor: None,
             last_snapped_toast_until_ms: -1e9,
+            prev_board_hand_present: false,
             laser_pointer_board: None,
             selection_anchor_board: None,
             selection_rect_board: None,
@@ -509,6 +522,11 @@ impl AirTeachApp {
             vision_req_tx,
             vision_resp_rx,
             gemini_client,
+            api_connection_status: ApiConnectionStatus::Unconfigured,
+            api_status_detail_vi: String::new(),
+            api_test_in_flight: false,
+            api_health_tx,
+            api_health_rx,
             subject_mode: SubjectAssistantMode::Math,
             chat_drawer_open: true,
             chat_messages: vec![welcome_msg],
@@ -773,6 +791,12 @@ impl AirTeachApp {
             self.hud_right_trail.clear();
         }
 
+        if !pkt.camera_active {
+            self.camera_texture = None;
+            self.camera_raw_texture = None;
+            return;
+        }
+
         let w = pkt.width as usize;
         let h = pkt.height as usize;
         let num_px = w * h;
@@ -927,9 +951,10 @@ impl AirTeachApp {
             let mouse_button_down = ctx.input(|i| i.pointer.any_down());
 
             if self.camera_using_hardware {
-                let state = self.gesture_fsm.update(
+                let state = self.gesture_fsm.update_at(
                     self.last_two_hand_frame.left_hand.as_ref(),
                     self.last_two_hand_frame.right_hand.as_ref(),
+                    self.app_epoch.elapsed().as_secs_f64(),
                 );
                 self.gesture_state = state;
                 if !mouse_button_down {
@@ -963,14 +988,55 @@ impl AirTeachApp {
             return false;
         }
         self.last_undo_ms = now_ms;
+        if let Some(top) = self.strokes.last_mut() {
+            if top.snapped_shape.is_geometric() && top.raw_points.len() >= 2 {
+                // Step 1 Ctrl+Z: revert geometric snap back to raw hand-drawn stroke
+                self.redo_strokes.push(top.clone());
+                self.redo_replace_flags.push(true);
+
+                let mut smooth = Vec::with_capacity(top.raw_points.len() * 4);
+                let saved_snap = self.stroke_engine.auto_shape_snap;
+                self.stroke_engine.auto_shape_snap = false;
+                let _ = self.stroke_engine.finalize_stroke(&top.raw_points, &mut smooth);
+                self.stroke_engine.auto_shape_snap = saved_snap;
+                top.display_points = if smooth.len() >= 2 {
+                    smooth
+                } else {
+                    top.raw_points.clone()
+                };
+                top.snapped_shape = SnappedShape::Freehand;
+                self.last_snapped_shape_index = None;
+                self.last_snapped_toast_anchor = None;
+                self.last_snapped_shape_banner =
+                    "Đã hoàn tác nắn hình về nét gốc (Ctrl+Z lần nữa để xóa nét)".to_string();
+                return true;
+            }
+        }
         if let Some(last) = self.strokes.pop() {
             self.redo_strokes.push(last);
+            self.redo_replace_flags.push(false);
             self.last_snapped_shape_index = None;
             self.last_snapped_toast_anchor = None;
             self.last_snapped_shape_banner = "Đã hoàn tác nét vẽ gần nhất".to_string();
             return true;
         }
         false
+    }
+
+    pub fn perform_redo(&mut self) -> bool {
+        let Some(restored) = self.redo_strokes.pop() else {
+            return false;
+        };
+        let replace_top = self.redo_replace_flags.pop().unwrap_or(false);
+        if replace_top && !self.strokes.is_empty() {
+            let last_idx = self.strokes.len() - 1;
+            self.strokes[last_idx] = restored;
+            self.last_snapped_shape_banner = "Đã làm lại hình đã nắn".to_string();
+        } else {
+            self.strokes.push(restored);
+            self.last_snapped_shape_banner = "Đã làm lại nét vẽ".to_string();
+        }
+        true
     }
 
     pub fn revert_last_snapped_shape_to_raw(&mut self) {
@@ -1042,7 +1108,7 @@ impl AirTeachApp {
             }
         }
 
-        // Compute raw Right-hand landmarks, 3D pose, pinch_ratio, and mapped board coordinates
+        // Compute raw Right-hand landmarks, 3D pose, pinch_ratio, and One-Euro filtered board coordinates
         let right_hand_opt = self.last_two_hand_frame.right_hand.as_ref();
         let hand_present = !state.no_hand_idle && right_hand_opt.is_some();
         let pinch_ratio = right_hand_opt.map(|rh| compute_pinch_ratio(&rh.landmarks));
@@ -1050,7 +1116,7 @@ impl AirTeachApp {
             .map(|rh| classify_right_hand_raw(rh).0)
             .unwrap_or(RightGesture::Idle);
 
-        let board_pt_opt = state.right_cursor_norm.map(|r_norm| {
+        let raw_board_pt_opt = state.right_cursor_norm.map(|r_norm| {
             let margin = 0.12_f32;
             let mapped_x = ((r_norm.x - margin) / (1.0 - 2.0 * margin)).clamp(0.0, 1.0);
             let mapped_y = ((r_norm.y - margin) / (1.0 - 2.0 * margin)).clamp(0.0, 1.0);
@@ -1061,11 +1127,23 @@ impl AirTeachApp {
                 (screen_y - canvas_rect.min.y - self.canvas_pan.y) / self.canvas_zoom,
             )
         });
-        if let Some(bp) = board_pt_opt {
-            self.laser_pointer_board = Some(bp);
-        }
+        let t_sec = self.app_epoch.elapsed().as_secs_f64();
+        let board_pt_opt = if let Some(raw_bp) = raw_board_pt_opt {
+            if !self.prev_board_hand_present
+                && self.drawing_fsm.hud_mode != DrawingHudMode::Drawing
+            {
+                self.stroke_engine.reset_filter();
+            }
+            let smoothed = self.stroke_engine.filter_point(raw_bp, t_sec);
+            self.laser_pointer_board = Some(smoothed);
+            self.prev_board_hand_present = hand_present;
+            Some(smoothed)
+        } else {
+            self.prev_board_hand_present = false;
+            None
+        };
 
-        let t_ms = self.app_epoch.elapsed().as_secs_f64() * 1000.0;
+        let t_ms = t_sec * 1000.0;
         let step_res = self.drawing_fsm.step(
             t_ms,
             hand_present,
@@ -1081,19 +1159,18 @@ impl AirTeachApp {
         self.pen_lock_remaining_ms = step_res.cooldown_remaining_ms;
 
         match step_res.action {
-            DrawingFsmAction::BeginStroke => {
-                if let Some(bp) = board_pt_opt {
-                    self.begin_board_stroke(bp);
+            DrawingFsmAction::BeginStroke | DrawingFsmAction::AppendPoint => {
+                self.active_stroke_raw = self.drawing_fsm.active_points();
+                self.stroke_latency_ms = self.last_two_hand_frame.inference_ms;
+                if step_res.gap_bridged {
+                    self.last_snapped_shape_banner =
+                        "Đã nội suy nối liền nét tự động (Gap Bridging)".to_string();
                 }
             }
-            DrawingFsmAction::AppendPoint => {
-                if let Some(bp) = board_pt_opt {
-                    if self.active_stroke_raw.is_empty() {
-                        self.begin_board_stroke(bp);
-                    } else {
-                        self.append_board_stroke(bp);
-                    }
-                }
+            DrawingFsmAction::HoldGrace => {
+                self.active_stroke_raw = self.drawing_fsm.active_points();
+                self.last_snapped_shape_banner =
+                    "Đang giữ trạng thái vẽ (Chờ nhận lại tay <150ms)...".to_string();
             }
             DrawingFsmAction::CommitStrokeTrimmed(trimmed_pts) => {
                 self.active_stroke_raw = trimmed_pts;
@@ -1152,11 +1229,29 @@ impl AirTeachApp {
         let t_sec = self.app_epoch.elapsed().as_secs_f64();
         let smoothed = self.stroke_engine.filter_point(raw_pt, t_sec);
         if let Some(&last) = self.active_stroke_raw.last() {
-            if last.dist_sq(smoothed) < 0.6 {
+            let d = last.dist(smoothed);
+            if d < 0.78 {
                 return;
             }
+            if d > DEFAULT_INTERP_STEP_PX {
+                let p_before = if self.active_stroke_raw.len() >= 2 {
+                    Some(self.active_stroke_raw[self.active_stroke_raw.len() - 2])
+                } else {
+                    None
+                };
+                let pts = interpolate_bridge_points_2d(
+                    p_before,
+                    last,
+                    smoothed,
+                    DEFAULT_INTERP_STEP_PX,
+                );
+                self.active_stroke_raw.extend(pts);
+            } else {
+                self.active_stroke_raw.push(smoothed);
+            }
+        } else {
+            self.active_stroke_raw.push(smoothed);
         }
-        self.active_stroke_raw.push(smoothed);
         self.stroke_latency_ms =
             self.last_two_hand_frame.inference_ms + t0.elapsed().as_secs_f32() * 1000.0;
     }
@@ -1189,6 +1284,7 @@ impl AirTeachApp {
         };
 
         self.redo_strokes.clear();
+        self.redo_replace_flags.clear();
         let new_idx = self.strokes.len();
         let anchor_pt = self
             .finalize_scratch_points
@@ -1328,6 +1424,8 @@ impl AirTeachApp {
             self.camera_overexposed_ratio = 0.0;
             self.camera_quality_gate_passed = false;
             self.camera_resolution_label = "Standby (Camera Off)".to_string();
+            self.camera_texture = None;
+            self.camera_raw_texture = None;
             self.last_two_hand_frame = TwoHandFrame::default();
             self.last_face_bbox_norm = None;
             self.last_face_eyes_norm = None;
@@ -1744,13 +1842,28 @@ impl AirTeachApp {
             }
         }
 
-        let mut png_bytes = Vec::with_capacity((w * h) as usize);
+        let (final_img, out_w, out_h) = if w.max(h) > 1024 {
+            let scale = 1024.0_f32 / (w.max(h) as f32);
+            let nw = ((w as f32 * scale).round() as u32).max(1);
+            let nh = ((h as f32 * scale).round() as u32).max(1);
+            let resized = image::imageops::resize(
+                &img,
+                nw,
+                nh,
+                image::imageops::FilterType::Triangle,
+            );
+            (resized, nw, nh)
+        } else {
+            (img, w, h)
+        };
+
+        let mut png_bytes = Vec::with_capacity((out_w * out_h) as usize);
         let encoder = PngEncoder::new(&mut png_bytes);
         if encoder
-            .write_image(img.as_raw(), w, h, ColorType::Rgba8.into())
+            .write_image(final_img.as_raw(), out_w, out_h, ColorType::Rgba8.into())
             .is_ok()
         {
-            Some((BASE64.encode(png_bytes), w, h))
+            Some((BASE64.encode(png_bytes), out_w, out_h))
         } else {
             None
         }
@@ -1918,6 +2031,10 @@ impl AirTeachApp {
                         msg.text.push_str(&delta);
                     }
                 }
+                ChatStreamEvent::ApiStatusUpdated { status, message } => {
+                    self.api_connection_status = status;
+                    self.api_status_detail_vi = message;
+                }
                 ChatStreamEvent::Completed { .. } => {
                     self.chat_streaming_active = false;
                 }
@@ -1941,6 +2058,8 @@ impl AirTeachApp {
                     error,
                 } => {
                     self.chat_streaming_active = false;
+                    self.api_connection_status = ApiConnectionStatus::Error;
+                    self.api_status_detail_vi = error.clone();
                     if let Some(msg) = self.chat_messages.get_mut(message_index) {
                         if msg.text.is_empty() {
                             msg.text = format!("⚠ {error}");
@@ -1950,6 +2069,77 @@ impl AirTeachApp {
                     }
                 }
             }
+        }
+    }
+
+    pub fn trigger_gemini_health_check(&mut self) {
+        if self.api_test_in_flight {
+            return;
+        }
+        let draft = self.api_key_edit_buffer.trim();
+        let stored = self.storage.get_decrypted_api_key(&self.config);
+        let effective = if !draft.is_empty() {
+            draft.to_string()
+        } else {
+            stored
+        };
+        let (resolved, _src) = GeminiChatClient::resolve_api_key_with_source(&effective);
+        if resolved.is_empty() {
+            self.api_connection_status = ApiConnectionStatus::Unconfigured;
+            self.api_status_detail_vi =
+                "Chưa có API Key để kiểm tra. Hãy nhập Key hoặc đặt trong `.env`.".to_string();
+            self.settings_status_banner = self.api_status_detail_vi.clone();
+            return;
+        }
+        self.api_test_in_flight = true;
+        self.api_status_detail_vi = "Đang gọi Gemini generateContent kiểm tra thật...".to_string();
+        self.settings_status_banner = self.api_status_detail_vi.clone();
+        self.gemini_client.test_connection(
+            effective,
+            self.config.gemini_model.clone(),
+            self.api_health_tx.clone(),
+        );
+    }
+
+    pub fn save_ui_gemini_api_key(&mut self) {
+        let trimmed = self.api_key_edit_buffer.trim().to_string();
+        if trimmed.is_empty() {
+            self.api_status_detail_vi = "API Key trống. Dùng [Xóa Key] để xóa cài đặt.".to_string();
+            self.settings_status_banner = self.api_status_detail_vi.clone();
+            return;
+        }
+        self.storage.set_encrypted_api_key(&mut self.config, &trimmed);
+        self.api_connection_status = ApiConnectionStatus::Unconfigured;
+        self.api_status_detail_vi = format!(
+            "Đã mã hóa AES-256-GCM và lưu Key ({}). Nhấn [Test API] để xác thực.",
+            mask_api_key(&trimmed)
+        );
+        self.settings_status_banner = format!("[OK] {}", self.api_status_detail_vi);
+    }
+
+    pub fn clear_ui_gemini_api_key(&mut self) {
+        self.storage.clear_encrypted_api_key(&mut self.config);
+        self.api_key_edit_buffer.clear();
+        self.api_connection_status = ApiConnectionStatus::Unconfigured;
+        let (fallback_key, _src) = GeminiChatClient::resolve_api_key_with_source("");
+        self.api_status_detail_vi = if fallback_key.is_empty() {
+            "Đã xóa API Key khỏi cấu hình UI cục bộ.".to_string()
+        } else {
+            "Đã xóa Key UI Settings. Hệ thống dùng Key dự phòng từ `.env`/ENV.".to_string()
+        };
+        self.settings_status_banner = self.api_status_detail_vi.clone();
+    }
+
+    fn poll_gemini_health_events(&mut self) {
+        while let Ok(res) = self.api_health_rx.try_recv() {
+            self.api_test_in_flight = false;
+            self.api_connection_status = res.status;
+            self.api_status_detail_vi = res.message_vi.clone();
+            self.settings_status_banner = if res.ok {
+                format!("[OK] {}", res.message_vi)
+            } else {
+                format!("[LỖI] {}", res.message_vi)
+            };
         }
     }
 
@@ -2557,6 +2747,7 @@ impl eframe::App for AirTeachApp {
         self.poll_camera_and_gestures(ctx);
         self.poll_vision_worker_results();
         self.poll_chat_stream_events();
+        self.poll_gemini_health_events();
         self.poll_lecture_replay_and_subtitles();
 
         if self.calibration_modal_open {

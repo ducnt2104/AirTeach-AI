@@ -487,3 +487,15 @@ class ArcFace512Extractor:
             "face_emb": face_emb_128,
             "face_emb_512": face_emb_512,
         }
+
+    def close(self) -> None:
+        """Release MediaPipe FaceDetector and ONNX Runtime resources cleanly."""
+        if self.face_detector is not None and hasattr(self.face_detector, "close"):
+            try:
+                self.face_detector.close()
+            except Exception as exc:
+                _ = exc
+            self.face_detector = None
+        self.ort_session = None
+        self.arcface_dnn = None
+        self.sface_recognizer = None

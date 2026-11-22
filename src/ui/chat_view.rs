@@ -6,7 +6,10 @@
 //!   * `[2. Tóm Tắt & Tạo Trắc Nghiệm]`
 //!   * `[3. Hỏi Đáp Sư Phạm]`
 
-use crate::ai::gemini_chat::{GeminiChatClient, PedagogicalAnalysisMode, SubjectAssistantMode};
+use crate::ai::gemini_chat::{
+    mask_api_key, ApiConnectionStatus, GeminiChatClient, PedagogicalAnalysisMode,
+    SubjectAssistantMode, DEFAULT_GEMINI_MODEL,
+};
 use crate::app::AirTeachApp;
 use crate::ui::brand::ThemeMode;
 use crate::utils::document_loader::DocumentLoader;
@@ -14,11 +17,12 @@ use egui::{Color32, FontId, RichText, Rounding, ScrollArea, Stroke, Vec2};
 
 fn format_model_badge(model_id: &str) -> String {
     match model_id.trim() {
+        "gemini-3.8-flash" => "Gemini 3.8 Flash".to_string(),
         "gemini-3.5-flash" => "Gemini 3.5 Flash".to_string(),
+        "gemini-3.5-flash-lite" => "Gemini 3.5 Flash-Lite".to_string(),
         "gemini-2.5-flash" => "Gemini 2.5 Flash".to_string(),
-        "gemini-2.0-flash" => "Gemini 2.0 Flash".to_string(),
         other if !other.is_empty() => other.to_string(),
-        _ => "Gemini 3.5 Flash".to_string(),
+        _ => DEFAULT_GEMINI_MODEL.to_string(),
     }
 }
 
@@ -30,10 +34,9 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
     let palette = app.config.theme_mode.palette();
     let active_model_id = GeminiChatClient::resolve_model_id(&app.config.gemini_model);
     let model_badge = format_model_badge(&active_model_id);
-    let has_env_or_cfg_key = !GeminiChatClient::resolve_api_key(
-        &app.storage.get_decrypted_api_key(&app.config),
-    )
-    .is_empty();
+    let saved_plain_key = app.storage.get_decrypted_api_key(&app.config);
+    let (resolved_key, key_source) = GeminiChatClient::resolve_api_key_with_source(&saved_plain_key);
+    let has_env_or_cfg_key = !resolved_key.is_empty();
 
     egui::SidePanel::right("airteach_modern_ai_copilot_panel")
         .resizable(false)
@@ -46,9 +49,18 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
         )
         .show(ctx, |ui| {
             // =========================================================================
-            // 1. HEADER, MODEL BADGE & COMPACT API KEY SETUP
+            // 1. HEADER, 3-STATE CONNECTION BADGE & COMPACT API KEY SETUP
             // =========================================================================
             let has_saved_key = !app.config.encrypted_api_key_b64.trim().is_empty();
+            let (badge_text, badge_color) = if !has_env_or_cfg_key {
+                ("Chưa cấu hình", palette.text_muted)
+            } else {
+                match app.api_connection_status {
+                    ApiConnectionStatus::Connected => ("Đã kết nối", palette.success),
+                    ApiConnectionStatus::Error => ("Lỗi Key/Quota", palette.danger),
+                    ApiConnectionStatus::Unconfigured => ("Chưa xác thực", palette.warning),
+                }
+            };
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(
@@ -58,9 +70,10 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                             .color(palette.text_primary),
                     );
                     ui.label(
-                        RichText::new(format!("{} • {}", model_badge, if has_env_or_cfg_key { "Sẵn sàng" } else { "Offline / Chưa Key" }))
+                        RichText::new(format!("{} • {}", model_badge, badge_text))
                             .font(FontId::proportional(10.5))
-                            .color(if has_env_or_cfg_key { palette.secondary } else { palette.warning }),
+                            .strong()
+                            .color(badge_color),
                     );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -78,13 +91,28 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                         app.chat_drawer_open = false;
                     }
 
+                    let test_lbl = if app.api_test_in_flight { "..." } else { "Test API" };
+                    if ui
+                        .add_enabled(
+                            !app.api_test_in_flight,
+                            egui::Button::new(
+                                RichText::new(test_lbl).size(11.0).color(Color32::WHITE).strong(),
+                            )
+                            .fill(palette.secondary)
+                            .rounding(Rounding::same(5.0)),
+                        )
+                        .clicked()
+                    {
+                        app.trigger_gemini_health_check();
+                    }
+
                     if has_saved_key
                         && ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new("Đổi Key")
+                                    RichText::new("Xóa Key")
                                         .size(11.0)
-                                        .color(palette.secondary),
+                                        .color(palette.danger),
                                 )
                                 .fill(palette.surface)
                                 .stroke(Stroke::new(1.0_f32, palette.border))
@@ -92,13 +120,31 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                             )
                             .clicked()
                     {
-                        app.config.encrypted_api_key_b64.clear();
-                        app.api_key_edit_buffer.clear();
+                        app.clear_ui_gemini_api_key();
                     }
                 });
             });
 
-            if !has_saved_key && !has_env_or_cfg_key {
+            if has_env_or_cfg_key {
+                ui.label(
+                    RichText::new(format!(
+                        "Key: {} ({})",
+                        mask_api_key(&resolved_key),
+                        key_source.label_vi()
+                    ))
+                    .font(FontId::proportional(10.0))
+                    .color(palette.text_muted),
+                );
+            }
+            if !app.api_status_detail_vi.trim().is_empty() {
+                ui.label(
+                    RichText::new(&app.api_status_detail_vi)
+                        .font(FontId::proportional(10.0))
+                        .color(badge_color),
+                );
+            }
+
+            if !has_saved_key {
                 ui.add_space(4.0);
                 egui::Frame::none()
                     .fill(palette.surface)
@@ -111,7 +157,7 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                                 egui::TextEdit::singleline(&mut app.api_key_edit_buffer)
                                     .password(true)
                                     .hint_text("Nhập GEMINI_API_KEY...")
-                                    .desired_width(220.0),
+                                    .desired_width(215.0),
                             );
                             if ui
                                 .add(
@@ -127,10 +173,7 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                                 .clicked()
                                 && !app.api_key_edit_buffer.trim().is_empty()
                             {
-                                app.storage.set_encrypted_api_key(
-                                    &mut app.config,
-                                    &app.api_key_edit_buffer,
-                                );
+                                app.save_ui_gemini_api_key();
                             }
                         });
                     });

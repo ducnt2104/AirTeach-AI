@@ -201,7 +201,7 @@ impl Default for AppConfig {
             theme_mode: ThemeMode::Dark,
             lecture_title: default_lecture_title(),
             encrypted_api_key_b64: String::new(),
-            gemini_model: "gemini-3.5-flash".to_string(),
+            gemini_model: "gemini-3.8-flash".to_string(),
             camera_index: 0,
             face_match_threshold: DEFAULT_FACE_MATCH_THRESHOLD,
             sface_match_threshold: DEFAULT_SFACE_MATCH_THRESHOLD,
@@ -792,7 +792,7 @@ impl LocalStorage {
         {
             if let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&json_str) {
                 if cfg.gemini_model.trim().is_empty() || cfg.gemini_model == "gemini-2.0-flash" {
-                    cfg.gemini_model = "gemini-3.5-flash".to_string();
+                    cfg.gemini_model = "gemini-3.8-flash".to_string();
                     self.save_config(&cfg);
                 }
                 return cfg;
@@ -860,6 +860,11 @@ impl LocalStorage {
             cfg.encrypted_api_key_b64 = enc;
             self.save_config(cfg);
         }
+    }
+
+    pub fn clear_encrypted_api_key(&self, cfg: &mut AppConfig) {
+        cfg.encrypted_api_key_b64.clear();
+        self.save_config(cfg);
     }
 
     // =========================================================================

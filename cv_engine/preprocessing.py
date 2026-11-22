@@ -89,9 +89,12 @@ def preprocess_adaptive_frame(
     frame: np.ndarray,
     is_rgb: bool = True,
     quality_gate_min: float = 38.0,
+    auto_lightweight_normal: bool = False,
 ) -> Tuple[np.ndarray, ExposureDiagnostics]:
     """
     Execute the complete multi-condition adaptive preprocessing chain on an RGB or BGR frame.
+    When `auto_lightweight_normal=True` and lighting is balanced (`NORMAL` with healthy dynamic range),
+    skips heavy CLAHE/blur passes to sustain 60 FPS throughput while still computing full diagnostics.
     Returns `(enhanced_frame, ExposureDiagnostics)`.
     """
     if frame is None or frame.size == 0 or frame.ndim != 3:
@@ -119,12 +122,34 @@ def preprocess_adaptive_frame(
 
     is_low_light = mean_luma < 70.0
     is_glare = p95 > 235.0
+    is_backlit = is_glare and (p5 < 48.0 or mean_luma < 105.0)
+    dynamic_range = p95 - p5
+
+    if (
+        auto_lightweight_normal
+        and not is_low_light
+        and not is_glare
+        and 80.0 <= mean_luma <= 180.0
+        and dynamic_range >= 85.0
+    ):
+        lap_var = compute_laplacian_sharpness(l_chan, is_rgb=is_rgb)
+        diagnostics = ExposureDiagnostics(
+            mean_luma=mean_luma,
+            p5=p5,
+            p95=p95,
+            lighting_mode="NORMAL",
+            gamma_applied=1.0,
+            clahe_clip_limit=1.5,
+            laplacian_variance=lap_var,
+            quality_gate_passed=(lap_var >= float(quality_gate_min)),
+        )
+        return frame, diagnostics
 
     l_work = l_chan
     gamma_applied = 1.0
 
-    # 2. Adaptive Gamma Correction (mean_luma < 70) & Highlight Roll-off (p95 > 235)
-    # Note: A backlit scene can have both low average luminance (mean_luma < 70) AND window glare (p95 > 235).
+    # 2. Adaptive Gamma Correction (mean_luma < 70 or backlit) & Highlight Roll-off (p95 > 235)
+    # Note: A backlit scene can have both dark foreground shadows (p5 < 48) AND bright window glare (p95 > 235).
     if is_glare:
         l_work = apply_highlight_rolloff(l_work, knee=190.0)
 
@@ -136,6 +161,12 @@ def preprocess_adaptive_frame(
         if is_glare:
             l_work = apply_highlight_rolloff(l_work, knee=192.0)
         clahe_clip = float(np.clip(2.6 + (70.0 - mean_luma) * (1.4 / 70.0), 1.5, 4.0))
+    elif is_backlit:
+        lighting_mode = "BACKLIT"
+        gamma_applied = float(np.clip(0.68 + 0.18 * (mean_luma / 105.0), 0.65, 0.86))
+        l_work = cv2.LUT(l_work, build_gamma_lut(gamma_applied))
+        l_work = apply_highlight_rolloff(l_work, knee=194.0)
+        clahe_clip = float(np.clip(2.8 - (p95 - 235.0) * 0.02, 1.8, 3.6))
     elif is_glare:
         lighting_mode = "GLARE"
         if mean_luma > 180.0:
@@ -153,7 +184,7 @@ def preprocess_adaptive_frame(
     # 3. Denoise-then-Sharpen:
     # In low-light (high ISO grain amplified by gamma + CLAHE), run mandatory Bilateral Filter
     # (d=5, sigmaColor=40, sigmaSpace=40) to smooth noise while preserving edges BEFORE Unsharp Masking.
-    if is_low_light:
+    if is_low_light or is_backlit:
         l_eq = cv2.bilateralFilter(l_eq, d=5, sigmaColor=40, sigmaSpace=40)
 
     lab_eq = cv2.merge((l_eq, a_chan, b_chan))

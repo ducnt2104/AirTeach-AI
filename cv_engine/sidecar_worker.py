@@ -275,7 +275,12 @@ def run_ipc_loop() -> None:
             continue
         try:
             rgb_orig = np.frombuffer(raw, dtype=np.uint8).reshape((int(h), int(w), 3))
-            rgb_enhanced, diag = preprocess_adaptive_frame(rgb_orig, is_rgb=True, quality_gate_min=38.0)
+            rgb_enhanced, diag = preprocess_adaptive_frame(
+                rgb_orig,
+                is_rgb=True,
+                quality_gate_min=38.0,
+                auto_lightweight_normal=True,
+            )
 
             face_info = face_engine.detect_and_extract(rgb_enhanced, quality_gate_min_sharpness=38.0)
             face_boxes = face_info["face_boxes"]

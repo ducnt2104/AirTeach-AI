@@ -1,8 +1,10 @@
 //! Real Multimodal AI Pedagogical Assistant, Speech-to-Text & Board Analyzer (`src/ai/gemini_chat.rs`):
-//! - Resolves `GEMINI_API_KEY` & `GEMINI_MODEL_ID` from UI Settings, OS env, or `.env` (zero hardcoded secrets)
-//! - Uses `gemini-3.5-flash` primary with automatic fallback to `gemini-2.5-flash` -> `gemini-2.0-flash`
-//! - Supports Structured JSON Output (`responseMimeType: "application/json"`), retry backoff,
-//!   SQLite response caching keys, and offline graceful fallback using `SlideRagIndex` context.
+//! - Resolves `GEMINI_API_KEY` & `GEMINI_MODEL_ID` with multi-layer priority:
+//!   `(1) UI Settings` -> `(2) OS env / .env file` (zero hardcoded secrets)
+//! - Uses `gemini-3.8-flash` primary with automatic fallback to `gemini-3.5-flash` -> `gemini-3.5-flash-lite`
+//!   (or `GEMINI_FALLBACK_MODELS` override)
+//! - Supports Live Health Check (`maxOutputTokens: 5`), Vietnamese HTTP 400/401/403/404/429/Network mapping,
+//!   3x Exponential Backoff (`1s, 2s, 4s`) on 429, SQLite response caching, and offline fallback.
 
 use crate::ai::subtitles_engine::TranscriptSegmentEvent;
 use base64::Engine;
@@ -12,9 +14,127 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.5-flash";
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.8-flash";
+pub const DEFAULT_FALLBACK_MODELS: [&str; 3] = [
+    "gemini-3.8-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+];
+pub const RETRY_BACKOFF_SECS: [u64; 3] = [1, 2, 4];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApiConnectionStatus {
+    Unconfigured,
+    Connected,
+    Error,
+}
+
+impl ApiConnectionStatus {
+    pub const fn badge_label_vi(self) -> &'static str {
+        match self {
+            Self::Unconfigured => "Chưa cấu hình",
+            Self::Connected => "Đã kết nối",
+            Self::Error => "Lỗi Key/Quota",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiKeySource {
+    UiSettings,
+    EnvVar,
+    DotEnv,
+    None,
+}
+
+impl ApiKeySource {
+    pub const fn label_vi(self) -> &'static str {
+        match self {
+            Self::UiSettings => "UI Settings",
+            Self::EnvVar => "Biến môi trường",
+            Self::DotEnv => "File .env",
+            Self::None => "Chưa có",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GeminiHealthCheckResult {
+    pub ok: bool,
+    pub status: ApiConnectionStatus,
+    pub model_used: String,
+    pub latency_ms: f32,
+    pub message_vi: String,
+    pub http_status: Option<u16>,
+}
+
+pub fn mask_api_key(key: &str) -> String {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return "(Chưa cấu hình)".to_string();
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= 8 {
+        return "••••••••".to_string();
+    }
+    let prefix: String = chars[..4].iter().collect();
+    let suffix: String = chars[chars.len() - 4..].iter().collect();
+    format!("{prefix}••••••{suffix}")
+}
+
+/// Translate Gemini HTTP / network errors into friendly Vietnamese messages.
+/// Returns `(message_vi, fail_fast_auth, fallback_model)`.
+pub fn classify_http_error(status: u16, body: &str, model: &str) -> (String, bool, bool) {
+    let body_low = body.to_lowercase();
+    match status {
+        401 | 403 => (
+            "API Key không hợp lệ hoặc chưa bật quyền truy cập Gemini API (401/403).".to_string(),
+            true,
+            false,
+        ),
+        400 => {
+            if body_low.contains("api_key_invalid")
+                || body_low.contains("api key not valid")
+                || body_low.contains("invalid api key")
+            {
+                (
+                    "API Key không hợp lệ (400 API_KEY_INVALID). Vui lòng kiểm tra lại Key."
+                        .to_string(),
+                    true,
+                    false,
+                )
+            } else {
+                (
+                    format!("Yêu cầu không hợp lệ tới {model} (HTTP 400)."),
+                    false,
+                    true,
+                )
+            }
+        }
+        404 => (
+            format!("Model `{model}` không tồn tại hoặc đã ngừng hỗ trợ (404). Tự động chuyển model dự phòng."),
+            false,
+            true,
+        ),
+        429 => (
+            format!("Vượt giới hạn lượt gọi / Quota Gemini API cho `{model}` (429). Đang chờ thử lại..."),
+            false,
+            true,
+        ),
+        500..=599 => (
+            format!("Máy chủ Gemini tạm thời quá tải (HTTP {status}) trên `{model}`."),
+            false,
+            true,
+        ),
+        _ => (
+            format!("Lỗi HTTP {status} từ Gemini API trên `{model}`."),
+            false,
+            true,
+        ),
+    }
+}
 
 pub const PEDAGOGICAL_INSPECTOR_SYSTEM_PROMPT: &str =
     "Bạn là trợ lý giáo viên chuyên nghiệp của hệ thống AirTeach AI (DNT - Victer). \
@@ -236,6 +356,10 @@ impl PedagogicalStructuredResponse {
 pub enum ChatStreamEvent {
     Started { message_index: usize },
     TokenDelta { message_index: usize, delta: String },
+    ApiStatusUpdated {
+        status: ApiConnectionStatus,
+        message: String,
+    },
     CacheStore {
         cache_key: String,
         model_id: String,
@@ -292,25 +416,37 @@ impl GeminiChatClient {
         None
     }
 
-    /// Resolve `GEMINI_API_KEY` from explicit user input, OS env, or `.env` file.
-    pub fn resolve_api_key(configured_key: &str) -> String {
+    /// Resolve `GEMINI_API_KEY` and report source priority: `(1) UI Settings` -> `(2) OS env` -> `(3) .env`.
+    pub fn resolve_api_key_with_source(configured_key: &str) -> (String, ApiKeySource) {
         let trimmed = configured_key.trim();
         if !trimmed.is_empty() {
-            return trimmed.to_string();
+            return (trimmed.to_string(), ApiKeySource::UiSettings);
         }
         if let Ok(env_key) =
             std::env::var("GEMINI_API_KEY").or_else(|_| std::env::var("GOOGLE_API_KEY"))
         {
             let cleaned = env_key.trim();
             if !cleaned.is_empty() && cleaned != "your_gemini_api_key_here" {
-                return cleaned.to_string();
+                return (cleaned.to_string(), ApiKeySource::EnvVar);
             }
         }
-        Self::read_dotenv_var(&["GEMINI_API_KEY", "GOOGLE_API_KEY"]).unwrap_or_default()
+        if let Some(dotenv_key) = Self::read_dotenv_var(&["GEMINI_API_KEY", "GOOGLE_API_KEY"]) {
+            return (dotenv_key, ApiKeySource::DotEnv);
+        }
+        (String::new(), ApiKeySource::None)
     }
 
-    /// Resolve active Gemini model ID (`GEMINI_MODEL_ID` env / `.env` > UI config > `gemini-3.5-flash`).
+    /// Resolve `GEMINI_API_KEY` from explicit user input, OS env, or `.env` file.
+    pub fn resolve_api_key(configured_key: &str) -> String {
+        Self::resolve_api_key_with_source(configured_key).0
+    }
+
+    /// Resolve active Gemini model ID (`GEMINI_MODEL_ID` env / `.env` > UI config > `gemini-3.8-flash`).
     pub fn resolve_model_id(configured_model: &str) -> String {
+        let cfg = configured_model.trim();
+        if !cfg.is_empty() {
+            return cfg.to_string();
+        }
         if let Ok(env_model) = std::env::var("GEMINI_MODEL_ID") {
             let clean = env_model.trim();
             if !clean.is_empty() {
@@ -320,23 +456,139 @@ impl GeminiChatClient {
         if let Some(dotenv_model) = Self::read_dotenv_var(&["GEMINI_MODEL_ID"]) {
             return dotenv_model;
         }
-        let cfg = configured_model.trim();
-        if cfg.is_empty() {
-            DEFAULT_GEMINI_MODEL.to_string()
-        } else {
-            cfg.to_string()
-        }
+        DEFAULT_GEMINI_MODEL.to_string()
     }
 
-    /// Build ordered fallback chain prioritizing `primary` -> `gemini-3.5-flash` -> `gemini-2.5-flash` -> `gemini-2.0-flash`.
+    /// Build ordered fallback chain prioritizing `primary`, optional `GEMINI_FALLBACK_MODELS`,
+    /// then current `DEFAULT_FALLBACK_MODELS` (`gemini-3.8-flash` -> `gemini-3.5-flash` -> `gemini-3.5-flash-lite`).
     pub fn build_model_chain(primary: &str) -> Vec<String> {
-        let mut chain = Vec::new();
-        for candidate in [primary.trim(), DEFAULT_GEMINI_MODEL, "gemini-2.5-flash", "gemini-2.0-flash"] {
-            if !candidate.is_empty() && !chain.iter().any(|m: &String| m == candidate) {
-                chain.push(candidate.to_string());
+        let mut chain: Vec<String> = Vec::new();
+        let push_unique = |chain: &mut Vec<String>, candidate: &str| {
+            let c = candidate.trim();
+            if !c.is_empty() && !chain.iter().any(|m| m == c) {
+                chain.push(c.to_string());
+            }
+        };
+
+        push_unique(&mut chain, primary);
+
+        if let Some(fb_raw) = std::env::var("GEMINI_FALLBACK_MODELS")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| Self::read_dotenv_var(&["GEMINI_FALLBACK_MODELS"]))
+        {
+            for item in fb_raw.split(',') {
+                push_unique(&mut chain, item);
             }
         }
+
+        for candidate in DEFAULT_FALLBACK_MODELS {
+            push_unique(&mut chain, candidate);
+        }
         chain
+    }
+
+    /// Perform live connection health check (`POST :generateContent` with `maxOutputTokens: 5`)
+    /// validating key + model reachability without mutating UI thread.
+    pub fn test_connection(
+        &self,
+        api_key: String,
+        primary_model: String,
+        tx: Sender<GeminiHealthCheckResult>,
+    ) {
+        let client = self.http_client.clone();
+        self.runtime.spawn(async move {
+            let (resolved_key, _src) = Self::resolve_api_key_with_source(&api_key);
+            if resolved_key.is_empty() {
+                let _ = tx.send(GeminiHealthCheckResult {
+                    ok: false,
+                    status: ApiConnectionStatus::Unconfigured,
+                    model_used: String::new(),
+                    latency_ms: 0.0,
+                    message_vi: "Chưa cấu hình GEMINI_API_KEY (nhập ở Settings hoặc `.env`)."
+                        .to_string(),
+                    http_status: None,
+                });
+                return;
+            }
+
+            let primary = Self::resolve_model_id(&primary_model);
+            let models = Self::build_model_chain(&primary);
+            let payload = json!({
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [{ "text": "Reply OK" }]
+                    }
+                ],
+                "generationConfig": {
+                    "temperature": 0.0,
+                    "maxOutputTokens": 5
+                }
+            });
+
+            let t0 = Instant::now();
+            let mut last_msg = "Không thể kết nối máy chủ Gemini API.".to_string();
+            let mut last_http: Option<u16> = None;
+
+            for model in &models {
+                let url = format!(
+                    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                );
+                match client
+                    .post(&url)
+                    .timeout(Duration::from_secs(12))
+                    .header("x-goog-api-key", &resolved_key)
+                    .json(&payload)
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        let latency_ms = t0.elapsed().as_secs_f32() * 1000.0;
+                        let _ = tx.send(GeminiHealthCheckResult {
+                            ok: true,
+                            status: ApiConnectionStatus::Connected,
+                            model_used: model.clone(),
+                            latency_ms,
+                            message_vi: format!(
+                                "Kết nối Gemini thành công ({model}, {latency_ms:.0}ms)."
+                            ),
+                            http_status: Some(resp.status().as_u16()),
+                        });
+                        return;
+                    }
+                    Ok(resp) => {
+                        let code = resp.status().as_u16();
+                        last_http = Some(code);
+                        let body = resp.text().await.unwrap_or_default();
+                        let (msg_vi, fail_fast, _fallback) =
+                            classify_http_error(code, &body, model);
+                        last_msg = msg_vi;
+                        if fail_fast {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        last_http = None;
+                        last_msg = if err.is_timeout() {
+                            "Hết thời gian chờ kết nối Gemini API (Timeout). Kiểm tra lại mạng."
+                                .to_string()
+                        } else {
+                            format!("Mất kết nối mạng tới Gemini API: {err}")
+                        };
+                    }
+                }
+            }
+
+            let _ = tx.send(GeminiHealthCheckResult {
+                ok: false,
+                status: ApiConnectionStatus::Error,
+                model_used: String::new(),
+                latency_ms: t0.elapsed().as_secs_f32() * 1000.0,
+                message_vi: last_msg,
+                http_status: last_http,
+            });
+        });
     }
 
     /// Deterministic SHA-256 request key for SQLite AI response caching.
@@ -459,30 +711,61 @@ impl GeminiChatClient {
                 }
             });
 
-            let models = Self::build_model_chain(&Self::resolve_model_id(DEFAULT_GEMINI_MODEL));
-            for model in models {
+            let models = Self::build_model_chain(&Self::resolve_model_id(""));
+            let mut last_err = "Không thể kết nối Gemini Audio STT.".to_string();
+            'stt_model: for model in models {
                 let url = format!(
-                    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={resolved_key}"
+                    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
                 );
-                if let Ok(resp) = client.post(&url).json(&payload).send().await {
-                    if resp.status().is_success() {
-                        if let Ok(val) = resp.json::<serde_json::Value>().await {
-                            if let Some(text) = val
-                                .pointer("/candidates/0/content/parts/0/text")
-                                .and_then(|t| t.as_str())
-                            {
-                                let cleaned = text.trim().to_string();
-                                let _ = tx.send(Ok(TranscriptSegmentEvent {
-                                    timestamp_ms,
-                                    text: cleaned,
-                                }));
-                                return;
+                let mut backoff_idx = 0usize;
+                loop {
+                    match client
+                        .post(&url)
+                        .header("x-goog-api-key", &resolved_key)
+                        .json(&payload)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) if resp.status().is_success() => {
+                            if let Ok(val) = resp.json::<serde_json::Value>().await {
+                                if let Some(text) = val
+                                    .pointer("/candidates/0/content/parts/0/text")
+                                    .and_then(|t| t.as_str())
+                                {
+                                    let cleaned = text.trim().to_string();
+                                    let _ = tx.send(Ok(TranscriptSegmentEvent {
+                                        timestamp_ms,
+                                        text: cleaned,
+                                    }));
+                                    return;
+                                }
                             }
+                            break;
+                        }
+                        Ok(resp) => {
+                            let code = resp.status().as_u16();
+                            let body = resp.text().await.unwrap_or_default();
+                            let (msg_vi, fail_fast, _) = classify_http_error(code, &body, &model);
+                            last_err = msg_vi;
+                            if fail_fast {
+                                break 'stt_model;
+                            }
+                            if code == 429 && backoff_idx < RETRY_BACKOFF_SECS.len() {
+                                let wait_s = RETRY_BACKOFF_SECS[backoff_idx];
+                                backoff_idx += 1;
+                                tokio::time::sleep(Duration::from_secs(wait_s)).await;
+                                continue;
+                            }
+                            break;
+                        }
+                        Err(e) => {
+                            last_err = format!("Mất kết nối Gemini Audio STT ({model}): {e}");
+                            break;
                         }
                     }
                 }
             }
-            let _ = tx.send(Err("Không thể kết nối Gemini Audio STT.".to_string()));
+            let _ = tx.send(Err(last_err));
         });
     }
 
@@ -533,6 +816,10 @@ impl GeminiChatClient {
 
             let trimmed_key = Self::resolve_api_key(&api_key);
             if trimmed_key.is_empty() {
+                let _ = event_tx.send(ChatStreamEvent::ApiStatusUpdated {
+                    status: ApiConnectionStatus::Unconfigured,
+                    message: "Chưa cấu hình GEMINI_API_KEY".to_string(),
+                });
                 let offline_msg = Self::build_offline_fallback_response(
                     subject,
                     &user_prompt,
@@ -607,15 +894,20 @@ impl GeminiChatClient {
 
             if use_structured_json {
                 let mut last_err = String::new();
-                for model in &candidate_models {
-                    for attempt in 0..2u8 {
-                        if attempt > 0 {
-                            tokio::time::sleep(Duration::from_millis(350 * attempt as u64)).await;
-                        }
-                        let url = format!(
-                            "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={trimmed_key}"
-                        );
-                        match client.post(&url).json(&payload).send().await {
+                'json_model_loop: for model in &candidate_models {
+                    let url = format!(
+                        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                    );
+                    let mut backoff_idx = 0usize;
+                    let mut net_retries = 0u8;
+                    loop {
+                        match client
+                            .post(&url)
+                            .header("x-goog-api-key", &trimmed_key)
+                            .json(&payload)
+                            .send()
+                            .await
+                        {
                             Ok(r) if r.status().is_success() => {
                                 if let Ok(val) = r.json::<serde_json::Value>().await {
                                     if let Some(raw_txt) = val
@@ -630,6 +922,10 @@ impl GeminiChatClient {
                                             raw_txt.trim().to_string()
                                         };
                                         if !formatted.is_empty() {
+                                            let _ = event_tx.send(ChatStreamEvent::ApiStatusUpdated {
+                                                status: ApiConnectionStatus::Connected,
+                                                message: format!("Đã kết nối ({model})"),
+                                            });
                                             let _ = event_tx.send(ChatStreamEvent::TokenDelta {
                                                 message_index,
                                                 delta: formatted.clone(),
@@ -648,22 +944,52 @@ impl GeminiChatClient {
                                         }
                                     }
                                 }
+                                last_err = format!("Phản hồi rỗng hoặc sai định dạng từ `{model}`.");
+                                break;
                             }
                             Ok(r) => {
-                                let status = r.status();
+                                let code = r.status().as_u16();
                                 let body = r.text().await.unwrap_or_default();
-                                last_err = format!("HTTP {status} ({model}): {body}");
-                                if status.as_u16() == 404 || status.as_u16() == 400 {
-                                    break;
+                                let (msg_vi, fail_fast, _should_fallback) =
+                                    classify_http_error(code, &body, model);
+                                last_err = msg_vi;
+                                if fail_fast {
+                                    break 'json_model_loop;
                                 }
+                                if code == 429 && backoff_idx < RETRY_BACKOFF_SECS.len() {
+                                    let wait_s = RETRY_BACKOFF_SECS[backoff_idx];
+                                    backoff_idx += 1;
+                                    tokio::time::sleep(Duration::from_secs(wait_s)).await;
+                                    continue;
+                                }
+                                if (500..=599).contains(&code) && net_retries < 1 {
+                                    net_retries += 1;
+                                    tokio::time::sleep(Duration::from_millis(600)).await;
+                                    continue;
+                                }
+                                break;
                             }
                             Err(e) => {
-                                last_err = format!("Mất kết nối ({model}): {e}");
+                                last_err = if e.is_timeout() {
+                                    format!("Hết thời gian chờ kết nối mạng ({model}).")
+                                } else {
+                                    format!("Mất kết nối mạng ({model}): {e}")
+                                };
+                                if net_retries < 1 {
+                                    net_retries += 1;
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                    continue;
+                                }
+                                break;
                             }
                         }
                     }
                 }
 
+                let _ = event_tx.send(ChatStreamEvent::ApiStatusUpdated {
+                    status: ApiConnectionStatus::Error,
+                    message: last_err.clone(),
+                });
                 let offline_msg = Self::build_offline_fallback_response(
                     subject,
                     &user_prompt,
@@ -678,41 +1004,74 @@ impl GeminiChatClient {
                 return;
             }
 
-            // Streaming SSE flow (Q&A / General conversation) with retry backoff & model fallback
+            // Streaming SSE flow (Q&A / General conversation) with 1s/2s/4s retry backoff & model fallback
             let mut active_resp = None;
             let mut used_model = primary_model.clone();
             let mut last_err_str = String::new();
 
             'model_loop: for model in &candidate_models {
-                for attempt in 0..2u8 {
-                    if attempt > 0 {
-                        tokio::time::sleep(Duration::from_millis(350 * attempt as u64)).await;
-                    }
-                    let url = format!(
-                        "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={trimmed_key}"
-                    );
-                    match client.post(&url).json(&payload).send().await {
+                let url = format!(
+                    "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
+                );
+                let mut backoff_idx = 0usize;
+                let mut net_retries = 0u8;
+                loop {
+                    match client
+                        .post(&url)
+                        .header("x-goog-api-key", &trimmed_key)
+                        .json(&payload)
+                        .send()
+                        .await
+                    {
                         Ok(r) if r.status().is_success() => {
                             used_model = model.clone();
                             active_resp = Some(r);
                             break 'model_loop;
                         }
                         Ok(r) => {
-                            let status = r.status();
+                            let code = r.status().as_u16();
                             let body = r.text().await.unwrap_or_default();
-                            last_err_str = format!("HTTP {status} ({model}): {body}");
-                            if status.as_u16() == 404 || status.as_u16() == 400 {
-                                break;
+                            let (msg_vi, fail_fast, _should_fallback) =
+                                classify_http_error(code, &body, model);
+                            last_err_str = msg_vi;
+                            if fail_fast {
+                                break 'model_loop;
                             }
+                            if code == 429 && backoff_idx < RETRY_BACKOFF_SECS.len() {
+                                let wait_s = RETRY_BACKOFF_SECS[backoff_idx];
+                                backoff_idx += 1;
+                                tokio::time::sleep(Duration::from_secs(wait_s)).await;
+                                continue;
+                            }
+                            if (500..=599).contains(&code) && net_retries < 1 {
+                                net_retries += 1;
+                                tokio::time::sleep(Duration::from_millis(600)).await;
+                                continue;
+                            }
+                            break;
                         }
                         Err(e) => {
-                            last_err_str = format!("Lỗi mạng ({model}): {e}");
+                            last_err_str = if e.is_timeout() {
+                                format!("Hết thời gian chờ kết nối mạng ({model}).")
+                            } else {
+                                format!("Mất kết nối mạng ({model}): {e}")
+                            };
+                            if net_retries < 1 {
+                                net_retries += 1;
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                continue;
+                            }
+                            break;
                         }
                     }
                 }
             }
 
             let Some(resp) = active_resp else {
+                let _ = event_tx.send(ChatStreamEvent::ApiStatusUpdated {
+                    status: ApiConnectionStatus::Error,
+                    message: last_err_str.clone(),
+                });
                 let offline_msg = Self::build_offline_fallback_response(
                     subject,
                     &user_prompt,
@@ -726,6 +1085,10 @@ impl GeminiChatClient {
                 let _ = event_tx.send(ChatStreamEvent::Completed { message_index });
                 return;
             };
+            let _ = event_tx.send(ChatStreamEvent::ApiStatusUpdated {
+                status: ApiConnectionStatus::Connected,
+                message: format!("Đã kết nối ({used_model})"),
+            });
 
             let mut stream = resp.bytes_stream();
             let mut line_buffer = String::new();
@@ -799,9 +1162,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_gemini_35_flash_model_chain_and_structured_json_parsing() {
-        let chain = GeminiChatClient::build_model_chain("gemini-3.5-flash");
-        assert_eq!(chain, vec!["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]);
+    fn test_gemini_38_flash_model_chain_and_structured_json_parsing() {
+        let chain = GeminiChatClient::build_model_chain("gemini-3.8-flash");
+        assert_eq!(
+            chain,
+            vec![
+                "gemini-3.8-flash",
+                "gemini-3.5-flash",
+                "gemini-3.5-flash-lite"
+            ]
+        );
+        assert_eq!(RETRY_BACKOFF_SECS, [1, 2, 4]);
 
         let raw_json = r#"```json
         {
@@ -858,5 +1229,27 @@ mod tests {
         );
         assert!(fallback.contains("Offline Fallback"));
         assert!(fallback.contains("F = m * a"));
+    }
+
+    #[test]
+    fn test_api_key_masking_and_http_error_classification() {
+        assert_eq!(mask_api_key("AIzaSyD1234567890abcd"), "AIza••••••abcd");
+        assert_eq!(mask_api_key("   "), "(Chưa cấu hình)");
+
+        let (m401, ff401, _) = classify_http_error(401, "", "gemini-3.8-flash");
+        assert!(ff401 && m401.contains("401/403"));
+
+        let (m400, ff400, _) = classify_http_error(400, "API_KEY_INVALID", "gemini-3.8-flash");
+        assert!(ff400 && m400.contains("400"));
+
+        let (m404, ff404, fb404) = classify_http_error(404, "", "gemini-old");
+        assert!(!ff404 && fb404 && m404.contains("404"));
+
+        let (m429, ff429, fb429) = classify_http_error(429, "RESOURCE_EXHAUSTED", "gemini-3.8-flash");
+        assert!(!ff429 && fb429 && m429.contains("429"));
+
+        let (key, src) = GeminiChatClient::resolve_api_key_with_source("AIzaUIKey123456");
+        assert_eq!(key, "AIzaUIKey123456");
+        assert_eq!(src, ApiKeySource::UiSettings);
     }
 }

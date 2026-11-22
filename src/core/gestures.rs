@@ -7,7 +7,7 @@
 //! - Stability Hold FSM requiring 5-8 frames (150-250ms) before triggering discrete transitions.
 
 use crate::core::hand_tracker::{landmark_idx::*, HandLandmarks, Landmark3D};
-use crate::core::stroke_engine::Point2D;
+use crate::core::stroke_engine::{interpolate_bridge_points_2d, Point2D};
 use serde::{Deserialize, Serialize};
 
 /// Recommended stability window in frames (~180ms at 30 FPS; strictly within 5-8 frames).
@@ -22,6 +22,9 @@ pub const PINCH_ENTER_THRESHOLD: f32 = 0.28;
 pub const PINCH_EXIT_THRESHOLD: f32 = 0.40;
 pub const PINCH_ENTER_MIN_FRAMES: u8 = 3;
 pub const TAIL_TRIM_MS: f64 = 105.0;
+pub const DRAWING_GRACE_PERIOD_MS: f64 = 150.0;
+pub const MAX_JUMP_DISTANCE_PX: f32 = 260.0;
+pub const STROKE_INTERP_STEP_PX: f32 = 10.0;
 pub const CANCEL_HOLD_MS: f64 = 150.0;
 pub const POST_COMMIT_CANCEL_WINDOW_MS: f64 = 700.0;
 pub const PEN_LOCK_COOLDOWN_MS: f64 = 300.0;
@@ -733,6 +736,7 @@ impl GestureDebounceFsm {
 pub struct TimedBoardPoint {
     pub pt: Point2D,
     pub t_ms: f64,
+    pub interpolated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -740,6 +744,7 @@ pub enum DrawingFsmAction {
     None,
     BeginStroke,
     AppendPoint,
+    HoldGrace,
     CommitStrokeTrimmed(Vec<Point2D>),
     CancelStrokeDiscard,
     RollbackLastStroke,
@@ -756,10 +761,14 @@ pub struct DrawingStepResult {
     pub undo_cooldown_remaining_ms: f32,
     pub cancel_hold_progress: f32,
     pub cancel_reason: &'static str,
+    pub in_grace_period: bool,
+    pub gap_bridged: bool,
 }
 
 /// 4-Tier Zero-Stray-Stroke Drawing FSM Controller (Rust runtime parity with cv_engine/drawing_fsm.py).
 /// - Schmitt trigger on pinch_ratio: enter DRAWING < 0.28 for >= 3 frames; release to HOVER > 0.40.
+/// - Transient dropout Grace Period (`150ms`): holds DRAWING state when tracking drops briefly.
+/// - Gap Bridging & Velocity Interpolation (`<= 260px` max jump guard): avoids stray cross-screen lines while smoothing fast sweeps.
 /// - Pre-release ring buffer tail trimming: drops points in the final 105ms (90-120ms) on release/cancel.
 /// - Instant Cancel via OPEN_PALM (150ms), FIST (150ms), or Esc -> discards/rolls back + 300ms pen lock.
 /// - Undo gesture (3 fingers >= 220ms) or Ctrl+Z / UI Undo -> 400ms cooldown.
@@ -767,10 +776,14 @@ pub struct DrawingController4Tier {
     pub hud_mode: DrawingHudMode,
     pub ring_buffer: Vec<TimedBoardPoint>,
     pub hold_to_snap_ready: bool,
+    pub grace_period_ms: f64,
+    pub max_jump_distance_px: f32,
     pinch_enter_count: u8,
     locked_until_ms: f64,
     last_commit_ms: f64,
     last_undo_ms: f64,
+    last_drawing_seen_ms: f64,
+    in_grace_dropout: bool,
     cancel_candidate: Option<RightGesture>,
     cancel_since_ms: Option<f64>,
     undo_since_ms: Option<f64>,
@@ -792,10 +805,14 @@ impl DrawingController4Tier {
             hud_mode: DrawingHudMode::Hover,
             ring_buffer: Vec::with_capacity(2048),
             hold_to_snap_ready: false,
+            grace_period_ms: DRAWING_GRACE_PERIOD_MS,
+            max_jump_distance_px: MAX_JUMP_DISTANCE_PX,
             pinch_enter_count: 0,
             locked_until_ms: -1e9,
             last_commit_ms: -1e9,
             last_undo_ms: -1e9,
+            last_drawing_seen_ms: -1e9,
+            in_grace_dropout: false,
             cancel_candidate: None,
             cancel_since_ms: None,
             undo_since_ms: None,
@@ -810,25 +827,72 @@ impl DrawingController4Tier {
         self.ring_buffer.iter().map(|p| p.pt).collect()
     }
 
+    fn append_with_interpolation(&mut self, pt: Point2D, t_ms: f64) -> (bool, bool) {
+        let Some(last) = self.ring_buffer.last().copied() else {
+            self.ring_buffer.push(TimedBoardPoint {
+                pt,
+                t_ms,
+                interpolated: false,
+            });
+            return (false, false);
+        };
+        let dist = last.pt.dist(pt);
+        if dist < 0.78 {
+            return (false, false);
+        }
+        if dist > self.max_jump_distance_px {
+            return (true, false);
+        }
+        if dist > STROKE_INTERP_STEP_PX {
+            let p_before = if self.ring_buffer.len() >= 2 {
+                Some(self.ring_buffer[self.ring_buffer.len() - 2].pt)
+            } else {
+                None
+            };
+            let pts = interpolate_bridge_points_2d(p_before, last.pt, pt, STROKE_INTERP_STEP_PX);
+            let n = pts.len().max(1);
+            let t_start = last.t_ms;
+            for (idx, ip) in pts.into_iter().enumerate() {
+                let frac = (idx + 1) as f64 / n as f64;
+                let it_ms = t_start + (t_ms - t_start) * frac;
+                let is_final = idx + 1 == n;
+                self.ring_buffer.push(TimedBoardPoint {
+                    pt: ip,
+                    t_ms: it_ms,
+                    interpolated: !is_final,
+                });
+            }
+            return (false, n > 1);
+        }
+        self.ring_buffer.push(TimedBoardPoint {
+            pt,
+            t_ms,
+            interpolated: false,
+        });
+        (false, false)
+    }
+
     fn trim_ring_tail_and_extract(&mut self) -> Vec<Point2D> {
         if self.ring_buffer.is_empty() {
             return Vec::new();
         }
         let t_end = self.ring_buffer.last().unwrap().t_ms;
         let cutoff = t_end - TAIL_TRIM_MS;
-        let mut removed = 0usize;
-        while let Some(last) = self.ring_buffer.last() {
+        let mut removed_real = 0usize;
+        while let Some(last) = self.ring_buffer.last().copied() {
             if last.t_ms > cutoff {
-                if removed >= 6 && self.ring_buffer.len() >= 2 {
+                if removed_real >= 6 && self.ring_buffer.len() >= 2 {
                     break;
                 }
                 self.ring_buffer.pop();
-                removed += 1;
+                if !last.interpolated {
+                    removed_real += 1;
+                }
             } else {
                 break;
             }
         }
-        if removed == 0 && self.ring_buffer.len() >= 5 {
+        if removed_real == 0 && self.ring_buffer.len() >= 5 {
             self.ring_buffer.pop();
         }
         let out: Vec<Point2D> = if self.ring_buffer.len() >= 2 {
@@ -861,6 +925,7 @@ impl DrawingController4Tier {
         // 1. Keyboard Esc -> Immediate Cancel + 300ms Pen Lock Cooldown
         if esc_pressed {
             self.pinch_enter_count = 0;
+            self.in_grace_dropout = false;
             self.locked_until_ms = t_ms + PEN_LOCK_COOLDOWN_MS;
             self.hud_mode = DrawingHudMode::LockedCooldown;
             self.ring_buffer.clear();
@@ -881,6 +946,8 @@ impl DrawingController4Tier {
                 undo_cooldown_remaining_ms: (UNDO_COOLDOWN_MS - (t_ms - self.last_undo_ms)).max(0.0) as f32,
                 cancel_hold_progress: 1.0,
                 cancel_reason: "ESC",
+                in_grace_period: false,
+                gap_bridged: false,
             };
         }
 
@@ -888,6 +955,7 @@ impl DrawingController4Tier {
         if t_ms < self.locked_until_ms {
             self.hud_mode = DrawingHudMode::LockedCooldown;
             self.pinch_enter_count = 0;
+            self.in_grace_dropout = false;
             self.ring_buffer.clear();
             let rem = (self.locked_until_ms - t_ms) as f32;
             let undo_rem = (UNDO_COOLDOWN_MS - (t_ms - self.last_undo_ms)).max(0.0) as f32;
@@ -900,6 +968,8 @@ impl DrawingController4Tier {
                     undo_cooldown_remaining_ms: UNDO_COOLDOWN_MS as f32,
                     cancel_hold_progress: 0.0,
                     cancel_reason: "",
+                    in_grace_period: false,
+                    gap_bridged: false,
                 };
             }
             return DrawingStepResult {
@@ -909,6 +979,8 @@ impl DrawingController4Tier {
                 undo_cooldown_remaining_ms: undo_rem,
                 cancel_hold_progress: 0.0,
                 cancel_reason: "",
+                in_grace_period: false,
+                gap_bridged: false,
             };
         }
 
@@ -932,6 +1004,7 @@ impl DrawingController4Tier {
                 self.cancel_candidate = None;
                 self.cancel_since_ms = None;
                 self.pinch_enter_count = 0;
+                self.in_grace_dropout = false;
                 self.locked_until_ms = t_ms + PEN_LOCK_COOLDOWN_MS;
                 self.eraser_suppress_until_ms = t_ms + 550.0;
                 self.hud_mode = DrawingHudMode::LockedCooldown;
@@ -951,6 +1024,8 @@ impl DrawingController4Tier {
                     undo_cooldown_remaining_ms: (UNDO_COOLDOWN_MS - (t_ms - self.last_undo_ms)).max(0.0) as f32,
                     cancel_hold_progress: 1.0,
                     cancel_reason: reason,
+                    in_grace_period: false,
+                    gap_bridged: false,
                 };
             }
         } else {
@@ -984,6 +1059,8 @@ impl DrawingController4Tier {
                 undo_cooldown_remaining_ms: UNDO_COOLDOWN_MS as f32,
                 cancel_hold_progress: cancel_progress,
                 cancel_reason: "",
+                in_grace_period: false,
+                gap_bridged: false,
             };
         }
 
@@ -991,11 +1068,29 @@ impl DrawingController4Tier {
 
         // 5. Schmitt Trigger State Transitions (`< 0.28` >= 3 frames -> Drawing; `> 0.40` -> Hover)
         if was_drawing {
+            if !hand_present || cursor_board.is_none() {
+                if (t_ms - self.last_drawing_seen_ms) <= self.grace_period_ms {
+                    self.in_grace_dropout = true;
+                    self.hud_mode = DrawingHudMode::Drawing;
+                    return DrawingStepResult {
+                        hud_mode: self.hud_mode,
+                        action: DrawingFsmAction::HoldGrace,
+                        cooldown_remaining_ms: 0.0,
+                        undo_cooldown_remaining_ms: undo_rem,
+                        cancel_hold_progress: cancel_progress,
+                        cancel_reason: "",
+                        in_grace_period: true,
+                        gap_bridged: false,
+                    };
+                }
+            }
+
             let should_release = !hand_present
                 || cursor_board.is_none()
                 || (pinch_ratio.map(|r| r > PINCH_EXIT_THRESHOLD).unwrap_or(true)
                     && self.cancel_candidate.is_none());
             if should_release {
+                self.in_grace_dropout = false;
                 let committed = self.trim_ring_tail_and_extract();
                 self.pinch_enter_count = 0;
                 self.hud_mode = DrawingHudMode::Hover;
@@ -1008,6 +1103,8 @@ impl DrawingController4Tier {
                         undo_cooldown_remaining_ms: undo_rem,
                         cancel_hold_progress: cancel_progress,
                         cancel_reason: "",
+                        in_grace_period: false,
+                        gap_bridged: false,
                     };
                 }
                 return DrawingStepResult {
@@ -1017,18 +1114,45 @@ impl DrawingController4Tier {
                     undo_cooldown_remaining_ms: undo_rem,
                     cancel_hold_progress: cancel_progress,
                     cancel_reason: "SHORT_FLICK",
+                    in_grace_period: false,
+                    gap_bridged: false,
                 };
             }
 
+            self.last_drawing_seen_ms = t_ms;
+            let mut gap_bridged = false;
             if let Some(pt) = cursor_board {
                 if self.cancel_candidate.is_none() {
-                    let push = self
-                        .ring_buffer
-                        .last()
-                        .map(|last| last.pt.dist_sq(pt) >= 0.6)
-                        .unwrap_or(true);
-                    if push {
-                        self.ring_buffer.push(TimedBoardPoint { pt, t_ms });
+                    let (jump_overflow, did_bridge) = self.append_with_interpolation(pt, t_ms);
+                    gap_bridged = did_bridge || self.in_grace_dropout;
+                    if jump_overflow {
+                        self.in_grace_dropout = false;
+                        let committed = self.trim_ring_tail_and_extract();
+                        self.pinch_enter_count = 0;
+                        self.hud_mode = DrawingHudMode::Hover;
+                        if committed.len() >= 2 {
+                            self.last_commit_ms = t_ms;
+                            return DrawingStepResult {
+                                hud_mode: self.hud_mode,
+                                action: DrawingFsmAction::CommitStrokeTrimmed(committed),
+                                cooldown_remaining_ms: 0.0,
+                                undo_cooldown_remaining_ms: undo_rem,
+                                cancel_hold_progress: cancel_progress,
+                                cancel_reason: "JUMP_GUARD",
+                                in_grace_period: false,
+                                gap_bridged: false,
+                            };
+                        }
+                        return DrawingStepResult {
+                            hud_mode: self.hud_mode,
+                            action: DrawingFsmAction::CancelStrokeDiscard,
+                            cooldown_remaining_ms: 0.0,
+                            undo_cooldown_remaining_ms: undo_rem,
+                            cancel_hold_progress: cancel_progress,
+                            cancel_reason: "JUMP_GUARD",
+                            in_grace_period: false,
+                            gap_bridged: false,
+                        };
                     }
                     if hold_to_snap_mode {
                         let moved = self
@@ -1046,6 +1170,7 @@ impl DrawingController4Tier {
                     }
                 }
             }
+            self.in_grace_dropout = false;
             self.hud_mode = DrawingHudMode::Drawing;
             return DrawingStepResult {
                 hud_mode: self.hud_mode,
@@ -1054,6 +1179,8 @@ impl DrawingController4Tier {
                 undo_cooldown_remaining_ms: undo_rem,
                 cancel_hold_progress: cancel_progress,
                 cancel_reason: "",
+                in_grace_period: false,
+                gap_bridged,
             };
         }
 
@@ -1069,11 +1196,17 @@ impl DrawingController4Tier {
             self.pinch_enter_count = self.pinch_enter_count.saturating_add(1);
             if self.pinch_enter_count >= PINCH_ENTER_MIN_FRAMES {
                 self.pinch_enter_count = 0;
+                self.in_grace_dropout = false;
+                self.last_drawing_seen_ms = t_ms;
                 self.hud_mode = DrawingHudMode::Drawing;
                 self.ring_buffer.clear();
                 self.hold_to_snap_ready = !hold_to_snap_mode;
                 if let Some(pt) = cursor_board {
-                    self.ring_buffer.push(TimedBoardPoint { pt, t_ms });
+                    self.ring_buffer.push(TimedBoardPoint {
+                        pt,
+                        t_ms,
+                        interpolated: false,
+                    });
                     self.last_motion_pt = Some(pt);
                     self.last_motion_ms = t_ms;
                 }
@@ -1084,6 +1217,8 @@ impl DrawingController4Tier {
                     undo_cooldown_remaining_ms: undo_rem,
                     cancel_hold_progress: 0.0,
                     cancel_reason: "",
+                    in_grace_period: false,
+                    gap_bridged: false,
                 };
             }
         } else {
@@ -1103,6 +1238,8 @@ impl DrawingController4Tier {
                 undo_cooldown_remaining_ms: undo_rem,
                 cancel_hold_progress: cancel_progress,
                 cancel_reason: "",
+                in_grace_period: false,
+                gap_bridged: false,
             };
         }
 
@@ -1115,6 +1252,8 @@ impl DrawingController4Tier {
                 undo_cooldown_remaining_ms: undo_rem,
                 cancel_hold_progress: cancel_progress,
                 cancel_reason: "",
+                in_grace_period: false,
+                gap_bridged: false,
             };
         }
 
@@ -1126,6 +1265,8 @@ impl DrawingController4Tier {
             undo_cooldown_remaining_ms: undo_rem,
             cancel_hold_progress: cancel_progress,
             cancel_reason: "",
+            in_grace_period: false,
+            gap_bridged: false,
         }
     }
 }
@@ -1653,5 +1794,72 @@ mod tests {
             false,
         );
         assert_eq!(u3.action, DrawingFsmAction::UndoWithCooldown);
+    }
+
+    #[test]
+    fn test_drawing_fsm_grace_period_and_max_jump_guard() {
+        let mut ctrl = DrawingController4Tier::new();
+        for i in 0..3 {
+            ctrl.step(
+                i as f64 * 20.0,
+                true,
+                Some(Point2D::new(50.0 + i as f32 * 5.0, 100.0)),
+                Some(0.20),
+                RightGesture::DrawStroke,
+                false,
+                false,
+                false,
+                false,
+            );
+        }
+        assert_eq!(ctrl.hud_mode, DrawingHudMode::Drawing);
+
+        // Brief occlusion (80ms <= 150ms Grace Period) must hold DRAWING & HoldGrace
+        let grace = ctrl.step(
+            120.0,
+            false,
+            None,
+            None,
+            RightGesture::Idle,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(grace.hud_mode, DrawingHudMode::Drawing);
+        assert_eq!(grace.action, DrawingFsmAction::HoldGrace);
+        assert!(grace.in_grace_period);
+
+        // Tracking recovers 95px away (<= 260px max_jump): bridges gap cleanly
+        let bridged = ctrl.step(
+            150.0,
+            true,
+            Some(Point2D::new(155.0, 100.0)),
+            Some(0.22),
+            RightGesture::DrawStroke,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(bridged.hud_mode, DrawingHudMode::Drawing);
+        assert_eq!(bridged.action, DrawingFsmAction::AppendPoint);
+        assert!(bridged.gap_bridged);
+        assert!(ctrl.ring_buffer.len() >= 10);
+
+        // Huge jump (> 260px) splits stroke rather than drawing a stray line across screen
+        let jump_split = ctrl.step(
+            180.0,
+            true,
+            Some(Point2D::new(720.0, 500.0)),
+            Some(0.20),
+            RightGesture::DrawStroke,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(jump_split.hud_mode, DrawingHudMode::Hover);
+        assert_eq!(jump_split.cancel_reason, "JUMP_GUARD");
     }
 }

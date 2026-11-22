@@ -50,6 +50,7 @@ from cv_engine.drawing_fsm import (
     DrawingHudMode,
     StrokeRingBuffer,
     ZeroStrayStrokeDrawingFsm,
+    interpolate_bridge_points,
 )
 from cv_engine.shape_recognizer import (
     BeautifiedShapeResult,
@@ -57,6 +58,20 @@ from cv_engine.shape_recognizer import (
     catmull_rom_spline,
     rdp_simplify,
     resample_arc_length,
+)
+from cv_engine.gemini_client import (
+    ApiConnectionStatus,
+    GeminiCallResult,
+    GeminiHealthCheckResult,
+    ResilientGeminiClient,
+    ResolvedApiKey,
+    build_model_chain,
+    classify_gemini_error,
+    clear_ui_api_key,
+    compress_snapshot_png,
+    mask_api_key,
+    resolve_api_key_layered,
+    save_ui_api_settings,
 )
 
 __all__ = [
@@ -84,9 +99,22 @@ __all__ = [
     "DrawingHudMode",
     "StrokeRingBuffer",
     "ZeroStrayStrokeDrawingFsm",
+    "interpolate_bridge_points",
     "BeautifiedShapeResult",
     "beautify_stroke",
     "catmull_rom_spline",
     "rdp_simplify",
     "resample_arc_length",
+    "ApiConnectionStatus",
+    "GeminiCallResult",
+    "GeminiHealthCheckResult",
+    "ResilientGeminiClient",
+    "ResolvedApiKey",
+    "build_model_chain",
+    "classify_gemini_error",
+    "clear_ui_api_key",
+    "compress_snapshot_png",
+    "mask_api_key",
+    "resolve_api_key_layered",
+    "save_ui_api_settings",
 ]

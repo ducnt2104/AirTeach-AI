@@ -6,6 +6,7 @@
 //! - 1€ Filter, RDP & Shape Snapping parameters
 
 use crate::ai::face_auth::FaceAuthEngine;
+use crate::ai::gemini_chat::{mask_api_key, ApiConnectionStatus, GeminiChatClient};
 use crate::app::{AirTeachApp, AppScreen};
 use crate::core::camera::CameraControlCmd;
 use crate::ui::brand::{render_about_modal, ThemeMode, ThemePalette};
@@ -86,21 +87,62 @@ pub fn render_settings_view(app: &mut AirTeachApp, ctx: &egui::Context) {
                 section_card(
                     ui,
                     palette,
-                    "[GEMINI API] Google Gemini Multimodal API (Mã hóa AES-256-GCM)",
+                    "[GEMINI API] Google Gemini Multimodal API (Ưu tiên UI > .env • Mã hóa AES-256-GCM)",
                     |ui| {
+                        let stored_plain = app.storage.get_decrypted_api_key(&app.config);
+                        let (resolved_key, key_source) =
+                            GeminiChatClient::resolve_api_key_with_source(&stored_plain);
+                        let (badge_txt, badge_col) = if resolved_key.is_empty() {
+                            ("Chưa cấu hình", palette.text_muted)
+                        } else {
+                            match app.api_connection_status {
+                                ApiConnectionStatus::Connected => ("Đã kết nối", palette.success),
+                                ApiConnectionStatus::Error => ("Lỗi Key/Quota", palette.danger),
+                                ApiConnectionStatus::Unconfigured => {
+                                    ("Chưa xác thực", palette.warning)
+                                }
+                            }
+                        };
+
+                        ui.horizontal(|ui| {
+                            egui::Frame::none()
+                                .fill(badge_col.gamma_multiply(0.18))
+                                .stroke(Stroke::new(1.0_f32, badge_col))
+                                .rounding(Rounding::same(10.0))
+                                .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(badge_txt)
+                                            .font(FontId::proportional(11.5))
+                                            .strong()
+                                            .color(badge_col),
+                                    );
+                                });
+                            ui.label(
+                                RichText::new(format!(
+                                    "Key hiệu lực: {} • Nguồn: {}",
+                                    mask_api_key(&resolved_key),
+                                    key_source.label_vi()
+                                ))
+                                .font(FontId::proportional(12.0))
+                                .color(palette.text_secondary),
+                            );
+                        });
+
+                        ui.add_space(6.0);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("Gemini API Key:").color(palette.text_muted));
                             ui.add(
                                 egui::TextEdit::singleline(&mut app.api_key_edit_buffer)
                                     .password(!app.show_api_key_plain)
                                     .hint_text("Nhập Gemini API Key (Lưu mã hóa cục bộ AES-256-GCM)")
-                                    .desired_width(380.0),
+                                    .desired_width(320.0),
                             );
                             ui.checkbox(&mut app.show_api_key_plain, "Hiện");
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new("[Mã hóa & Lưu Key]")
+                                        RichText::new("Lưu Key")
                                             .color(Color32::WHITE)
                                             .strong(),
                                     )
@@ -109,20 +151,63 @@ pub fn render_settings_view(app: &mut AirTeachApp, ctx: &egui::Context) {
                                 )
                                 .clicked()
                             {
-                                app.storage
-                                    .set_encrypted_api_key(&mut app.config, &app.api_key_edit_buffer);
-                                app.settings_status_banner =
-                                    "[OK] Đã mã hóa AES-256-GCM và lưu Gemini API Key vào SQLite."
-                                        .to_string();
+                                app.save_ui_gemini_api_key();
+                            }
+
+                            let test_btn_lbl = if app.api_test_in_flight {
+                                "Đang kiểm..."
+                            } else {
+                                "Kiểm tra kết nối (Test API)"
+                            };
+                            if ui
+                                .add_enabled(
+                                    !app.api_test_in_flight,
+                                    egui::Button::new(
+                                        RichText::new(test_btn_lbl)
+                                            .color(Color32::WHITE)
+                                            .strong(),
+                                    )
+                                    .fill(palette.secondary)
+                                    .rounding(Rounding::same(8.0)),
+                                )
+                                .clicked()
+                            {
+                                app.trigger_gemini_health_check();
+                            }
+
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Xóa Key")
+                                            .color(Color32::WHITE)
+                                            .strong(),
+                                    )
+                                    .fill(palette.danger)
+                                    .rounding(Rounding::same(8.0)),
+                                )
+                                .clicked()
+                            {
+                                app.clear_ui_gemini_api_key();
                             }
                         });
+
+                        if !app.api_status_detail_vi.trim().is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(&app.api_status_detail_vi)
+                                    .font(FontId::proportional(11.5))
+                                    .color(badge_col),
+                            );
+                        }
 
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("Mô hình Gemini:").color(palette.text_muted));
-                            for model_id in
-                                ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
-                            {
+                            for model_id in [
+                                "gemini-3.8-flash",
+                                "gemini-3.5-flash",
+                                "gemini-3.5-flash-lite",
+                            ] {
                                 if ui
                                     .selectable_value(
                                         &mut app.config.gemini_model,

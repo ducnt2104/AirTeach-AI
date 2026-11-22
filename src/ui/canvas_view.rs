@@ -74,31 +74,33 @@ pub fn render_left_camera_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
             painter.rect_filled(cam_rect, Rounding::same(8.0), palette.bg_canvas);
 
             let mut active_view_rect = cam_rect;
-            if let Some(ref tex) = app.camera_texture {
-                let tex_size = tex.size_vec2();
-                let tex_aspect = if tex_size.y > 0.0 {
-                    tex_size.x / tex_size.y
-                } else {
-                    4.0 / 3.0
-                };
-                let box_aspect = cam_rect.width() / cam_rect.height().max(1.0);
-                let draw_rect = if (tex_aspect - box_aspect).abs() < 0.05 {
-                    cam_rect
-                } else if tex_aspect > box_aspect {
-                    let h = cam_rect.width() / tex_aspect;
-                    Rect::from_center_size(cam_rect.center(), Vec2::new(cam_rect.width(), h))
-                } else {
-                    let w = cam_rect.height() * tex_aspect;
-                    Rect::from_center_size(cam_rect.center(), Vec2::new(w, cam_rect.height()))
-                };
-                active_view_rect = draw_rect;
+            if app.camera_using_hardware {
+                if let Some(ref tex) = app.camera_texture {
+                    let tex_size = tex.size_vec2();
+                    let tex_aspect = if tex_size.y > 0.0 {
+                        tex_size.x / tex_size.y
+                    } else {
+                        4.0 / 3.0
+                    };
+                    let box_aspect = cam_rect.width() / cam_rect.height().max(1.0);
+                    let draw_rect = if (tex_aspect - box_aspect).abs() < 0.05 {
+                        cam_rect
+                    } else if tex_aspect > box_aspect {
+                        let h = cam_rect.width() / tex_aspect;
+                        Rect::from_center_size(cam_rect.center(), Vec2::new(cam_rect.width(), h))
+                    } else {
+                        let w = cam_rect.height() * tex_aspect;
+                        Rect::from_center_size(cam_rect.center(), Vec2::new(w, cam_rect.height()))
+                    };
+                    active_view_rect = draw_rect;
 
-                painter.image(
-                    tex.id(),
-                    draw_rect,
-                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                    Color32::WHITE,
-                );
+                    painter.image(
+                        tex.id(),
+                        draw_rect,
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
             }
 
             if app.camera_using_hardware {
@@ -1186,6 +1188,7 @@ fn handle_pointer_interaction(
         ActiveBoardTool::Pen => {
             if response.drag_started_by(egui::PointerButton::Primary) {
                 app.redo_strokes.clear();
+                app.redo_replace_flags.clear();
                 app.begin_board_stroke(board_pt);
             } else if response.dragged_by(egui::PointerButton::Primary) {
                 app.append_board_stroke(board_pt);

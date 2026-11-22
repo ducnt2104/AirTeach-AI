@@ -11,6 +11,8 @@ import time
 import math
 import hmac
 import json
+import queue
+import threading
 import wave
 import hashlib
 import secrets
@@ -105,11 +107,24 @@ from cv_engine.drawing_fsm import (
     DrawingFsmUpdate,
     ZeroStrayStrokeDrawingFsm,
     UNDO_COOLDOWN_MS,
+    interpolate_bridge_points,
 )
 from cv_engine.face_id import (
     ArcFace512Extractor,
     DEFAULT_ARCFACE_THRESHOLD,
     multi_template_cosine_similarity,
+)
+from cv_engine.gemini_client import (
+    ApiConnectionStatus,
+    DEFAULT_GEMINI_MODEL,
+    GeminiHealthCheckResult,
+    ResilientGeminiClient,
+    build_model_chain,
+    clear_ui_api_key,
+    compress_snapshot_png,
+    mask_api_key,
+    resolve_api_key_layered,
+    save_ui_api_settings,
 )
 from cv_engine.hand_gesture import HandGestureEngine, classify_hand_3d_vectors
 from cv_engine.preprocessing import preprocess_adaptive_frame
@@ -285,6 +300,11 @@ class CameraHandWorker(QThread):
         self._is_processing = False
         self._switch_requested: Optional[int] = None
         self._was_pinched = False
+        self._frame_lock = threading.Lock()
+        self._latest_frame: Optional[np.ndarray] = None
+        self._frame_seq: int = 0
+        self._frame_event = threading.Event()
+        self._capture_thread: Optional[threading.Thread] = None
 
     def select_camera(self, idx: int) -> None:
         self._camera_paused = False
@@ -299,13 +319,15 @@ class CameraHandWorker(QThread):
 
     def stop(self) -> None:
         self.running = False
-        self.wait(1500)
+        self._frame_event.set()
+        self.wait(2000)
 
     def _open_camera(self, idx: int) -> Optional[cv2.VideoCapture]:
         backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY] if sys.platform == "win32" else [cv2.CAP_ANY]
         for backend in backends:
             cap = cv2.VideoCapture(idx, backend)
             if cap.isOpened():
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 cap.set(cv2.CAP_PROP_FPS, 30)
@@ -315,19 +337,11 @@ class CameraHandWorker(QThread):
                 cap.release()
         return None
 
-    def run(self) -> None:
-        face_extractor = ArcFace512Extractor(models_dir=MODELS_DIR, min_detection_confidence=0.55)
-        hand_engine = HandGestureEngine(
-            models_dir=MODELS_DIR,
-            min_detection_confidence=0.60,
-            min_tracking_confidence=0.70,
-        )
-
+    def _capture_loop(self) -> None:
+        """Dedicated non-blocking camera capture thread keeping only the latest frame (zero queue buildup)."""
         cap = None if self._camera_paused else self._open_camera(self.cam_idx)
-        prev_gray: Optional[np.ndarray] = None
-        last_time = time.perf_counter()
-        smoothed_fps = 0.0
         paused_notice_sent = False
+        no_cam_notice_sent = False
 
         while self.running:
             if self._camera_paused:
@@ -335,6 +349,8 @@ class CameraHandWorker(QThread):
                     cap.release()
                     cap = None
                     paused_notice_sent = False
+                with self._frame_lock:
+                    self._latest_frame = None
                 if not paused_notice_sent:
                     paused_notice_sent = True
                     self.frame_ready.emit({
@@ -355,7 +371,7 @@ class CameraHandWorker(QThread):
                         "cursor_norm": None,
                         "left_pan_active": False,
                     })
-                time.sleep(0.08)
+                time.sleep(0.05)
                 continue
 
             paused_notice_sent = False
@@ -366,162 +382,211 @@ class CameraHandWorker(QThread):
                     cap.release()
                 self.cam_idx = new_idx
                 cap = self._open_camera(self.cam_idx)
-                prev_gray = None
+                no_cam_notice_sent = False
+                with self._frame_lock:
+                    self._latest_frame = None
 
             if cap is None or not cap.isOpened():
-                self.frame_ready.emit({
-                    "ok": False,
-                    "paused": False,
-                    "cam_idx": self.cam_idx,
-                    "fps": 0.0,
-                    "qimage": None,
-                    "raw_bgr": None,
-                    "lighting": {"mean_luma": 0.0, "laplacian_var": 0.0, "condition": "NO_CAM"},
-                    "face_bbox": None,
-                    "face_5pt": None,
-                    "face_emb_512": None,
-                    "liveness_diff": 0.0,
-                    "gesture": "IDLE",
-                    "pose_tag": "IDLE",
-                    "pinch_ratio": None,
-                    "cursor_norm": None,
-                    "left_pan_active": False,
-                })
+                if not no_cam_notice_sent:
+                    no_cam_notice_sent = True
+                    self.frame_ready.emit({
+                        "ok": False,
+                        "paused": False,
+                        "cam_idx": self.cam_idx,
+                        "fps": 0.0,
+                        "qimage": None,
+                        "raw_bgr": None,
+                        "lighting": {"mean_luma": 0.0, "laplacian_var": 0.0, "condition": "NO_CAM"},
+                        "face_bbox": None,
+                        "face_5pt": None,
+                        "face_emb_512": None,
+                        "liveness_diff": 0.0,
+                        "gesture": "IDLE",
+                        "pose_tag": "IDLE",
+                        "pinch_ratio": None,
+                        "cursor_norm": None,
+                        "left_pan_active": False,
+                    })
                 time.sleep(0.25)
                 cap = self._open_camera(self.cam_idx)
                 continue
 
+            no_cam_notice_sent = False
             ok, frame = cap.read()
             if not ok or frame is None or frame.size == 0:
-                time.sleep(0.02)
+                time.sleep(0.01)
                 continue
 
-            if self._is_processing:
-                continue
-            self._is_processing = True
-
-            try:
-                now = time.perf_counter()
-                dt = max(1e-3, now - last_time)
-                last_time = now
-                inst_fps = min(120.0, 1.0 / dt)
-                smoothed_fps = inst_fps if smoothed_fps <= 0.1 else (0.8 * smoothed_fps + 0.2 * inst_fps)
-
-                bgr = cv2.flip(frame, 1)
-                if self.auto_hdr_backlight:
-                    bgr, light_diag = preprocess_adaptive_frame(
-                        bgr, is_rgb=False, quality_gate_min=22.0
-                    )
-                    light_metrics = light_diag.to_dict()
-                else:
-                    gray_raw = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-                    light_metrics = {
-                        "mean_luma": float(np.mean(gray_raw)),
-                        "laplacian_var": float(cv2.Laplacian(gray_raw, cv2.CV_64F).var()),
-                        "lighting_mode": "RAW",
-                    }
-
-                h, w = bgr.shape[:2]
-                gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-                if prev_gray is not None and prev_gray.shape == gray.shape:
-                    liveness_diff = float(np.mean(cv2.absdiff(gray, prev_gray))) / 12.0
-                    liveness_diff = float(np.clip(liveness_diff, 0.0, 1.0))
-                else:
-                    liveness_diff = 0.0
-                prev_gray = gray
-
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
-                # Face ID (5-Point Affine 112x112 Alignment + 512-D Deep ArcFace)
-                face_info = face_extractor.detect_and_extract(rgb, quality_gate_min_sharpness=22.0)
-                face_boxes = face_info.get("face_boxes") or []
-                primary_face = face_info.get("face")
-                face_bbox = tuple(primary_face) if primary_face and len(primary_face) == 4 else None
-
-                # Dual-Hand 3D Tracking + ROI 384x384 Zoom Crop + One-Euro Smoothing
-                left_hand, right_hand = hand_engine.detect_hands(rgb, face_boxes)
-
-                display_bgr = bgr.copy()
-                if face_bbox is not None:
-                    fx, fy, fw, fh = face_bbox
-                    cv2.rectangle(
-                        display_bgr,
-                        (int(fx * w), int(fy * h)),
-                        (int((fx + fw) * w), int((fy + fh) * h)),
-                        (212, 245, 0),
-                        1,
-                        cv2.LINE_AA,
-                    )
-
-                for h_obj in (left_hand, right_hand):
-                    if not h_obj or "lm" not in h_obj:
-                        continue
-                    pts = h_obj["lm"]
-                    for i, j in HAND_BONE_PAIRS:
-                        p1 = (int(pts[i][0] * w), int(pts[i][1] * h))
-                        p2 = (int(pts[j][0] * w), int(pts[j][1] * h))
-                        cv2.line(display_bgr, p1, p2, (212, 245, 0), 2, cv2.LINE_AA)
-                    for idx, pt in enumerate(pts):
-                        r = 5 if idx in (4, 8, 12, 16, 20) else 3
-                        cv2.circle(
-                            display_bgr,
-                            (int(pt[0] * w), int(pt[1] * h)),
-                            r,
-                            (64, 228, 254),
-                            -1,
-                            cv2.LINE_AA,
-                        )
-
-                gesture = "IDLE"
-                pose_tag = "IDLE"
-                pinch_ratio = None
-                cursor_norm = None
-                primary = right_hand or left_hand
-                if primary is not None:
-                    gesture = str(primary.get("gesture", "HOVER"))
-                    pose_tag = str(primary.get("pose_tag", gesture))
-                    pinch_ratio = primary.get("pinch_ratio")
-                    cn = primary.get("cursor_norm")
-                    if cn is not None and len(cn) >= 2:
-                        cursor_norm = (float(cn[0]), float(cn[1]))
-                    self._was_pinched = pose_tag == "PINCH"
-                else:
-                    self._was_pinched = False
-
-                left_pan_active = bool(
-                    left_hand and left_hand.get("gesture") in ("HOVER", "PAN")
-                )
-
-                disp_rgb = cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB)
-                qimg = QImage(
-                    disp_rgb.data, w, h, disp_rgb.strides[0], QImage.Format_RGB888
-                ).copy()
-
-                self.frame_ready.emit({
-                    "ok": True,
-                    "paused": False,
-                    "cam_idx": self.cam_idx,
-                    "fps": smoothed_fps,
-                    "qimage": qimg,
-                    "raw_bgr": bgr,
-                    "lighting": light_metrics,
-                    "face_bbox": face_bbox,
-                    "face_5pt": face_info.get("face_5pt"),
-                    "face_emb_512": face_info.get("face_emb_512"),
-                    "liveness_diff": liveness_diff,
-                    "gesture": gesture,
-                    "pose_tag": pose_tag,
-                    "pinch_ratio": pinch_ratio,
-                    "cursor_norm": cursor_norm,
-                    "left_pan_active": left_pan_active,
-                })
-            finally:
-                self._is_processing = False
-            time.sleep(0.012)
+            with self._frame_lock:
+                self._latest_frame = frame
+                self._frame_seq += 1
+            self._frame_event.set()
 
         if cap is not None:
             cap.release()
-        hand_engine.close()
+
+    def run(self) -> None:
+        face_extractor = ArcFace512Extractor(models_dir=MODELS_DIR, min_detection_confidence=0.55)
+        hand_engine = HandGestureEngine(
+            models_dir=MODELS_DIR,
+            min_detection_confidence=0.60,
+            min_tracking_confidence=0.70,
+        )
+
+        self._capture_thread = threading.Thread(
+            target=self._capture_loop, name="airteach-py-capture", daemon=True
+        )
+        self._capture_thread.start()
+
+        prev_gray: Optional[np.ndarray] = None
+        last_time = time.perf_counter()
+        smoothed_fps = 0.0
+        last_processed_seq = -1
+
+        try:
+            while self.running:
+                self._frame_event.wait(timeout=0.05)
+                self._frame_event.clear()
+
+                if not self.running or self._camera_paused:
+                    prev_gray = None
+                    continue
+
+                if self._is_processing:
+                    continue
+
+                with self._frame_lock:
+                    if self._latest_frame is None or self._frame_seq == last_processed_seq:
+                        continue
+                    frame = self._latest_frame.copy()
+                    last_processed_seq = self._frame_seq
+
+                self._is_processing = True
+                try:
+                    now = time.perf_counter()
+                    dt = max(1e-3, now - last_time)
+                    last_time = now
+                    inst_fps = min(120.0, 1.0 / dt)
+                    smoothed_fps = inst_fps if smoothed_fps <= 0.1 else (0.8 * smoothed_fps + 0.2 * inst_fps)
+
+                    bgr = cv2.flip(frame, 1)
+                    if self.auto_hdr_backlight:
+                        bgr, light_diag = preprocess_adaptive_frame(
+                            bgr,
+                            is_rgb=False,
+                            quality_gate_min=22.0,
+                            auto_lightweight_normal=True,
+                        )
+                        light_metrics = light_diag.to_dict()
+                    else:
+                        gray_raw = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                        light_metrics = {
+                            "mean_luma": float(np.mean(gray_raw)),
+                            "laplacian_var": float(cv2.Laplacian(gray_raw, cv2.CV_64F).var()),
+                            "lighting_mode": "RAW",
+                        }
+
+                    h, w = bgr.shape[:2]
+                    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                    if prev_gray is not None and prev_gray.shape == gray.shape:
+                        liveness_diff = float(np.mean(cv2.absdiff(gray, prev_gray))) / 12.0
+                        liveness_diff = float(np.clip(liveness_diff, 0.0, 1.0))
+                    else:
+                        liveness_diff = 0.0
+                    prev_gray = gray
+
+                    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+                    # Face ID (5-Point Affine 112x112 Alignment + 512-D Deep ArcFace)
+                    face_info = face_extractor.detect_and_extract(rgb, quality_gate_min_sharpness=22.0)
+                    face_boxes = face_info.get("face_boxes") or []
+                    primary_face = face_info.get("face")
+                    face_bbox = tuple(primary_face) if primary_face and len(primary_face) == 4 else None
+
+                    # Dual-Hand 3D Tracking + ROI 384x384 Zoom Crop + One-Euro Smoothing
+                    left_hand, right_hand = hand_engine.detect_hands(rgb, face_boxes)
+
+                    display_bgr = bgr.copy()
+                    if face_bbox is not None:
+                        fx, fy, fw, fh = face_bbox
+                        cv2.rectangle(
+                            display_bgr,
+                            (int(fx * w), int(fy * h)),
+                            (int((fx + fw) * w), int((fy + fh) * h)),
+                            (212, 245, 0),
+                            1,
+                            cv2.LINE_AA,
+                        )
+
+                    for h_obj in (left_hand, right_hand):
+                        if not h_obj or "lm" not in h_obj:
+                            continue
+                        pts = h_obj["lm"]
+                        for i, j in HAND_BONE_PAIRS:
+                            p1 = (int(pts[i][0] * w), int(pts[i][1] * h))
+                            p2 = (int(pts[j][0] * w), int(pts[j][1] * h))
+                            cv2.line(display_bgr, p1, p2, (212, 245, 0), 2, cv2.LINE_AA)
+                        for idx, pt in enumerate(pts):
+                            r = 5 if idx in (4, 8, 12, 16, 20) else 3
+                            cv2.circle(
+                                display_bgr,
+                                (int(pt[0] * w), int(pt[1] * h)),
+                                r,
+                                (64, 228, 254),
+                                -1,
+                                cv2.LINE_AA,
+                            )
+
+                    gesture = "IDLE"
+                    pose_tag = "IDLE"
+                    pinch_ratio = None
+                    cursor_norm = None
+                    primary = right_hand or left_hand
+                    if primary is not None:
+                        gesture = str(primary.get("gesture", "HOVER"))
+                        pose_tag = str(primary.get("pose_tag", gesture))
+                        pinch_ratio = primary.get("pinch_ratio")
+                        cn = primary.get("cursor_norm")
+                        if cn is not None and len(cn) >= 2:
+                            cursor_norm = (float(cn[0]), float(cn[1]))
+                        self._was_pinched = pose_tag == "PINCH"
+                    else:
+                        self._was_pinched = False
+
+                    left_pan_active = bool(
+                        left_hand and left_hand.get("gesture") in ("HOVER", "PAN")
+                    )
+
+                    disp_rgb = cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB)
+                    qimg = QImage(
+                        disp_rgb.data, w, h, disp_rgb.strides[0], QImage.Format_RGB888
+                    ).copy()
+
+                    self.frame_ready.emit({
+                        "ok": True,
+                        "paused": False,
+                        "cam_idx": self.cam_idx,
+                        "fps": smoothed_fps,
+                        "qimage": qimg,
+                        "raw_bgr": bgr,
+                        "lighting": light_metrics,
+                        "face_bbox": face_bbox,
+                        "face_5pt": face_info.get("face_5pt"),
+                        "face_emb_512": face_info.get("face_emb_512"),
+                        "liveness_diff": liveness_diff,
+                        "gesture": gesture,
+                        "pose_tag": pose_tag,
+                        "pinch_ratio": pinch_ratio,
+                        "cursor_norm": cursor_norm,
+                        "left_pan_active": left_pan_active,
+                    })
+                finally:
+                    self._is_processing = False
+        finally:
+            if self._capture_thread is not None and self._capture_thread.is_alive():
+                self._capture_thread.join(timeout=1.0)
+            hand_engine.close()
+            face_extractor.close()
 
     @staticmethod
     def _is_valid_hand(
@@ -580,8 +645,23 @@ def _save_ai_cache(cache: Dict[str, Any]) -> None:
         _ = exc
 
 
+class GeminiHealthCheckWorker(QThread):
+    completed = Signal(object)  # emits GeminiHealthCheckResult
+
+    def __init__(self, api_key: str, model_id: Optional[str] = None) -> None:
+        super().__init__()
+        self.api_key = (api_key or "").strip()
+        self.model_id = model_id
+
+    def run(self) -> None:
+        client = ResilientGeminiClient()
+        res = client.test_connection(api_key=self.api_key, primary_model=self.model_id)
+        self.completed.emit(res)
+
+
 class GeminiVisionWorker(QThread):
     finished_text = Signal(str)
+    status_changed = Signal(object)  # optional ApiConnectionStatus
 
     def __init__(
         self,
@@ -589,12 +669,14 @@ class GeminiVisionWorker(QThread):
         prompt: str,
         png_bytes: Optional[bytes],
         structured_json: bool = False,
+        primary_model: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.api_key = api_key.strip()
         self.prompt = prompt
         self.png_bytes = png_bytes
         self.structured_json = structured_json
+        self.primary_model = primary_model
 
     def _build_cache_key(self, model_chain: Tuple[str, ...]) -> str:
         h = hashlib.sha256()
@@ -608,7 +690,12 @@ class GeminiVisionWorker(QThread):
     @staticmethod
     def _format_structured_response(raw_text: str) -> str:
         try:
-            obj = json.loads(raw_text)
+            cleaned = raw_text.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.lstrip("`").removeprefix("json").strip()
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3].strip()
+            obj = json.loads(cleaned)
             if isinstance(obj, dict):
                 parts = []
                 if obj.get("summary"):
@@ -626,13 +713,8 @@ class GeminiVisionWorker(QThread):
         return raw_text
 
     def run(self) -> None:
-        primary_model = os.environ.get("GEMINI_MODEL_ID", "gemini-3.5-flash").strip() or "gemini-3.5-flash"
-        fallback_raw = os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.0-flash")
-        chain_list = [primary_model]
-        for m in fallback_raw.split(","):
-            ms = m.strip()
-            if ms and ms not in chain_list:
-                chain_list.append(ms)
+        chain_list = build_model_chain(primary_model=self.primary_model)
+        primary_model = chain_list[0] if chain_list else DEFAULT_GEMINI_MODEL
         model_chain = tuple(chain_list)
         cache_key = self._build_cache_key(model_chain)
         cache = _load_ai_cache()
@@ -640,87 +722,58 @@ class GeminiVisionWorker(QThread):
         if not self.api_key:
             cached = cache.get(cache_key)
             if cached and cached.get("text"):
-                self.finished_text.emit(
-                    f"*(Offline Cache)*\n\n{cached['text']}"
-                )
+                self.finished_text.emit(f"*(Offline Cache)*\n\n{cached['text']}")
                 return
+            self.status_changed.emit(ApiConnectionStatus.UNCONFIGURED)
             self.finished_text.emit(
-                "Chế độ Offline / Chưa cấu hình `GEMINI_API_KEY` trong `.env`.\n"
+                "Chế độ Offline / Chưa cấu hình `GEMINI_API_KEY` trong UI Settings hoặc `.env`.\n"
                 "• Tất cả tính năng Thị giác máy tính (Hands/Face ID), Bảng trắng không chạm, Nắn hình lai và Đăng nhập cục bộ vẫn hoạt động 100%.\n"
-                f"• Để dùng `{primary_model}`, hãy nhập API Key ở ô phía trên."
+                f"• Để dùng `{primary_model}`, hãy nhập API Key ở phần Cài đặt API Key phía trên."
             )
             return
 
-        if not HAS_GENAI_SDK:
-            self.finished_text.emit(
-                "Chưa cài đặt thư viện google-genai. Hãy chạy: pip install google-genai"
-            )
-            return
-
-        try:
-            client = genai.Client(api_key=self.api_key)
-            prompt_text = self.prompt
-            if self.structured_json:
-                prompt_text = (
-                    f"{self.prompt}\n\nHãy trả lời bằng JSON hợp lệ gồm các khóa: "
-                    "`summary` (string), `steps` (list string), `quiz` (list string)."
-                )
-            contents: List[Any] = [prompt_text]
-            if self.png_bytes:
-                contents.append(
-                    genai_types.Part.from_bytes(data=self.png_bytes, mime_type="image/png")
-                )
-
-            cfg = (
-                genai_types.GenerateContentConfig(response_mime_type="application/json")
-                if self.structured_json
-                else None
+        prompt_text = self.prompt
+        if self.structured_json:
+            prompt_text = (
+                f"{self.prompt}\n\nHãy trả lời bằng JSON hợp lệ gồm các khóa: "
+                "`summary` (string), `steps` (list string), `quiz` (list string)."
             )
 
-            resp = None
-            used_model = primary_model
-            last_exc: Optional[Exception] = None
-            for model_id in model_chain:
-                for attempt in range(2):
-                    try:
-                        kwargs: Dict[str, Any] = {"model": model_id, "contents": contents}
-                        if cfg is not None:
-                            kwargs["config"] = cfg
-                        resp = client.models.generate_content(**kwargs)
-                        used_model = model_id
-                        break
-                    except Exception as model_exc:
-                        last_exc = model_exc
-                        if attempt == 0:
-                            time.sleep(0.45)
-                if resp is not None:
-                    break
+        resilient = ResilientGeminiClient()
+        res = resilient.generate_multimodal(
+            api_key=self.api_key,
+            prompt=prompt_text,
+            png_bytes=self.png_bytes,
+            primary_model=primary_model,
+            fallback_models=chain_list[1:],
+            structured_json=self.structured_json,
+        )
 
-            if resp is None:
-                raise RuntimeError(str(last_exc))
-
-            raw_text = getattr(resp, "text", None) or "Không nhận được phản hồi văn bản từ Gemini."
+        if res.ok:
+            self.status_changed.emit(ApiConnectionStatus.CONNECTED)
             formatted = (
-                self._format_structured_response(raw_text)
+                self._format_structured_response(res.text)
                 if self.structured_json
-                else raw_text
+                else res.text
             )
             cache[cache_key] = {
-                "model": used_model,
+                "model": res.model_used,
                 "text": formatted,
                 "ts": datetime.now().isoformat(),
             }
             _save_ai_cache(cache)
-            self.finished_text.emit(f"*[{used_model}]*\n\n{formatted}")
-        except Exception as exc:
+            self.finished_text.emit(f"*[{res.model_used}]*\n\n{formatted}")
+        else:
+            self.status_changed.emit(ApiConnectionStatus.ERROR)
             cached = cache.get(cache_key)
             if cached and cached.get("text"):
                 self.finished_text.emit(
-                    f"*(Mất kết nối Gemini — Đang dùng bộ nhớ đệm cục bộ)*\n\n{cached['text']}"
+                    f"*(Fallback Cache · {res.error_message_vi})*\n\n{cached['text']}"
                 )
             else:
                 self.finished_text.emit(
-                    f"Không thể kết nối Gemini AI ({exc}).\nBảng trắng, CV và nắn hình vẫn đang chạy bình thường ở chế độ Offline."
+                    f"⚠ **{res.error_message_vi}**\n\n"
+                    "Bảng trắng, nhận diện cử chỉ tay và nắn hình vẫn đang hoạt động bình thường ở chế độ Ngoại tuyến."
                 )
 
 
@@ -1263,14 +1316,17 @@ class SmartboardCanvas(QWidget):
         self.cancel_hold_progress = upd.cancel_hold_progress
         self.cursor_mode = upd.hud_mode.value
 
-        if upd.action in ("BEGIN_STROKE", "APPEND_POINT"):
+        if upd.action in ("BEGIN_STROKE", "APPEND_POINT", "HOLD_GRACE"):
             if upd.action == "BEGIN_STROKE":
                 self.redo_strokes.clear()
                 self._stroke_start_ms = now_ms
                 self._last_motion_ms = now_ms
                 self._last_motion_pt = QPointF(upd.cursor_xy[0], upd.cursor_xy[1]) if upd.cursor_xy else None
                 self._hold_snap_ready = not self.hold_to_snap_350ms
-            self.current_stroke = [QPointF(x, y) for (x, y) in upd.active_points]
+            elif upd.action == "HOLD_GRACE":
+                self.cursor_mode = "DRAWING"
+            if upd.active_points:
+                self.current_stroke = [QPointF(x, y) for (x, y) in upd.active_points]
         elif upd.action == "COMMIT_STROKE":
             self.current_stroke = [QPointF(x, y) for (x, y) in upd.committed_points]
             self._finalize_current_stroke(now_ms=now_ms)
@@ -1284,7 +1340,7 @@ class SmartboardCanvas(QWidget):
                 self.toast_revert_rect = None
         elif upd.action == "UNDO":
             self.undo()
-        elif upd.action == "PALM_ERASE" and upd.cursor_xy is not None:
+        elif upd.action in ("ERASE", "PALM_ERASE") and upd.cursor_xy is not None:
             self._erase_at(QPointF(upd.cursor_xy[0], upd.cursor_xy[1]), 45.0)
 
         self.hud_status_changed.emit(
@@ -1414,7 +1470,27 @@ class SmartboardCanvas(QWidget):
                     self._last_motion_pt = pt
                     self._last_motion_ms = now_ms
                 self._hold_snap_ready = (not self.hold_to_snap_350ms) or ((now_ms - self._last_motion_ms) >= 350.0)
-                self.current_stroke.append(pt)
+                if self.current_stroke:
+                    last_qpt = self.current_stroke[-1]
+                    seg_dist = math.hypot(pt.x() - last_qpt.x(), pt.y() - last_qpt.y())
+                    if seg_dist > 10.0:
+                        p_before = (
+                            (self.current_stroke[-2].x(), self.current_stroke[-2].y())
+                            if len(self.current_stroke) >= 2
+                            else None
+                        )
+                        pts = interpolate_bridge_points(
+                            p_before,
+                            (last_qpt.x(), last_qpt.y()),
+                            (pt.x(), pt.y()),
+                            max_step_px=12.0,
+                        )
+                        for ix, iy in pts:
+                            self.current_stroke.append(QPointF(ix, iy))
+                    else:
+                        self.current_stroke.append(pt)
+                else:
+                    self.current_stroke.append(pt)
         else:
             self.cursor_mode = "LASER" if self.active_tool == "LASER" else "HOVER"
         self.update()
@@ -1496,16 +1572,41 @@ class SmartboardCanvas(QWidget):
         self.strokes = kept
 
     def undo(self) -> None:
-        if self.strokes:
-            self.redo_strokes.append(self.strokes.pop())
-            self.shape_toast = None
-            self.toast_revert_rect = None
-            self.update()
+        if not self.strokes:
+            return
+        top = self.strokes[-1]
+        raw_pts = top.get("raw_points")
+        if top.get("is_beautified") and raw_pts and len(raw_pts) >= 2:
+            # Ctrl+Z Step 1: Revert snapped geometric shape back to smooth raw freehand stroke
+            snapped_snapshot = dict(top)
+            snapped_snapshot["points"] = [QPointF(p) for p in top.get("points", [])]
+            snapped_snapshot["raw_points"] = [QPointF(p) for p in raw_pts]
+            snapped_snapshot["_replace_last"] = True
+            self.redo_strokes.append(snapped_snapshot)
+
+            top["points"] = [QPointF(p) for p in raw_pts]
+            top["is_beautified"] = False
+            top["shape_type"] = "FREEHAND"
+            top["shape_label_vi"] = "Nét gốc mượt (Ctrl+Z)"
+            top["confidence"] = 0.0
+        else:
+            # Ctrl+Z Step 2 (or normal freehand stroke): Delete stroke
+            popped = self.strokes.pop()
+            popped.pop("_replace_last", None)
+            self.redo_strokes.append(popped)
+        self.shape_toast = None
+        self.toast_revert_rect = None
+        self.update()
 
     def redo(self) -> None:
-        if self.redo_strokes:
-            self.strokes.append(self.redo_strokes.pop())
-            self.update()
+        if not self.redo_strokes:
+            return
+        item = self.redo_strokes.pop()
+        if item.pop("_replace_last", False) and self.strokes:
+            self.strokes[-1] = item
+        else:
+            self.strokes.append(item)
+        self.update()
 
     def clear_board(self) -> None:
         self.strokes.clear()
@@ -1525,7 +1626,8 @@ class SmartboardCanvas(QWidget):
         buf = QBuffer(ba)
         buf.open(QIODevice.WriteOnly)
         cropped_pm.save(buf, "PNG")
-        return bytes(ba), cropped_pm
+        compressed_bytes = compress_snapshot_png(bytes(ba), max_dim=1024)
+        return compressed_bytes, cropped_pm
 
     def _crop_and_emit_selection(self, p0: QPointF, p1: QPointF) -> None:
         rect = QRectF(p0, p1).normalized()
@@ -1727,8 +1829,11 @@ class AirTeachMainWindow(QMainWindow):
         self.resize(1400, 820)
 
         self.logged_in_user: Dict[str, Any] = {}
-        self.api_key: str = os.environ.get("GEMINI_API_KEY", "").strip()
+        self.api_key_state = resolve_api_key_layered()
+        self.api_key: str = self.api_key_state.api_key
+        self.gemini_conn_status: ApiConnectionStatus = ApiConnectionStatus.UNCONFIGURED
         self.gemini_worker: Optional[GeminiVisionWorker] = None
+        self.health_worker: Optional[GeminiHealthCheckWorker] = None
         self.is_recording_audio = False
         self.audio_frames: List[np.ndarray] = []
         self.vu_db: float = -60.0
@@ -1972,29 +2077,86 @@ class AirTeachMainWindow(QMainWindow):
         r_layout.setSpacing(6)
 
         ai_hdr = QHBoxLayout()
-        ai_title = QLabel("Trợ Lý Gemini 3.5 Flash")
+        ai_title = QLabel(f"Trợ Lý AI ({DEFAULT_GEMINI_MODEL})")
         ai_title.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 700; font-size: 13px;")
         ai_hdr.addWidget(ai_title)
+
+        self.api_status_badge = QLabel("Chưa cấu hình")
+        self.api_status_badge.setStyleSheet(
+            f"background: {BORDER_SLATE}; color: {TEXT_LIGHT}; border-radius: 9px; padding: 2px 8px; font-size: 10px; font-weight: 700;"
+        )
+        ai_hdr.addWidget(self.api_status_badge)
         ai_hdr.addStretch(1)
+
         self.change_key_btn = QPushButton("[API Key]")
         self.change_key_btn.setFixedHeight(24)
-        self.change_key_btn.clicked.connect(lambda: self.api_key_frame.setVisible(True))
+        self.change_key_btn.clicked.connect(
+            lambda: self.api_key_frame.setVisible(not self.api_key_frame.isVisible())
+        )
         ai_hdr.addWidget(self.change_key_btn)
         r_layout.addLayout(ai_hdr)
 
         self.api_key_frame = QFrame()
-        kf_layout = QHBoxLayout(self.api_key_frame)
-        kf_layout.setContentsMargins(0, 0, 0, 0)
-        self.api_key_edit = QLineEdit(self.api_key)
+        self.api_key_frame.setStyleSheet(
+            f"background: {BG_DARK}; border: 1px solid {BORDER_SLATE}; border-radius: 8px;"
+        )
+        kf_vbox = QVBoxLayout(self.api_key_frame)
+        kf_vbox.setContentsMargins(8, 8, 8, 8)
+        kf_vbox.setSpacing(6)
+
+        self.api_key_mask_lbl = QLabel()
+        self.api_key_mask_lbl.setStyleSheet(
+            f"color: {SECONDARY_TEAL}; font-size: 11px; font-weight: 600; border: none;"
+        )
+        kf_vbox.addWidget(self.api_key_mask_lbl)
+
+        input_row = QHBoxLayout()
+        input_row.setSpacing(4)
+        self.api_key_edit = QLineEdit(self.api_key if self.api_key_state.source == "ui" else "")
         self.api_key_edit.setEchoMode(QLineEdit.Password)
-        self.api_key_edit.setPlaceholderText("Nhập GEMINI_API_KEY...")
+        self.api_key_edit.setPlaceholderText("Nhập GEMINI_API_KEY (ưu tiên UI > .env)...")
+        self.show_key_btn = QPushButton("Hiện")
+        self.show_key_btn.setFixedWidth(44)
+        self.show_key_btn.clicked.connect(self._on_toggle_show_api_key)
+        input_row.addWidget(self.api_key_edit)
+        input_row.addWidget(self.show_key_btn)
+        kf_vbox.addLayout(input_row)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
         save_key_btn = QPushButton("Lưu")
-        save_key_btn.setFixedWidth(54)
+        save_key_btn.setStyleSheet(
+            f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 5px; padding: 4px 8px; font-weight: 700;"
+        )
         save_key_btn.clicked.connect(self._on_save_api_key)
-        kf_layout.addWidget(self.api_key_edit)
-        kf_layout.addWidget(save_key_btn)
+
+        self.test_api_btn = QPushButton("Test API")
+        self.test_api_btn.setStyleSheet(
+            f"background: {SECONDARY_TEAL}; color: {BG_DARK}; border-radius: 5px; padding: 4px 8px; font-weight: 700;"
+        )
+        self.test_api_btn.clicked.connect(self._on_test_api_connection)
+
+        del_key_btn = QPushButton("Xóa Key")
+        del_key_btn.setStyleSheet(
+            f"background: {ALERT_ROSE}; color: {TEXT_LIGHT}; border-radius: 5px; padding: 4px 8px; font-weight: 700;"
+        )
+        del_key_btn.clicked.connect(self._on_delete_api_key)
+
+        btn_row.addWidget(save_key_btn)
+        btn_row.addWidget(self.test_api_btn)
+        btn_row.addWidget(del_key_btn)
+        kf_vbox.addLayout(btn_row)
+
+        self.api_status_detail_lbl = QLabel()
+        self.api_status_detail_lbl.setWordWrap(True)
+        self.api_status_detail_lbl.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-size: 11px; border: none;"
+        )
+        kf_vbox.addWidget(self.api_status_detail_lbl)
+
         r_layout.addWidget(self.api_key_frame)
         self.api_key_frame.setVisible(not bool(self.api_key))
+        self._refresh_api_key_ui(detail_msg="")
 
         for label, prompt_prefix, struct_json in [
             (
@@ -2037,7 +2199,7 @@ class AirTeachMainWindow(QMainWindow):
             f"background: {BG_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 8px; padding: 8px; font-size: 13px;"
         )
         self.ai_output.setPlainText(
-            "Sẵn sàng phân tích bảng vẽ.\n• Dùng công cụ [Phân Tích Vùng] bên dưới để khoanh vùng gửi tới gemini-3.5-flash.\n• Mất mạng vẫn vẽ bảng, nắn hình & CV 100%."
+            f"Sẵn sàng phân tích bảng vẽ.\n• Dùng công cụ [Phân Tích Vùng] bên dưới để khoanh vùng gửi tới {DEFAULT_GEMINI_MODEL}.\n• Mất mạng vẫn vẽ bảng, nắn hình & CV 100%."
         )
         r_layout.addWidget(self.ai_output, stretch=1)
 
@@ -2290,11 +2452,113 @@ class AirTeachMainWindow(QMainWindow):
             "[Giữ 350ms: BẬT]" if self.canvas.hold_to_snap_350ms else "[Giữ 350ms: TẮT]"
         )
 
+    def _refresh_api_key_ui(
+        self,
+        status: Optional[ApiConnectionStatus] = None,
+        detail_msg: Optional[str] = None,
+    ) -> None:
+        self.api_key_state = resolve_api_key_layered(self.api_key_edit.text().strip() if hasattr(self, "api_key_edit") and self.api_key_state.source == "ui" and self.api_key_edit.text().strip() else None)
+        self.api_key = self.api_key_state.api_key
+
+        if status is not None:
+            self.gemini_conn_status = status
+        elif not self.api_key:
+            self.gemini_conn_status = ApiConnectionStatus.UNCONFIGURED
+
+        if not self.api_key:
+            self.api_key_mask_lbl.setText("Key: Chưa cấu hình (nhập UI hoặc .env)")
+            self.api_status_badge.setText("Chưa cấu hình")
+            self.api_status_badge.setStyleSheet(
+                f"background: {BORDER_SLATE}; color: {TEXT_LIGHT}; border-radius: 9px; padding: 2px 8px; font-size: 10px; font-weight: 700;"
+            )
+        else:
+            src_label = "UI Settings" if self.api_key_state.source == "ui" else ".env / ENV"
+            self.api_key_mask_lbl.setText(f"Key: {mask_api_key(self.api_key)} • Nguồn: {src_label}")
+            if self.gemini_conn_status == ApiConnectionStatus.CONNECTED:
+                self.api_status_badge.setText("Đã kết nối")
+                self.api_status_badge.setStyleSheet(
+                    "background: #10B981; color: #052E16; border-radius: 9px; padding: 2px 8px; font-size: 10px; font-weight: 800;"
+                )
+            elif self.gemini_conn_status == ApiConnectionStatus.ERROR:
+                self.api_status_badge.setText("Lỗi Key/Quota")
+                self.api_status_badge.setStyleSheet(
+                    f"background: {ALERT_ROSE}; color: {TEXT_LIGHT}; border-radius: 9px; padding: 2px 8px; font-size: 10px; font-weight: 800;"
+                )
+            else:
+                self.api_status_badge.setText("Chưa xác thực")
+                self.api_status_badge.setStyleSheet(
+                    f"background: {BORDER_SLATE}; color: {TEXT_LIGHT}; border-radius: 9px; padding: 2px 8px; font-size: 10px; font-weight: 700;"
+                )
+
+        if detail_msg is not None:
+            self.api_status_detail_lbl.setText(detail_msg)
+
+    def _on_toggle_show_api_key(self) -> None:
+        if self.api_key_edit.echoMode() == QLineEdit.Password:
+            self.api_key_edit.setEchoMode(QLineEdit.Normal)
+            self.show_key_btn.setText("Ẩn")
+        else:
+            self.api_key_edit.setEchoMode(QLineEdit.Password)
+            self.show_key_btn.setText("Hiện")
+
     def _on_save_api_key(self) -> None:
-        self.api_key = self.api_key_edit.text().strip()
-        if self.api_key:
-            os.environ["GEMINI_API_KEY"] = self.api_key
-            self.api_key_frame.setVisible(False)
+        entered = self.api_key_edit.text().strip()
+        if not entered:
+            self._refresh_api_key_ui(
+                status=ApiConnectionStatus.ERROR,
+                detail_msg="Vui lòng nhập API Key trước khi lưu (hoặc nhấn Xóa Key).",
+            )
+            return
+        save_ui_api_settings(api_key=entered)
+        self.api_key = entered
+        self.gemini_conn_status = ApiConnectionStatus.UNCONFIGURED
+        self._refresh_api_key_ui(
+            status=ApiConnectionStatus.UNCONFIGURED,
+            detail_msg="Đã lưu Key vào cài đặt cục bộ. Nhấn [Test API] để kiểm tra kết nối thật.",
+        )
+
+    def _on_delete_api_key(self) -> None:
+        clear_ui_api_key()
+        self.api_key_edit.clear()
+        self.api_key_state = resolve_api_key_layered()
+        self.api_key = self.api_key_state.api_key
+        msg = (
+            "Đã xóa Key trên UI. Đang dùng Key dự phòng từ .env."
+            if self.api_key
+            else "Đã xóa API Key khỏi cấu hình cục bộ."
+        )
+        self._refresh_api_key_ui(status=ApiConnectionStatus.UNCONFIGURED, detail_msg=msg)
+
+    def _on_test_api_connection(self) -> None:
+        draft = self.api_key_edit.text().strip()
+        effective = draft or self.api_key
+        if not effective:
+            self._refresh_api_key_ui(
+                status=ApiConnectionStatus.UNCONFIGURED,
+                detail_msg="Chưa có API Key để kiểm tra. Hãy nhập key hoặc cấu hình .env.",
+            )
+            return
+        if self.health_worker is not None and self.health_worker.isRunning():
+            return
+        self.test_api_btn.setEnabled(False)
+        self.test_api_btn.setText("Đang kiểm...")
+        self.api_status_detail_lbl.setText("Đang gọi Gemini generateContent kiểm tra kết nối thật...")
+        self.health_worker = GeminiHealthCheckWorker(effective)
+        self.health_worker.completed.connect(self._on_health_check_completed)
+        self.health_worker.start()
+
+    def _on_health_check_completed(self, res: GeminiHealthCheckResult) -> None:
+        self.test_api_btn.setEnabled(True)
+        self.test_api_btn.setText("Test API")
+        if res.ok:
+            msg = f"✓ {res.message_vi} ({res.model_used}, {res.latency_ms:.0f}ms)"
+        else:
+            msg = f"⚠ {res.message_vi}"
+        self._refresh_api_key_ui(status=res.status, detail_msg=msg)
+
+    def _on_worker_status_changed(self, status_obj: object) -> None:
+        if isinstance(status_obj, ApiConnectionStatus):
+            self._refresh_api_key_ui(status=status_obj)
 
     def _on_region_cropped_for_ai(self, png_bytes: bytes, cropped_pm: QPixmap) -> None:
         self.right_dock.setVisible(True)
@@ -2302,7 +2566,7 @@ class AirTeachMainWindow(QMainWindow):
         self.crop_preview_lbl.setPixmap(
             cropped_pm.scaled(300, 86, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )
-        self.ai_output.setPlainText("Đang phân tích nét vẽ vùng chọn với Gemini 3.5 Flash...")
+        self.ai_output.setPlainText(f"Đang phân tích nét vẽ vùng chọn với {DEFAULT_GEMINI_MODEL}...")
         prompt = "Hãy đọc chính xác chữ viết tay hoặc công thức toán/hóa trong ảnh vùng chọn này và giải thích từng bước."
         self._start_gemini_worker(prompt, png_bytes, structured_json=False)
 
@@ -2313,16 +2577,19 @@ class AirTeachMainWindow(QMainWindow):
         self.crop_preview_lbl.setPixmap(
             cropped_pm.scaled(300, 86, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )
-        self.ai_output.setPlainText("Đang phân tích toàn bảng với Gemini 3.5 Flash...")
+        self.ai_output.setPlainText(f"Đang phân tích toàn bảng với {DEFAULT_GEMINI_MODEL}...")
         self._start_gemini_worker(prompt, png_bytes, structured_json=structured_json)
 
     def _start_gemini_worker(
         self, prompt: str, png_bytes: Optional[bytes], structured_json: bool = False
     ) -> None:
+        self.api_key_state = resolve_api_key_layered(self.api_key_edit.text().strip() if self.api_key_edit.text().strip() else None)
+        self.api_key = self.api_key_state.api_key
         self.gemini_worker = GeminiVisionWorker(
             self.api_key, prompt, png_bytes, structured_json=structured_json
         )
         self.gemini_worker.finished_text.connect(self.ai_output.setMarkdown)
+        self.gemini_worker.status_changed.connect(self._on_worker_status_changed)
         self.gemini_worker.start()
 
     def closeEvent(self, event) -> None:

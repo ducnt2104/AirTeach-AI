@@ -736,6 +736,7 @@ def beautify_stroke(
     raw_points: Sequence[Point2D],
     auto_shape_enabled: bool = True,
     confidence_gate: float = CONFIDENCE_GATE,
+    closed_gap_ratio: float = CLOSED_LOOP_GAP_RATIO,
 ) -> BeautifiedShapeResult:
     """
     Full 3-step Hybrid Shape Recognition & Beautification pipeline.
@@ -781,8 +782,9 @@ def beautify_stroke(
     eps = max(2.0, 0.014 * diag)
     simplified = rdp_simplify(clean, eps)
     gap = _dist(clean[0], clean[-1])
+    gap_ratio = max(0.05, min(0.35, float(closed_gap_ratio)))
     is_closed = len(clean) >= 6 and (
-        gap < CLOSED_LOOP_GAP_RATIO * total_len or gap < CLOSED_LOOP_GAP_RATIO * diag
+        gap < gap_ratio * total_len or gap < gap_ratio * diag
     )
 
     work_pts = list(clean)
