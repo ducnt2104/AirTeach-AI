@@ -8,6 +8,7 @@ use crate::ai::face_auth::{
     normalize_l2_in_place, FaceAuthEngine, UserAccount, DEFAULT_FACE_MATCH_THRESHOLD,
     DEFAULT_SFACE_MATCH_THRESHOLD, EMBEDDING_DIM, SFACE_EMBEDDING_DIM,
 };
+use crate::ai::local_ai_manager::AiRoutingMode;
 use crate::core::camera::{CaroGridSpacing, FACE_QUALITY_GATE_MIN_SHARPNESS};
 use crate::core::stroke_engine::{Point2D, SnappedShape};
 use crate::ui::brand::ThemeMode;
@@ -193,6 +194,12 @@ pub struct AppConfig {
     pub tutorial_dismissed: bool,
     #[serde(default)]
     pub tutorial_deleted: bool,
+    #[serde(default)]
+    pub ai_routing_mode: AiRoutingMode,
+    #[serde(default)]
+    pub local_endpoint: String,
+    #[serde(default)]
+    pub local_model: String,
 }
 
 impl Default for AppConfig {
@@ -229,6 +236,9 @@ impl Default for AppConfig {
             unsharp_amount: 0.75,
             tutorial_dismissed: false,
             tutorial_deleted: false,
+            ai_routing_mode: AiRoutingMode::Hybrid,
+            local_endpoint: String::new(),
+            local_model: String::new(),
         }
     }
 }

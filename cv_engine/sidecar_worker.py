@@ -238,11 +238,43 @@ def run_self_test() -> int:
 
 
 def run_ipc_loop() -> None:
-    models_dir = Path("models")
+    import time
+    from cv_engine.app_paths import resource_path
+    from cv_engine.performance_pipeline import (
+        AutoProfileController,
+        PerformanceProfile,
+        StaggeredInferenceScheduler,
+    )
+    from cv_engine.preprocessing import AdaptiveExposureController, ExposureDiagnostics
+    from cv_engine.subject_tracker import PoseTorsoEstimator, PrimaryTeacherLockTracker
+    from cv_engine.vision_config import load_vision_config
+
+    vision_cfg = load_vision_config()
+    models_dir = resource_path("models")
+    profile_ctrl = AutoProfileController(
+        initial_profile=PerformanceProfile.BALANCED,
+        auto_adapt=True,
+        downgrade_threshold_ms=45.0,
+    )
+    scheduler = StaggeredInferenceScheduler()
+
     hand_engine = HandGestureEngine(
         model_path=models_dir / "hand_landmarker.task",
-        min_detection_confidence=0.60,
-        min_tracking_confidence=0.70,
+        min_detection_confidence=vision_cfg.hand_tracking.min_detection_confidence,
+        min_presence_confidence=vision_cfg.hand_tracking.min_presence_confidence,
+        min_tracking_confidence=vision_cfg.hand_tracking.min_tracking_confidence,
+        roi_area_threshold=vision_cfg.hand_tracking.roi_area_threshold,
+        roi_expand_factor=vision_cfg.hand_tracking.roi_expand_factor,
+        roi_padding_ratio=vision_cfg.hand_tracking.roi_padding_ratio,
+        roi_target_size=profile_ctrl.preset.roi_size,
+        pinch_enter_ratio=vision_cfg.gesture_3d.pinch_enter_ratio,
+        pinch_exit_ratio=vision_cfg.gesture_3d.pinch_exit_ratio,
+        palm_facing_min_z=vision_cfg.gesture_3d.palm_facing_min_z,
+        grace_period_sec=vision_cfg.gesture_3d.grace_period_ms / 1000.0,
+        voting_window_size=vision_cfg.gesture_3d.voting_window_size,
+        voting_min_votes=vision_cfg.gesture_3d.voting_min_votes,
+        one_euro_min_cutoff=vision_cfg.gesture_3d.one_euro_min_cutoff,
+        one_euro_beta=vision_cfg.gesture_3d.one_euro_beta,
     )
     if hand_engine.tasks_detector is None:
         sys.exit(1)
@@ -251,12 +283,45 @@ def run_ipc_loop() -> None:
         models_dir=models_dir,
         min_detection_confidence=0.55,
     )
+    exposure_ctrl = AdaptiveExposureController(
+        check_interval_n=vision_cfg.preprocessing.exposure_check_interval_n,
+        low_light_mean_luma=vision_cfg.preprocessing.low_light_mean_luma,
+        backlit_p95_luma=vision_cfg.preprocessing.backlit_p95_luma,
+        flicker_delta_luma=vision_cfg.preprocessing.flicker_delta_luma,
+        clahe_clip_limit=vision_cfg.preprocessing.clahe_clip_limit,
+        tile_grid_size=vision_cfg.preprocessing.clahe_tile_grid_size,
+        quality_gate_min=vision_cfg.preprocessing.quality_gate_min_sharpness,
+    )
+    pose_estimator = PoseTorsoEstimator(
+        models_dir=models_dir,
+        enable_pose_landmarker=vision_cfg.subject_tracker.enable_pose_landmarker,
+        min_det_conf=vision_cfg.subject_tracker.pose_min_detection_confidence,
+        min_pres_conf=vision_cfg.subject_tracker.pose_min_presence_confidence,
+        min_track_conf=vision_cfg.subject_tracker.pose_min_tracking_confidence,
+    )
+    teacher_tracker = PrimaryTeacherLockTracker(
+        teacher_grace_sec=vision_cfg.subject_tracker.teacher_grace_sec,
+        match_iou_min=vision_cfg.subject_tracker.teacher_match_iou_min,
+        face_sim_threshold=vision_cfg.subject_tracker.teacher_face_sim_threshold,
+        wrist_gate_radius_scale=vision_cfg.subject_tracker.wrist_gate_radius_scale,
+    )
 
     stdin_buf = sys.stdin.buffer
     stdout_buf = sys.stdout.buffer
 
     stdout_buf.write(b"READY\n")
     stdout_buf.flush()
+
+    cached_face_info: dict = {
+        "face": None,
+        "face_boxes": [],
+        "face_eyes": None,
+        "face_5pt": None,
+        "face_emb": None,
+        "face_emb_512": None,
+    }
+    cached_poses: list = []
+    last_teacher_seen_ts = time.monotonic()
 
     while True:
         hdr = stdin_buf.read(8)
@@ -273,29 +338,90 @@ def run_ipc_loop() -> None:
 
         if not hand_engine.frame_skip_lock.try_acquire():
             continue
+        t_start = time.perf_counter()
         try:
+            now_mono = time.monotonic()
+            preset = profile_ctrl.preset
+            exposure_ctrl.check_interval_n = preset.exposure_interval_n
+
             rgb_orig = np.frombuffer(raw, dtype=np.uint8).reshape((int(h), int(w), 3))
-            rgb_enhanced, diag = preprocess_adaptive_frame(
-                rgb_orig,
-                is_rgb=True,
-                quality_gate_min=38.0,
-                auto_lightweight_normal=True,
+            if preset.enable_full_frame_clahe:
+                rgb_work, diag = exposure_ctrl.process(rgb_orig, is_rgb=True, enabled=True)
+            else:
+                # Zero-copy bypass for full-frame; ROI-only sharpening runs on cropped hand ROI
+                rgb_work = rgb_orig
+                diag = ExposureDiagnostics(
+                    mean_luma=128.0,
+                    p5=20.0,
+                    p95=235.0,
+                    lighting_mode="NORMAL",
+                    gamma_applied=1.0,
+                    clahe_clip_limit=0.0,
+                    laplacian_variance=50.0,
+                    quality_gate_passed=True,
+                    clahe_bypassed=True,
+                )
+
+            has_locked = teacher_tracker.locked_track_id is not None
+            teacher_lost_sec = (now_mono - last_teacher_seen_ts) if has_locked else 999.0
+            run_pose, run_face = scheduler.next_tick(
+                now_mono,
+                preset,
+                has_locked_teacher=has_locked,
+                teacher_lost_sec=teacher_lost_sec,
             )
 
-            face_info = face_engine.detect_and_extract(rgb_enhanced, quality_gate_min_sharpness=38.0)
-            face_boxes = face_info["face_boxes"]
+            if run_face:
+                cached_face_info = face_engine.detect_and_extract(
+                    rgb_work,
+                    quality_gate_min_sharpness=vision_cfg.preprocessing.quality_gate_min_sharpness,
+                )
+            face_boxes = cached_face_info.get("face_boxes") or []
 
-            left_out, right_out = hand_engine.detect_hands(rgb_enhanced, face_boxes)
+            if run_pose:
+                cached_poses = pose_estimator.detect_poses(rgb_work)
+
+            subj_snap = teacher_tracker.update(
+                face_boxes=face_boxes,
+                poses=cached_poses,
+                now_sec=now_mono,
+            )
+            if subj_snap.locked_teacher_id is not None:
+                last_teacher_seen_ts = now_mono
+
+            wrist_hints = teacher_tracker.get_proactive_wrist_roi_boxes(
+                subj_snap,
+                roi_expand_factor=vision_cfg.hand_tracking.roi_expand_factor,
+            )
+
+            left_out, right_out = hand_engine.detect_hands(
+                rgb_work,
+                face_boxes,
+                teacher_tracker=teacher_tracker,
+                teacher_snapshot=subj_snap,
+                wrist_roi_hints=wrist_hints,
+                search_size=preset.search_size,
+                roi_target_size=preset.roi_size,
+                enable_roi_sharpen=preset.enable_roi_sharpen,
+            )
+
+            cv_latency_ms = round((time.perf_counter() - t_start) * 1000.0, 2)
+            active_prof = profile_ctrl.record_inference_ms(cv_latency_ms)
 
             resp = {
                 "left": left_out,
                 "right": right_out,
-                "face": face_info["face"],
-                "face_eyes": face_info["face_eyes"],
-                "face_5pt": face_info["face_5pt"],
-                "face_emb": face_info["face_emb"],
-                "face_emb_512": face_info["face_emb_512"],
+                "face": subj_snap.locked_face_bbox or cached_face_info["face"],
+                "face_eyes": cached_face_info["face_eyes"],
+                "face_5pt": cached_face_info["face_5pt"],
+                "face_emb": cached_face_info["face_emb"],
+                "face_emb_512": cached_face_info["face_emb_512"],
                 "diag": diag.to_dict(),
+                "subject": subj_snap.to_dict(),
+                "cv_latency_ms": cv_latency_ms,
+                "perf_profile": active_prof.value,
+                "avg_inference_ms": round(profile_ctrl.avg_inference_ms, 2),
+                "roi_mode": hand_engine.last_tracking_mode,
             }
             line = (json.dumps(resp, separators=(",", ":")) + "\n").encode("utf-8")
             stdout_buf.write(line)

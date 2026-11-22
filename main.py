@@ -19,7 +19,7 @@ import secrets
 import urllib.request
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Sequence, Tuple, Dict, Any
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["GLOG_minloglevel"] = "3"
@@ -127,8 +127,56 @@ from cv_engine.gemini_client import (
     save_ui_api_settings,
 )
 from cv_engine.hand_gesture import HandGestureEngine, classify_hand_3d_vectors
+from cv_engine.preprocessing import (
+    AdaptiveExposureController,
+    preprocess_adaptive_frame,
+)
+from cv_engine.subject_tracker import PoseTorsoEstimator, PrimaryTeacherLockTracker
+from cv_engine.vision_config import load_vision_config
+from cv_engine.lasso_ai_service import (
+    LassoQuickAction,
+    LassoSelectionRegion,
+    build_lasso_prompt,
+    compute_lasso_bounding_box,
+    enhance_lasso_crop_png,
+    extract_clean_beautified_formula,
+    stroke_inside_lasso,
+)
+from cv_engine.local_ai_manager import (
+    AiRoutingMode,
+    DiscoveredLocalServer,
+    LocalAIManager,
+    LocalAiRunResult,
+)
+from cv_engine.output_sanitizer import (
+    OutputSanitizer,
+    StreamingSanitizer,
+    render_latex_to_png_bytes,
+)
+from cv_engine.app_paths import (
+    get_config_file_path,
+    get_user_data_dir,
+    resource_path,
+    set_windows_app_user_model_id,
+    setup_app_logging,
+)
+from cv_engine.performance_pipeline import (
+    AutoProfileController,
+    DirtyCanvasBackingTracker,
+    PerformancePipeline,
+    PerformanceProfile,
+    StaggeredInferenceScheduler,
+    compute_cv_tracking_size,
+)
 from cv_engine.preprocessing import preprocess_adaptive_frame
 from cv_engine.shape_recognizer import beautify_stroke, catmull_rom_spline
+from cv_engine.whiteboard_agent import (
+    WhiteboardAction,
+    WhiteboardAgent,
+    build_vector_shape_strokes,
+    find_free_board_region,
+    find_free_regions_normalized,
+)
 
 
 def _load_dotenv_if_present(env_path: Optional[Path] = None) -> None:
@@ -166,16 +214,19 @@ ALERT_ROSE = "#F43F5E"
 TEXT_LIGHT = "#F8FAFC"
 TEXT_MUTED = "#94A3B8"
 
-DATA_DIR = Path("data")
+DATA_DIR = get_user_data_dir()
 FACE_EMB_DIR = DATA_DIR / "face_embeddings"
 USERS_DB_PATH = DATA_DIR / "users_db.json"
 AI_CACHE_PATH = DATA_DIR / "ai_cache.json"
-MODELS_DIR = Path("models")
-RECORDINGS_DIR = Path("recordings")
-BRAND_LOGO_SVG = Path(__file__).resolve().parent / "assets" / "branding" / "airteach_logo.svg"
+MODELS_DIR = resource_path("models")
+RECORDINGS_DIR = DATA_DIR / "recordings"
+BRAND_LOGO_SVG = resource_path("assets/branding/airteach_logo.svg")
+APP_LOGO_ICO = resource_path("assets/logo.ico")
 
-for d in (DATA_DIR, FACE_EMB_DIR, MODELS_DIR, RECORDINGS_DIR):
+for d in (DATA_DIR, FACE_EMB_DIR, RECORDINGS_DIR):
     d.mkdir(parents=True, exist_ok=True)
+if not getattr(sys, "frozen", False):
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def make_brand_logo_widget(size: int = 44) -> QWidget:
@@ -293,18 +344,31 @@ class CameraHandWorker(QThread):
 
     def __init__(self, initial_cam_idx: int = 0) -> None:
         super().__init__()
+        self.vision_cfg = load_vision_config()
         self.cam_idx = initial_cam_idx
         self.auto_hdr_backlight = True
+        self.debug_hud_enabled = bool(self.vision_cfg.hud.debug_hud_default_enabled)
+        self.prefer_hd = bool(self.vision_cfg.camera.prefer_hd)
         self.running = True
         self._camera_paused = False
         self._is_processing = False
         self._switch_requested: Optional[int] = None
+        self._reopen_requested: bool = False
         self._was_pinched = False
         self._frame_lock = threading.Lock()
         self._latest_frame: Optional[np.ndarray] = None
         self._frame_seq: int = 0
         self._frame_event = threading.Event()
         self._capture_thread: Optional[threading.Thread] = None
+        self._cam_fps_smoothed: float = 0.0
+
+    def set_debug_hud(self, enabled: bool) -> None:
+        self.debug_hud_enabled = bool(enabled)
+
+    def set_hd_resolution(self, hd: bool) -> None:
+        if self.prefer_hd != bool(hd):
+            self.prefer_hd = bool(hd)
+            self._reopen_requested = True
 
     def select_camera(self, idx: int) -> None:
         self._camera_paused = False
@@ -323,14 +387,16 @@ class CameraHandWorker(QThread):
         self.wait(2000)
 
     def _open_camera(self, idx: int) -> Optional[cv2.VideoCapture]:
+        req_w = self.vision_cfg.camera.hd_width if self.prefer_hd else self.vision_cfg.camera.width
+        req_h = self.vision_cfg.camera.hd_height if self.prefer_hd else self.vision_cfg.camera.height
         backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY] if sys.platform == "win32" else [cv2.CAP_ANY]
         for backend in backends:
             cap = cv2.VideoCapture(idx, backend)
             if cap.isOpened():
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                cap.set(cv2.CAP_PROP_FPS, 30)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, req_w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, req_h)
+                cap.set(cv2.CAP_PROP_FPS, self.vision_cfg.camera.target_fps)
                 ok, test_frame = cap.read()
                 if ok and test_frame is not None and test_frame.size > 0:
                     return cap
@@ -342,6 +408,7 @@ class CameraHandWorker(QThread):
         cap = None if self._camera_paused else self._open_camera(self.cam_idx)
         paused_notice_sent = False
         no_cam_notice_sent = False
+        cap_last_ts = time.perf_counter()
 
         while self.running:
             if self._camera_paused:
@@ -375,12 +442,13 @@ class CameraHandWorker(QThread):
                 continue
 
             paused_notice_sent = False
-            if self._switch_requested is not None:
-                new_idx = self._switch_requested
-                self._switch_requested = None
+            if self._switch_requested is not None or self._reopen_requested:
+                if self._switch_requested is not None:
+                    self.cam_idx = self._switch_requested
+                    self._switch_requested = None
+                self._reopen_requested = False
                 if cap is not None:
                     cap.release()
-                self.cam_idx = new_idx
                 cap = self._open_camera(self.cam_idx)
                 no_cam_notice_sent = False
                 with self._frame_lock:
@@ -417,6 +485,16 @@ class CameraHandWorker(QThread):
                 time.sleep(0.01)
                 continue
 
+            now_cap = time.perf_counter()
+            cap_dt = max(1e-3, now_cap - cap_last_ts)
+            cap_last_ts = now_cap
+            inst_cap_fps = min(120.0, 1.0 / cap_dt)
+            self._cam_fps_smoothed = (
+                inst_cap_fps
+                if self._cam_fps_smoothed <= 0.1
+                else (0.85 * self._cam_fps_smoothed + 0.15 * inst_cap_fps)
+            )
+
             with self._frame_lock:
                 self._latest_frame = frame
                 self._frame_seq += 1
@@ -426,11 +504,47 @@ class CameraHandWorker(QThread):
             cap.release()
 
     def run(self) -> None:
+        vcfg = self.vision_cfg
         face_extractor = ArcFace512Extractor(models_dir=MODELS_DIR, min_detection_confidence=0.55)
+        exposure_ctrl = AdaptiveExposureController(
+            check_interval_n=vcfg.preprocessing.exposure_check_interval_n,
+            low_light_mean_luma=vcfg.preprocessing.low_light_mean_luma,
+            backlit_p95_luma=vcfg.preprocessing.backlit_p95_luma,
+            flicker_delta_luma=vcfg.preprocessing.flicker_delta_luma,
+            clahe_clip_limit=vcfg.preprocessing.clahe_clip_limit,
+            tile_grid_size=vcfg.preprocessing.clahe_tile_grid_size,
+            quality_gate_min=vcfg.preprocessing.quality_gate_min_sharpness,
+        )
+        pose_estimator = PoseTorsoEstimator(
+            models_dir=MODELS_DIR,
+            enable_pose_landmarker=vcfg.subject_tracker.enable_pose_landmarker,
+            min_det_conf=vcfg.subject_tracker.pose_min_detection_confidence,
+            min_pres_conf=vcfg.subject_tracker.pose_min_presence_confidence,
+            min_track_conf=vcfg.subject_tracker.pose_min_tracking_confidence,
+        )
+        teacher_tracker = PrimaryTeacherLockTracker(
+            teacher_grace_sec=vcfg.subject_tracker.teacher_grace_sec,
+            match_iou_min=vcfg.subject_tracker.teacher_match_iou_min,
+            face_sim_threshold=vcfg.subject_tracker.teacher_face_sim_threshold,
+            wrist_gate_radius_scale=vcfg.subject_tracker.wrist_gate_radius_scale,
+        )
         hand_engine = HandGestureEngine(
             models_dir=MODELS_DIR,
-            min_detection_confidence=0.60,
-            min_tracking_confidence=0.70,
+            min_detection_confidence=vcfg.hand_tracking.min_detection_confidence,
+            min_presence_confidence=vcfg.hand_tracking.min_presence_confidence,
+            min_tracking_confidence=vcfg.hand_tracking.min_tracking_confidence,
+            roi_area_threshold=vcfg.hand_tracking.roi_area_threshold,
+            roi_expand_factor=vcfg.hand_tracking.roi_expand_factor,
+            roi_padding_ratio=vcfg.hand_tracking.roi_padding_ratio,
+            roi_target_size=vcfg.hand_tracking.roi_target_size,
+            pinch_enter_ratio=vcfg.gesture_3d.pinch_enter_ratio,
+            pinch_exit_ratio=vcfg.gesture_3d.pinch_exit_ratio,
+            palm_facing_min_z=vcfg.gesture_3d.palm_facing_min_z,
+            grace_period_sec=vcfg.gesture_3d.grace_period_ms / 1000.0,
+            voting_window_size=vcfg.gesture_3d.voting_window_size,
+            voting_min_votes=vcfg.gesture_3d.voting_min_votes,
+            one_euro_min_cutoff=vcfg.gesture_3d.one_euro_min_cutoff,
+            one_euro_beta=vcfg.gesture_3d.one_euro_beta,
         )
 
         self._capture_thread = threading.Thread(
@@ -442,6 +556,15 @@ class CameraHandWorker(QThread):
         last_time = time.perf_counter()
         smoothed_fps = 0.0
         last_processed_seq = -1
+        profile_ctrl = AutoProfileController(
+            initial_profile=PerformanceProfile.BALANCED,
+            auto_adapt=True,
+            downgrade_threshold_ms=45.0,
+        )
+        scheduler = StaggeredInferenceScheduler()
+        cached_face_info: Dict[str, Any] = {"face": None, "face_boxes": [], "face_eyes": None}
+        cached_poses: List[Any] = []
+        last_teacher_seen_ts = time.monotonic()
 
         try:
             while self.running:
@@ -463,51 +586,131 @@ class CameraHandWorker(QThread):
 
                 self._is_processing = True
                 try:
-                    now = time.perf_counter()
-                    dt = max(1e-3, now - last_time)
-                    last_time = now
+                    t_cv_start = time.perf_counter()
+                    now_mono = time.monotonic()
+                    preset = profile_ctrl.preset
+                    exposure_ctrl.check_interval_n = preset.exposure_interval_n
+
+                    dt = max(1e-3, t_cv_start - last_time)
+                    last_time = t_cv_start
                     inst_fps = min(120.0, 1.0 / dt)
                     smoothed_fps = inst_fps if smoothed_fps <= 0.1 else (0.8 * smoothed_fps + 0.2 * inst_fps)
 
                     bgr = cv2.flip(frame, 1)
-                    if self.auto_hdr_backlight:
-                        bgr, light_diag = preprocess_adaptive_frame(
-                            bgr,
-                            is_rgb=False,
-                            quality_gate_min=22.0,
-                            auto_lightweight_normal=True,
-                        )
+                    if self.auto_hdr_backlight and preset.enable_full_frame_clahe:
+                        bgr, light_diag = exposure_ctrl.process(bgr, is_rgb=False, enabled=True)
                         light_metrics = light_diag.to_dict()
                     else:
-                        gray_raw = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-                        light_metrics = {
-                            "mean_luma": float(np.mean(gray_raw)),
-                            "laplacian_var": float(cv2.Laplacian(gray_raw, cv2.CV_64F).var()),
-                            "lighting_mode": "RAW",
-                        }
+                        light_metrics = {"lighting_mode": "NORMAL", "clahe_bypassed": True}
 
                     h, w = bgr.shape[:2]
-                    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-                    if prev_gray is not None and prev_gray.shape == gray.shape:
-                        liveness_diff = float(np.mean(cv2.absdiff(gray, prev_gray))) / 12.0
+                    # Strided liveness diff on 1/4 resolution to save CPU on i3
+                    gray_sub = cv2.cvtColor(bgr[::4, ::4], cv2.COLOR_BGR2GRAY)
+                    if prev_gray is not None and prev_gray.shape == gray_sub.shape:
+                        liveness_diff = float(np.mean(cv2.absdiff(gray_sub, prev_gray))) / 12.0
                         liveness_diff = float(np.clip(liveness_diff, 0.0, 1.0))
                     else:
                         liveness_diff = 0.0
-                    prev_gray = gray
+                    prev_gray = gray_sub
 
                     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                    has_locked = teacher_tracker.locked_track_id is not None
+                    teacher_lost_sec = (now_mono - last_teacher_seen_ts) if has_locked else 999.0
+                    run_pose, run_face = scheduler.next_tick(
+                        now_mono,
+                        preset,
+                        has_locked_teacher=has_locked,
+                        teacher_lost_sec=teacher_lost_sec,
+                    )
 
-                    # Face ID (5-Point Affine 112x112 Alignment + 512-D Deep ArcFace)
-                    face_info = face_extractor.detect_and_extract(rgb, quality_gate_min_sharpness=22.0)
-                    face_boxes = face_info.get("face_boxes") or []
-                    primary_face = face_info.get("face")
+                    if run_face or run_pose:
+                        sw, sh = preset.search_size
+                        aux_rgb = cv2.resize(rgb, (sw, sh), interpolation=cv2.INTER_AREA) if (w > sw or h > sh) else rgb
+                        if run_face:
+                            cached_face_info = face_extractor.detect_and_extract(
+                                aux_rgb,
+                                quality_gate_min_sharpness=vcfg.preprocessing.quality_gate_min_sharpness,
+                            )
+                        if run_pose:
+                            cached_poses = pose_estimator.detect_poses(aux_rgb)
+
+                    face_boxes = cached_face_info.get("face_boxes") or []
+                    subj_snap = teacher_tracker.update(
+                        face_boxes=face_boxes,
+                        poses=cached_poses,
+                        now_sec=now_mono,
+                    )
+                    if subj_snap.locked_teacher_id is not None:
+                        last_teacher_seen_ts = now_mono
+
+                    wrist_hints = teacher_tracker.get_proactive_wrist_roi_boxes(
+                        subj_snap,
+                        roi_expand_factor=vcfg.hand_tracking.roi_expand_factor,
+                    )
+                    primary_face = subj_snap.locked_face_bbox or cached_face_info.get("face")
                     face_bbox = tuple(primary_face) if primary_face and len(primary_face) == 4 else None
 
-                    # Dual-Hand 3D Tracking + ROI 384x384 Zoom Crop + One-Euro Smoothing
-                    left_hand, right_hand = hand_engine.detect_hands(rgb, face_boxes)
+                    # Tracking-First Dual-Resolution ROI (720p crop -> ROI-only sharpen)
+                    left_hand, right_hand = hand_engine.detect_hands(
+                        rgb,
+                        face_boxes,
+                        teacher_tracker=teacher_tracker,
+                        teacher_snapshot=subj_snap,
+                        wrist_roi_hints=wrist_hints,
+                        search_size=preset.search_size,
+                        roi_target_size=preset.roi_size,
+                        enable_roi_sharpen=preset.enable_roi_sharpen,
+                    )
+                    cv_latency_ms = (time.perf_counter() - t_cv_start) * 1000.0
+                    profile_ctrl.record_inference_ms(cv_latency_ms)
 
                     display_bgr = bgr.copy()
-                    if face_bbox is not None:
+                    # Visualize Subject Tracking Lock when Debug HUD enabled (or standard subtle primary box)
+                    if self.debug_hud_enabled:
+                        if subj_snap.locked_torso_bbox:
+                            tx, ty, tw, th = subj_snap.locked_torso_bbox
+                            cv2.rectangle(
+                                display_bgr,
+                                (int(tx * w), int(ty * h)),
+                                (int((tx + tw) * w), int((ty + th) * h)),
+                                (34, 197, 94),
+                                2,
+                                cv2.LINE_AA,
+                            )
+                            tid_lbl = f"TEACHER #{subj_snap.locked_teacher_id} ({subj_snap.mode})"
+                            cv2.putText(
+                                display_bgr,
+                                tid_lbl,
+                                (int(tx * w) + 4, max(16, int(ty * h) + 16)),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.45,
+                                (34, 197, 94),
+                                1,
+                                cv2.LINE_AA,
+                            )
+                        for ig_box in subj_snap.ignored_face_bboxes:
+                            ix, iy, iw, ih = ig_box
+                            cv2.rectangle(
+                                display_bgr,
+                                (int(ix * w), int(iy * h)),
+                                (int((ix + iw) * w), int((iy + ih) * h)),
+                                (68, 68, 239),
+                                2,
+                                cv2.LINE_AA,
+                            )
+                            cv2.putText(
+                                display_bgr,
+                                "IGNORED",
+                                (int(ix * w) + 2, max(14, int(iy * h) - 4)),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.42,
+                                (68, 68, 239),
+                                1,
+                                cv2.LINE_AA,
+                            )
+                        for wx, wy in subj_snap.locked_wrist_anchors:
+                            cv2.circle(display_bgr, (int(wx * w), int(wy * h)), 5, (255, 220, 0), 2, cv2.LINE_AA)
+                    elif face_bbox is not None:
                         fx, fy, fw, fh = face_bbox
                         cv2.rectangle(
                             display_bgr,
@@ -562,11 +765,32 @@ class CameraHandWorker(QThread):
                         disp_rgb.data, w, h, disp_rgb.strides[0], QImage.Format_RGB888
                     ).copy()
 
+                    primary_telemetry = {
+                        "cam_fps": round(self._cam_fps_smoothed or smoothed_fps, 1),
+                        "ai_fps": round(smoothed_fps, 1),
+                        "cv_latency_ms": round(cv_latency_ms, 2),
+                        "resolution": f"{w}x{h}",
+                        "lighting_mode": light_metrics.get("lighting_mode", "NORMAL"),
+                        "clahe_bypassed": bool(light_metrics.get("clahe_bypassed", False)),
+                        "teacher_mode": subj_snap.mode,
+                        "locked_teacher_id": subj_snap.locked_teacher_id,
+                        "ignored_count": len(subj_snap.ignored_face_bboxes),
+                        "finger_states": (primary or {}).get("finger_states", ["CURLED"] * 5),
+                        "finger_angles_deg": (primary or {}).get("finger_angles_deg", [0.0] * 5),
+                        "pinch_ratio": pinch_ratio,
+                        "palm_facing_ok": (primary or {}).get("palm_facing_ok", True),
+                        "palm_facing_score": (primary or {}).get("palm_facing_score", 0.0),
+                        "stage2_roi_zoom": bool((primary or {}).get("stage2_roi_zoom", False)),
+                        "kalman_predicted": bool((primary or {}).get("kalman_predicted", False)),
+                        "fsm_state": (primary or {}).get("fsm_state", "IDLE"),
+                    }
+
                     self.frame_ready.emit({
                         "ok": True,
                         "paused": False,
                         "cam_idx": self.cam_idx,
                         "fps": smoothed_fps,
+                        "cam_fps": self._cam_fps_smoothed or smoothed_fps,
                         "qimage": qimg,
                         "raw_bgr": bgr,
                         "lighting": light_metrics,
@@ -579,12 +803,14 @@ class CameraHandWorker(QThread):
                         "pinch_ratio": pinch_ratio,
                         "cursor_norm": cursor_norm,
                         "left_pan_active": left_pan_active,
+                        "vision_telemetry": primary_telemetry,
                     })
                 finally:
                     self._is_processing = False
         finally:
             if self._capture_thread is not None and self._capture_thread.is_alive():
                 self._capture_thread.join(timeout=1.0)
+            pose_estimator.close()
             hand_engine.close()
             face_extractor.close()
 
@@ -768,13 +994,73 @@ class GeminiVisionWorker(QThread):
             cached = cache.get(cache_key)
             if cached and cached.get("text"):
                 self.finished_text.emit(
-                    f"*(Fallback Cache · {res.error_message_vi})*\n\n{cached['text']}"
+                    f"*(Fallback Cache · {res.error_message_vi})*\n\n{OutputSanitizer.sanitize_plain_text(cached['text'])}"
                 )
             else:
                 self.finished_text.emit(
                     f"⚠ **{res.error_message_vi}**\n\n"
                     "Bảng trắng, nhận diện cử chỉ tay và nắn hình vẫn đang hoạt động bình thường ở chế độ Ngoại tuyến."
                 )
+
+
+class LocalDiscoveryWorker(QThread):
+    """Background auto-discovery & warmup for Ollama / LM Studio / llama.cpp."""
+
+    discovered = Signal(list)
+
+    def __init__(self, local_mgr: LocalAIManager) -> None:
+        super().__init__()
+        self.local_mgr = local_mgr
+
+    def run(self) -> None:
+        servers = self.local_mgr.discover_local_engines(timeout=0.45)
+        if servers:
+            self.local_mgr.warmup_async()
+        self.discovered.emit(servers)
+
+
+class HybridAiWorker(QThread):
+    """Non-blocking AI worker supporting token-by-token streaming, OutputSanitizer, and Whiteboard actions."""
+
+    token_delta = Signal(str)
+    finished_result = Signal(object)  # emits LocalAiRunResult
+
+    def __init__(
+        self,
+        local_mgr: LocalAIManager,
+        prompt: str,
+        *,
+        history: Sequence[Dict[str, str]] = (),
+        png_bytes: Optional[bytes] = None,
+        cloud_api_key: str = "",
+        cloud_model: Optional[str] = None,
+        structured_json: bool = False,
+        include_board_tools: bool = True,
+    ) -> None:
+        super().__init__()
+        self.local_mgr = local_mgr
+        self.prompt = prompt
+        self.history = list(history)
+        self.png_bytes = png_bytes
+        self.cloud_api_key = cloud_api_key.strip()
+        self.cloud_model = cloud_model
+        self.structured_json = structured_json
+        self.include_board_tools = include_board_tools
+
+    def run(self) -> None:
+        eff_prompt = self.prompt
+        if self.include_board_tools and not self.structured_json:
+            eff_prompt = f"{self.prompt}\n\n{WhiteboardAgent.build_tool_prompt_instruction()}"
+        res = self.local_mgr.generate_hybrid(
+            eff_prompt,
+            history=self.history,
+            png_bytes=self.png_bytes,
+            cloud_api_key=self.cloud_api_key,
+            cloud_model=self.cloud_model,
+            structured_json=self.structured_json,
+            on_token=lambda tok: self.token_delta.emit(tok),
+        )
+        self.finished_result.emit(res)
 
 
 # =============================================================================
@@ -1183,6 +1469,7 @@ class AuthGateWidget(QWidget):
 # =============================================================================
 class SmartboardCanvas(QWidget):
     region_cropped_for_ai = Signal(bytes, QPixmap)
+    lasso_action_requested = Signal(str, object)
     hud_status_changed = Signal(str, float, str)
     slides_changed = Signal()
 
@@ -1191,11 +1478,12 @@ class SmartboardCanvas(QWidget):
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
+        self.dark_mode = True
         self.grid_enabled = True
         self.slide_visible = True
         self.smart_shape_enabled = True
         self.hold_to_snap_350ms = False
-        self.active_tool = "PEN"  # PEN, ERASER, LASER, SELECT_REGION
+        self.active_tool = "PEN"  # PEN, ERASER, LASER, SELECT_REGION, LASSO
         self.ink_color = QColor(NEON_CYAN)
         self.pen_thickness = 4
 
@@ -1206,6 +1494,8 @@ class SmartboardCanvas(QWidget):
 
         self.strokes: List[Dict[str, Any]] = []
         self.redo_strokes: List[Dict[str, Any]] = []
+        self.annotations: List[Dict[str, Any]] = []
+        self.ai_action_undo_stack: List[Dict[str, Any]] = []
         self.current_stroke: List[QPointF] = []
         self._stroke_start_ms: float = 0.0
         self._last_motion_ms: float = 0.0
@@ -1220,18 +1510,24 @@ class SmartboardCanvas(QWidget):
         self.cursor_mode: str = "HOVER"  # HOVER, DRAWING, LOCKED_COOLDOWN, PAN_ERASE, LASER
         self.selection_start: Optional[QPointF] = None
         self.selection_end: Optional[QPointF] = None
+        self.lasso_points: List[QPointF] = []
+        self.lasso_region: Optional[LassoSelectionRegion] = None
+
+        self._dirty_tracker = DirtyCanvasBackingTracker()
+        self._backing_pixmap: Optional[QPixmap] = None
+        self._scene_rev: int = 0
 
         # Neutral clean guide slide only (zero personal sample data)
         self.slides: List[Dict[str, Any]] = [
             {
                 "title": "DNT - Victer Guide • Hướng dẫn nhanh AirTeach AI",
-                "subtitle": "Bảng trắng không chạm & Nắn chuẩn Hình học Lai + Gemini 3.5 Flash",
+                "subtitle": f"Bảng trắng không chạm & Nắn Hình học Lai + {DEFAULT_GEMINI_MODEL} / Local AI",
                 "bullets": [
                     "• Chụm ngón (pinch < 0.28 giữ 3 frame): Vẽ • Nhấc bút (> 0.40): Tự cắt đuôi thừa 105ms.",
-                    "• Hủy nét tức thì: Xòe 5 ngón / Nắm tay 150ms hoặc Esc (Khóa ngòi bút 300ms chống lem).",
-                    "• Tự động nắn chuẩn Đường thẳng, Mũi tên, Tròn, Elip, Tam giác, Vuông/CN/Thoi/Bình hành.",
+                    "• Mất dấu tạm < 150ms: Tự động giữ trạng thái & nối liền nét mượt không gián đoạn.",
+                    "• Khoanh AI (Lasso / L): Khoanh vùng giải toán, làm đẹp LaTeX & AI tự ghi lên bảng.",
                 ],
-                "formula": "Ctrl+Z: Hoàn tác (400ms)  |  Kéo [Phân Tích Vùng] -> Gemini 3.5 Flash",
+                "formula": "Ctrl+Z: Hoàn tác (400ms)  |  L: Khoanh vùng AI (Smart Lasso-to-AI)",
                 "pixmap": None,
                 "is_tutorial": True,
             }
@@ -1253,12 +1549,444 @@ class SmartboardCanvas(QWidget):
         )
         self.clear_tutorial_btn.clicked.connect(self.dismiss_tutorial_slides)
 
+        # Smart Lasso Floating Action Bar (hidden until user completes a Lasso/Region select)
+        self.lasso_action_bar = QFrame(self)
+        self.lasso_action_bar.setStyleSheet(
+            f"background: rgba(15, 23, 42, 240); border: 1.5px solid {NEON_CYAN}; border-radius: 10px;"
+        )
+        lab_layout = QHBoxLayout(self.lasso_action_bar)
+        lab_layout.setContentsMargins(6, 5, 6, 5)
+        lab_layout.setSpacing(4)
+        for act_id, lbl_txt, col in (
+            (LassoQuickAction.SOLVE_AI.value, "Giải bằng AI", PRIMARY_INDIGO),
+            (LassoQuickAction.WRITE_SOLUTION_TO_BOARD.value, "Viết lời giải lên bảng", "#0D9488"),
+            (LassoQuickAction.BEAUTIFY_LATEX.value, "Làm đẹp chữ/LaTeX", "#7C3AED"),
+            (LassoQuickAction.EXPLAIN_QUICK.value, "Giải thích nhanh", SURFACE_DARK),
+        ):
+            btn = QPushButton(lbl_txt)
+            btn.setFixedHeight(26)
+            btn.setStyleSheet(
+                f"background: {col}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; padding: 2px 8px; font-weight: 700; font-size: 11px;"
+            )
+            btn.clicked.connect(lambda _=False, aid=act_id: self._emit_lasso_action(aid))
+            lab_layout.addWidget(btn)
+        close_lasso_btn = QPushButton("✕")
+        close_lasso_btn.setFixedSize(24, 24)
+        close_lasso_btn.setStyleSheet(
+            f"background: {ALERT_ROSE}; color: {TEXT_LIGHT}; border-radius: 6px; font-weight: 800; border: none;"
+        )
+        close_lasso_btn.clicked.connect(self.hide_lasso_bar)
+        lab_layout.addWidget(close_lasso_btn)
+        self.lasso_action_bar.adjustSize()
+        self.lasso_action_bar.setVisible(False)
+
+    def _bump_scene(self) -> None:
+        self._scene_rev += 1
+        self._dirty_tracker.mark_dirty()
+
+    def set_dark_mode(self, dark: bool) -> None:
+        self.dark_mode = bool(dark)
+        self._bump_scene()
+        self.update()
+
+    def _emit_lasso_action(self, action_id: str) -> None:
+        if self.lasso_region is not None:
+            self.lasso_action_requested.emit(action_id, self.lasso_region)
+
+    def hide_lasso_bar(self) -> None:
+        self.lasso_action_bar.setVisible(False)
+        self.lasso_region = None
+        self.lasso_points.clear()
+        self.selection_start = None
+        self.selection_end = None
+        self.update()
+
+    def _show_lasso_action_bar(self, region: LassoSelectionRegion) -> None:
+        self.lasso_region = region
+        self.lasso_action_bar.adjustSize()
+        bar_w = self.lasso_action_bar.width()
+        bar_h = self.lasso_action_bar.height()
+        x = max(10, min(max(10, self.width() - bar_w - 10), int(region.bbox_x)))
+        y = int(region.bbox_y - bar_h - 8)
+        if y < 44:
+            y = min(max(44, self.height() - bar_h - 10), int(region.bbox_y + region.bbox_h + 8))
+        self.lasso_action_bar.move(x, y)
+        self.lasso_action_bar.setVisible(True)
+        self.lasso_action_bar.raise_()
+
+    def _occupied_rects(self) -> List[Tuple[float, float, float, float]]:
+        rects: List[Tuple[float, float, float, float]] = []
+        if self.slide_visible and self.slides:
+            s_w = min(740.0, max(320.0, self.width() - 40.0))
+            s_h = float(int(s_w * 9.0 / 16.0))
+            rects.append((16.0, 46.0, s_w, s_h))
+        for s in self.strokes:
+            pts = s.get("points") or []
+            if len(pts) >= 2:
+                xs = [float(p.x()) for p in pts]
+                ys = [float(p.y()) for p in pts]
+                rects.append((min(xs), min(ys), max(20.0, max(xs) - min(xs)), max(20.0, max(ys) - min(ys))))
+        for ann in self.annotations:
+            rects.append((
+                float(ann.get("x", 0.0)),
+                float(ann.get("y", 0.0)),
+                float(ann.get("w", 280.0)),
+                float(ann.get("h", 48.0)),
+            ))
+        return rects
+
+    def _make_annotation_entry(
+        self,
+        raw_content: str,
+        x: float,
+        y: float,
+        fmt: str = "latex",
+        font_size: int = 16,
+        color_hex: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        sanitized = OutputSanitizer.sanitize_plain_text(raw_content)
+        fg_hex = color_hex or (NEON_CYAN if self.dark_mode else PRIMARY_INDIGO)
+        pm: Optional[QPixmap] = None
+        w_est = max(140.0, min(520.0, len(sanitized) * 10.5 + 32.0))
+        h_est = max(42.0, sanitized.count("\n") * 24.0 + 40.0)
+        if fmt == "latex":
+            png_bytes = render_latex_to_png_bytes(raw_content, color_hex=fg_hex, fontsize=max(12, min(20, font_size)), dpi=145)
+            if png_bytes:
+                tmp_pm = QPixmap()
+                if tmp_pm.loadFromData(png_bytes, "PNG") and not tmp_pm.isNull():
+                    pm = tmp_pm
+                    w_est = max(90.0, float(pm.width()) + 20.0)
+                    h_est = max(40.0, float(pm.height()) + 14.0)
+        return {
+            "raw": raw_content,
+            "text": sanitized,
+            "format": fmt,
+            "x": float(x),
+            "y": float(y),
+            "w": w_est,
+            "h": h_est,
+            "color": fg_hex,
+            "font_size": font_size,
+            "pixmap": pm,
+            "reveal_until_ms": self._now_ms() + 420.0,
+        }
+
+    def execute_whiteboard_actions(
+        self,
+        actions: Sequence[WhiteboardAction],
+        preferred_anchor: Optional[Tuple[float, float]] = None,
+    ) -> str:
+        """Execute structured Agentic Whiteboard actions onto empty canvas space with Undo tracking."""
+        if not actions:
+            return ""
+
+        canvas_sz = (float(max(640, self.width())), float(max(420, self.height())))
+        reports: List[str] = []
+
+        for act in actions:
+            if act.tool == "clear_board":
+                self.ai_action_undo_stack.append({
+                    "strokes": list(self.strokes),
+                    "annotations": list(self.annotations),
+                })
+                self.strokes.clear()
+                self.annotations.clear()
+                self._bump_scene()
+                reports.append("Đã xóa sạch bảng.")
+            elif act.tool == "undo_last_ai_action":
+                if self.undo_last_ai_action():
+                    reports.append("Đã hoàn tác thao tác AI gần nhất.")
+                else:
+                    reports.append("Không có thao tác AI nào để hoàn tác.")
+            elif act.tool == "write_on_board":
+                content = str(act.args.get("content") or "").strip()
+                if not content:
+                    continue
+                self.ai_action_undo_stack.append({
+                    "strokes": list(self.strokes),
+                    "annotations": list(self.annotations),
+                })
+                fmt = str(act.args.get("format") or "latex")
+                font_sz = int(act.args.get("fontSize") or 15)
+                col_hex = act.args.get("color")
+                est_w = min(520.0, max(180.0, len(content) * 11.0 + 36.0))
+                pos = act.args.get("position", "auto")
+                if isinstance(pos, dict) and "x" in pos and "y" in pos:
+                    ax, ay = float(pos["x"]), float(pos["y"])
+                else:
+                    ax, ay = find_free_board_region(
+                        self._occupied_rects(),
+                        canvas_sz,
+                        needed_size=(est_w, 56.0),
+                        preferred_anchor=preferred_anchor,
+                    )
+                ann = self._make_annotation_entry(
+                    content, ax, ay, fmt=fmt, font_size=font_sz, color_hex=str(col_hex) if col_hex else None
+                )
+                self.annotations.append(ann)
+                self._bump_scene()
+                reports.append(f"Đã ghi lên bảng tại ({int(ax)}, {int(ay)}): {ann['text']}")
+            elif act.tool == "solve_on_board":
+                steps = [str(st).strip() for st in (act.args.get("steps") or []) if str(st).strip()]
+                if not steps:
+                    continue
+                self.ai_action_undo_stack.append({
+                    "strokes": list(self.strokes),
+                    "annotations": list(self.annotations),
+                })
+                target_reg = act.args.get("targetRegion")
+                pref = preferred_anchor
+                if isinstance(target_reg, (list, tuple)) and len(target_reg) >= 2:
+                    pref = (float(target_reg[0]) + 40.0, float(target_reg[1]))
+                block_h = max(64.0, len(steps) * 48.0)
+                bx, by = find_free_board_region(
+                    self._occupied_rects(),
+                    canvas_sz,
+                    needed_size=(360.0, min(canvas_sz[1] - 80.0, block_h)),
+                    preferred_anchor=pref,
+                )
+                cur_y = by
+                for st in steps:
+                    fmt = "latex" if any(c in st for c in ("=", "\\", "^", "_")) else "text"
+                    ann = self._make_annotation_entry(st, bx, cur_y, fmt=fmt, font_size=14)
+                    self.annotations.append(ann)
+                    cur_y += float(ann["h"]) + 6.0
+                self._bump_scene()
+                reports.append(f"Đã ghi {len(steps)} bước lời giải gọn gàng lên bảng.")
+            elif act.tool == "draw_text":
+                text_val = str(act.args.get("text") or act.args.get("content") or "").strip()
+                if not text_val:
+                    continue
+                self.ai_action_undo_stack.append({
+                    "strokes": list(self.strokes),
+                    "annotations": list(self.annotations),
+                })
+                cw, ch = canvas_sz
+                is_norm = bool(act.args.get("normalized", False))
+                ax = (float(act.args.get("x", 120.0)) / 1000.0 * cw) if is_norm else float(act.args.get("x", 120.0))
+                ay = (float(act.args.get("y", 160.0)) / 1000.0 * ch) if is_norm else float(act.args.get("y", 160.0))
+                font_sz = int(max(11, min(36, float(act.args.get("fontSize") or 16))))
+                col_hex = str(act.args.get("color") or "#FEE440")
+                ann = self._make_annotation_entry(text_val, ax, ay, fmt="latex", font_size=font_sz, color_hex=col_hex)
+                self.annotations.append(ann)
+                self._bump_scene()
+                reports.append(f"Đã viết lên bảng tại ({int(ax)}, {int(ay)}): {ann['text']}")
+            elif act.tool == "draw_polyline":
+                raw_pts = act.args.get("points") or []
+                if len(raw_pts) < 2:
+                    continue
+                self.ai_action_undo_stack.append({
+                    "strokes": list(self.strokes),
+                    "annotations": list(self.annotations),
+                })
+                cw, ch = canvas_sz
+                is_norm = bool(act.args.get("normalized", False))
+                px_pts = [
+                    ((float(p[0]) / 1000.0 * cw) if is_norm else float(p[0]),
+                     (float(p[1]) / 1000.0 * ch) if is_norm else float(p[1]))
+                    for p in raw_pts
+                ]
+                if act.args.get("smooth", True) and len(px_pts) >= 3:
+                    px_pts = catmull_rom_spline(px_pts, samples_per_segment=4)
+                ink = QColor(str(act.args.get("color") or "#00F5D4"))
+                thick = float(max(1.5, min(14.0, float(act.args.get("strokeWidth") or 3.2))))
+                qpts = [QPointF(px, py) for (px, py) in px_pts]
+                stroke_entry = {
+                    "raw_points": list(qpts),
+                    "points": qpts[:2],
+                    "shape_type": "POLYLINE",
+                    "shape_label_vi": "AI Đồ thị",
+                    "confidence": 1.0,
+                    "is_beautified": False,
+                    "color": ink,
+                    "thickness": thick,
+                }
+                self.strokes.append(stroke_entry)
+                self._animate_stroke_reveal(stroke_entry, qpts)
+                self._bump_scene()
+                reports.append(f"Đã vẽ đường cong/đồ thị ({len(qpts)} điểm).")
+            elif act.tool == "highlight_region":
+                self.ai_action_undo_stack.append({
+                    "strokes": list(self.strokes),
+                    "annotations": list(self.annotations),
+                })
+                cw, ch = canvas_sz
+                is_norm = bool(act.args.get("normalized", False))
+                rx = (float(act.args.get("x", 100.0)) / 1000.0 * cw) if is_norm else float(act.args.get("x", 100.0))
+                ry = (float(act.args.get("y", 100.0)) / 1000.0 * ch) if is_norm else float(act.args.get("y", 100.0))
+                rw = (float(act.args.get("w", 220.0)) / 1000.0 * cw) if is_norm else float(act.args.get("w", 220.0))
+                rh = (float(act.args.get("h", 140.0)) / 1000.0 * ch) if is_norm else float(act.args.get("h", 140.0))
+                ink = QColor(str(act.args.get("color") or "#FEE440"))
+                qpts = [QPointF(rx, ry), QPointF(rx + rw, ry), QPointF(rx + rw, ry + rh), QPointF(rx, ry + rh), QPointF(rx, ry)]
+                self.strokes.append({
+                    "raw_points": qpts,
+                    "points": qpts,
+                    "shape_type": "HIGHLIGHT",
+                    "shape_label_vi": "AI Highlight",
+                    "confidence": 1.0,
+                    "is_beautified": False,
+                    "color": ink,
+                    "thickness": 2.5,
+                })
+                lbl = str(act.args.get("label") or "").strip()
+                if lbl:
+                    self.annotations.append(
+                        self._make_annotation_entry(lbl, rx + 6.0, max(24.0, ry - 26.0), fmt="text", font_size=13, color_hex=ink.name())
+                    )
+                self._bump_scene()
+                reports.append(f"Đã khoanh sáng vùng ({int(rx)}, {int(ry)}, {int(rw)}x{int(rh)}).")
+            elif act.tool == "clear_region":
+                self.ai_action_undo_stack.append({
+                    "strokes": list(self.strokes),
+                    "annotations": list(self.annotations),
+                })
+                cw, ch = canvas_sz
+                is_norm = bool(act.args.get("normalized", False))
+                rx = (float(act.args.get("x", 0.0)) / 1000.0 * cw) if is_norm else float(act.args.get("x", 0.0))
+                ry = (float(act.args.get("y", 0.0)) / 1000.0 * ch) if is_norm else float(act.args.get("y", 0.0))
+                rw = (float(act.args.get("w", 200.0)) / 1000.0 * cw) if is_norm else float(act.args.get("w", 200.0))
+                rh = (float(act.args.get("h", 200.0)) / 1000.0 * ch) if is_norm else float(act.args.get("h", 200.0))
+                self.strokes = [
+                    st for st in self.strokes
+                    if not any(rx <= p.x() <= rx + rw and ry <= p.y() <= ry + rh for p in st.get("points", []))
+                ]
+                self.annotations = [
+                    ann for ann in self.annotations
+                    if not (rx <= float(ann.get("x", 0.0)) <= rx + rw and ry <= float(ann.get("y", 0.0)) <= ry + rh)
+                ]
+                self._bump_scene()
+                reports.append("Đã xóa vùng chỉ định trên bảng.")
+            elif act.tool == "draw_shape":
+                self.ai_action_undo_stack.append({
+                    "strokes": list(self.strokes),
+                    "annotations": list(self.annotations),
+                })
+                cw, ch = canvas_sz
+                is_norm = bool(act.args.get("normalized", False))
+                st_type = str(act.args.get("type") or "arrow")
+                scaled_args = dict(act.args)
+                if is_norm:
+                    ox = float(act.args.get("x", 160.0)) / 1000.0 * cw
+                    oy = float(act.args.get("y", 180.0)) / 1000.0 * ch
+                    bw = max(36.0, float(act.args.get("w", 200.0)) / 1000.0 * cw)
+                    bh = max(36.0, float(act.args.get("h", 150.0)) / 1000.0 * ch)
+                    scaled_args["x"] = ox
+                    scaled_args["y"] = oy
+                    scaled_args["w"] = bw
+                    scaled_args["h"] = bh
+                    if "radius" in act.args:
+                        scaled_args["radius"] = max(20.0, float(act.args["radius"]) / 1000.0 * min(cw, ch))
+                    if "x2" in act.args and "y2" in act.args:
+                        scaled_args["x2"] = float(act.args["x2"]) / 1000.0 * cw
+                        scaled_args["y2"] = float(act.args["y2"]) / 1000.0 * ch
+                    if isinstance(act.args.get("points"), list):
+                        scaled_args["points"] = [
+                            [float(p[0]) / 1000.0 * cw, float(p[1]) / 1000.0 * ch]
+                            for p in act.args["points"]
+                            if isinstance(p, (list, tuple)) and len(p) >= 2
+                        ]
+                else:
+                    bw = float(act.args.get("w") or 180.0)
+                    bh = float(act.args.get("h") or 140.0)
+                    ox, oy = find_free_board_region(
+                        self._occupied_rects(),
+                        canvas_sz,
+                        needed_size=(bw, bh),
+                        preferred_anchor=preferred_anchor,
+                    )
+                polylines = build_vector_shape_strokes(st_type, scaled_args, (ox, oy))
+                ink = QColor(str(act.args.get("color") or (SECONDARY_TEAL if self.dark_mode else PRIMARY_INDIGO)))
+                thick = float(max(1.5, min(14.0, float(act.args.get("strokeWidth") or 3.5))))
+                for poly in polylines:
+                    qpts = [QPointF(px, py) for (px, py) in poly]
+                    stroke_entry = {
+                        "raw_points": list(qpts),
+                        "points": qpts[:2] if len(qpts) > 3 else qpts,
+                        "shape_type": st_type.upper(),
+                        "shape_label_vi": f"AI {st_type}",
+                        "confidence": 1.0,
+                        "is_beautified": False,
+                        "color": ink,
+                        "thickness": thick,
+                    }
+                    self.strokes.append(stroke_entry)
+                    if len(qpts) > 3:
+                        self._animate_stroke_reveal(stroke_entry, qpts)
+                lbl = str(act.args.get("label") or "").strip()
+                if lbl:
+                    self.annotations.append(
+                        self._make_annotation_entry(lbl, ox + 6.0, max(24.0, oy - 24.0), fmt="text", font_size=14, color_hex=ink.name())
+                    )
+                self._bump_scene()
+                reports.append(f"Đã vẽ vector `{st_type}` lên bảng ({int(ox)}, {int(oy)}).")
+
+        self.update()
+        return "\n".join(reports)
+
+    def _animate_stroke_reveal(self, stroke_entry: Dict[str, Any], full_pts: List[QPointF]) -> None:
+        """Progressively reveal AI-drawn vector strokes at ~60 FPS so students can follow."""
+        total = len(full_pts)
+        if total <= 3:
+            stroke_entry["points"] = full_pts
+            return
+        step = max(2, total // 14)
+
+        def _tick(idx: int = 2) -> None:
+            if idx >= total:
+                stroke_entry["points"] = full_pts
+                self._bump_scene()
+                self.update()
+                return
+            stroke_entry["points"] = full_pts[:idx]
+            self._bump_scene()
+            self.update()
+            QTimer.singleShot(16, lambda: _tick(idx + step))
+
+        QTimer.singleShot(16, lambda: _tick(min(total, 2 + step)))
+
+    def undo_last_ai_action(self) -> bool:
+        if not self.ai_action_undo_stack:
+            return False
+        snap = self.ai_action_undo_stack.pop()
+        self.strokes = list(snap["strokes"])
+        self.annotations = list(snap["annotations"])
+        self._bump_scene()
+        self.update()
+        return True
+
+    def replace_lasso_with_formula(self, region: LassoSelectionRegion, formula: str) -> None:
+        clean_formula = extract_clean_beautified_formula(formula)
+        if not clean_formula:
+            return
+        self.ai_action_undo_stack.append({
+            "strokes": list(self.strokes),
+            "annotations": list(self.annotations),
+        })
+        kept_strokes = []
+        for s in self.strokes:
+            pts = [(float(p.x()), float(p.y())) for p in (s.get("points") or [])]
+            if not stroke_inside_lasso(pts, region):
+                kept_strokes.append(s)
+        self.strokes = kept_strokes
+        ann = self._make_annotation_entry(
+            clean_formula,
+            region.bbox_x + 8.0,
+            region.bbox_y + 8.0,
+            fmt="latex",
+            font_size=17,
+        )
+        self.annotations.append(ann)
+        self.hide_lasso_bar()
+        self._bump_scene()
+        self.update()
+
     def toggle_slide_visibility(self) -> None:
         self.slide_visible = not self.slide_visible
         if self.slide_visible:
             self.toggle_slide_btn.setText("[Ẩn nội dung Slide để lấy bảng trống 100%]")
         else:
             self.toggle_slide_btn.setText("[Hiện nội dung Slide bài giảng]")
+        self._bump_scene()
         self.update()
 
     def dismiss_tutorial_slides(self) -> None:
@@ -1266,6 +1994,7 @@ class SmartboardCanvas(QWidget):
         self.current_slide_idx = min(self.current_slide_idx, max(0, len(self.slides) - 1))
         self.clear_tutorial_btn.setVisible(any(s.get("is_tutorial") for s in self.slides))
         self.slides_changed.emit()
+        self._bump_scene()
         self.update()
 
     @staticmethod
@@ -1338,6 +2067,7 @@ class SmartboardCanvas(QWidget):
                 self.strokes.pop()
                 self.shape_toast = None
                 self.toast_revert_rect = None
+                self._bump_scene()
         elif upd.action == "UNDO":
             self.undo()
         elif upd.action in ("ERASE", "PALM_ERASE") and upd.cursor_xy is not None:
@@ -1395,6 +2125,7 @@ class SmartboardCanvas(QWidget):
             stroke["shape_label_vi"] = "Nét gốc mượt"
         self.shape_toast = None
         self.toast_revert_rect = None
+        self._bump_scene()
         self.update()
         return True
 
@@ -1422,9 +2153,17 @@ class SmartboardCanvas(QWidget):
             return
 
         if event.button() == Qt.LeftButton:
-            if self.active_tool == "SELECT_REGION":
-                self.selection_start = pt
-                self.selection_end = pt
+            if self.active_tool in ("SELECT_REGION", "LASSO"):
+                self.lasso_action_bar.setVisible(False)
+                self.lasso_region = None
+                if self.active_tool == "LASSO":
+                    self.lasso_points = [pt]
+                    self.selection_start = None
+                    self.selection_end = None
+                else:
+                    self.selection_start = pt
+                    self.selection_end = pt
+                    self.lasso_points = []
             elif self.active_tool == "ERASER":
                 self.cursor_mode = "PAN_ERASE"
                 self._erase_at(pt, 45.0)
@@ -1457,6 +2196,9 @@ class SmartboardCanvas(QWidget):
         if event.buttons() & Qt.LeftButton:
             if self.active_tool == "SELECT_REGION":
                 self.selection_end = pt
+            elif self.active_tool == "LASSO":
+                if not self.lasso_points or math.hypot(pt.x() - self.lasso_points[-1].x(), pt.y() - self.lasso_points[-1].y()) >= 4.0:
+                    self.lasso_points.append(pt)
             elif self.active_tool == "ERASER":
                 self.cursor_mode = "PAN_ERASE"
                 self._erase_at(pt, 45.0)
@@ -1497,8 +2239,41 @@ class SmartboardCanvas(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            if self.active_tool == "SELECT_REGION" and self.selection_start and self.selection_end:
-                self._crop_and_emit_selection(self.selection_start, self.selection_end)
+            if self.active_tool == "LASSO" and len(self.lasso_points) >= 3:
+                poly = [(float(p.x()), float(p.y())) for p in self.lasso_points]
+                region = compute_lasso_bounding_box(poly, (self.width(), self.height()))
+                if region is not None:
+                    self._crop_and_emit_selection(
+                        QPointF(region.bbox_x, region.bbox_y),
+                        QPointF(region.bbox_x + region.bbox_w, region.bbox_y + region.bbox_h),
+                        open_bar_only=True,
+                        region=region,
+                    )
+                else:
+                    self.lasso_points.clear()
+            elif self.active_tool == "SELECT_REGION" and self.selection_start and self.selection_end:
+                rect = QRectF(self.selection_start, self.selection_end).normalized()
+                if rect.width() >= 18 and rect.height() >= 18:
+                    pad_rect = rect.adjusted(-18.0, -18.0, 18.0, 18.0).intersected(QRectF(0, 0, self.width(), self.height()))
+                    poly = [
+                        (pad_rect.left(), pad_rect.top()),
+                        (pad_rect.right(), pad_rect.top()),
+                        (pad_rect.right(), pad_rect.bottom()),
+                        (pad_rect.left(), pad_rect.bottom()),
+                    ]
+                    region = LassoSelectionRegion(
+                        polygon=poly,
+                        bbox_x=pad_rect.left(),
+                        bbox_y=pad_rect.top(),
+                        bbox_w=pad_rect.width(),
+                        bbox_h=pad_rect.height(),
+                    )
+                    self._crop_and_emit_selection(
+                        pad_rect.topLeft(),
+                        pad_rect.bottomRight(),
+                        open_bar_only=True,
+                        region=region,
+                    )
                 self.selection_start = None
                 self.selection_end = None
             elif self.current_stroke:
@@ -1547,6 +2322,7 @@ class SmartboardCanvas(QWidget):
                 "color": QColor(self.ink_color),
                 "thickness": self.pen_thickness,
             })
+            self._bump_scene()
 
             if is_geo and final_qpts:
                 anchor_x = sum(p.x() for p in final_qpts) / len(final_qpts)
@@ -1562,6 +2338,7 @@ class SmartboardCanvas(QWidget):
 
     def _erase_at(self, pt: QPointF, radius: float) -> None:
         kept = []
+        removed = False
         for s in self.strokes:
             hit = any(
                 math.hypot(p.x() - pt.x(), p.y() - pt.y()) < radius
@@ -1569,10 +2346,25 @@ class SmartboardCanvas(QWidget):
             )
             if not hit:
                 kept.append(s)
+            else:
+                removed = True
         self.strokes = kept
+
+        kept_ann = []
+        for ann in self.annotations:
+            cx = float(ann.get("x", 0.0)) + float(ann.get("w", 120.0)) * 0.5
+            cy = float(ann.get("y", 0.0)) + float(ann.get("h", 40.0)) * 0.5
+            if math.hypot(cx - pt.x(), cy - pt.y()) < radius + 30.0:
+                removed = True
+            else:
+                kept_ann.append(ann)
+        self.annotations = kept_ann
+        if removed:
+            self._bump_scene()
 
     def undo(self) -> None:
         if not self.strokes:
+            self.undo_last_ai_action()
             return
         top = self.strokes[-1]
         raw_pts = top.get("raw_points")
@@ -1596,6 +2388,7 @@ class SmartboardCanvas(QWidget):
             self.redo_strokes.append(popped)
         self.shape_toast = None
         self.toast_revert_rect = None
+        self._bump_scene()
         self.update()
 
     def redo(self) -> None:
@@ -1606,17 +2399,21 @@ class SmartboardCanvas(QWidget):
             self.strokes[-1] = item
         else:
             self.strokes.append(item)
+        self._bump_scene()
         self.update()
 
     def clear_board(self) -> None:
         self.strokes.clear()
         self.redo_strokes.clear()
+        self.annotations.clear()
         self.current_stroke.clear()
         self.shape_toast = None
         self.toast_revert_rect = None
+        self.hide_lasso_bar()
+        self._bump_scene()
         self.update()
 
-    def export_board_png(self, rect: Optional[QRectF] = None) -> Tuple[bytes, QPixmap]:
+    def export_board_png(self, rect: Optional[QRectF] = None, enhance_crop: bool = False) -> Tuple[bytes, QPixmap]:
         full_pm = self.grab()
         if rect is not None and rect.width() > 16 and rect.height() > 16:
             cropped_pm = full_pm.copy(rect.toRect())
@@ -1626,26 +2423,41 @@ class SmartboardCanvas(QWidget):
         buf = QBuffer(ba)
         buf.open(QIODevice.WriteOnly)
         cropped_pm.save(buf, "PNG")
-        compressed_bytes = compress_snapshot_png(bytes(ba), max_dim=1024)
+        raw_bytes = bytes(ba)
+        if enhance_crop:
+            compressed_bytes = enhance_lasso_crop_png(raw_bytes, max_dim=1024) or raw_bytes
+        else:
+            compressed_bytes = compress_snapshot_png(raw_bytes, max_dim=1024) or raw_bytes
         return compressed_bytes, cropped_pm
 
-    def _crop_and_emit_selection(self, p0: QPointF, p1: QPointF) -> None:
+    def _crop_and_emit_selection(
+        self,
+        p0: QPointF,
+        p1: QPointF,
+        open_bar_only: bool = False,
+        region: Optional[LassoSelectionRegion] = None,
+    ) -> None:
         rect = QRectF(p0, p1).normalized()
         if rect.width() < 15 or rect.height() < 15:
             return
-        png_bytes, cropped_pm = self.export_board_png(rect)
-        self.region_cropped_for_ai.emit(png_bytes, cropped_pm)
+        png_bytes, cropped_pm = self.export_board_png(rect, enhance_crop=True)
+        if open_bar_only and region is not None:
+            self._show_lasso_action_bar(region)
+            self.region_cropped_for_ai.emit(png_bytes, cropped_pm)
+        else:
+            self.region_cropped_for_ai.emit(png_bytes, cropped_pm)
 
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), QColor(BG_DARK))
+    def _paint_static_scene(self, painter: QPainter) -> bool:
+        """Render background, grid, slide, committed strokes & math annotations cleanly."""
+        has_active_reveal = False
+        bg_col = QColor(BG_DARK if self.dark_mode else "#F8FAFC")
+        painter.fillRect(self.rect(), bg_col)
 
         # 1. Single Caro Grid
         if self.grid_enabled:
             step = 24
-            minor_pen = QPen(QColor(79, 70, 229, 32), 1.0)
-            major_pen = QPen(QColor(6, 182, 212, 62), 1.0)
+            minor_pen = QPen(QColor(79, 70, 229, 32 if self.dark_mode else 26), 1.0)
+            major_pen = QPen(QColor(6, 182, 212, 62 if self.dark_mode else 46), 1.0)
             for idx, x in enumerate(range(0, self.width(), step)):
                 painter.setPen(major_pen if idx % 5 == 0 else minor_pen)
                 painter.drawLine(x, 0, x, self.height())
@@ -1659,38 +2471,40 @@ class SmartboardCanvas(QWidget):
             s_w = min(740, max(320, self.width() - 40))
             s_h = int(s_w * 9 / 16)
             s_rect = QRectF(16, 46, s_w, s_h)
-            painter.setBrush(QBrush(QColor(15, 23, 42, 195)))
-            painter.setPen(QPen(QColor(BORDER_SLATE), 1.2))
+            card_bg = QColor(15, 23, 42, 200) if self.dark_mode else QColor(255, 255, 255, 235)
+            card_fg = QColor(TEXT_LIGHT if self.dark_mode else "#0F172A")
+            painter.setBrush(QBrush(card_bg))
+            painter.setPen(QPen(QColor(BORDER_SLATE if self.dark_mode else "#CBD5E1"), 1.2))
             painter.drawRoundedRect(s_rect, 12.0, 12.0)
 
             pm: Optional[QPixmap] = slide.get("pixmap")
             if pm is not None:
                 painter.drawPixmap(s_rect.toRect(), pm)
             else:
-                painter.setPen(QColor(SECONDARY_TEAL))
+                painter.setPen(QColor(SECONDARY_TEAL if self.dark_mode else PRIMARY_INDIGO))
                 painter.setFont(QFont("Segoe UI", 15, QFont.Bold))
                 painter.drawText(QPointF(s_rect.left() + 22, s_rect.top() + 34), slide["title"])
 
-                painter.setPen(QColor(TEXT_MUTED))
+                painter.setPen(QColor(TEXT_MUTED if self.dark_mode else "#475569"))
                 painter.setFont(QFont("Segoe UI", 11))
                 painter.drawText(QPointF(s_rect.left() + 22, s_rect.top() + 58), slide["subtitle"])
 
-                painter.setPen(QColor(TEXT_LIGHT))
+                painter.setPen(card_fg)
                 painter.setFont(QFont("Segoe UI", 11))
                 for i, b in enumerate(slide["bullets"]):
                     painter.drawText(
-                        QPointF(s_rect.left() + 24, s_rect.top() + 94 + i * 28), b
+                        QPointF(s_rect.left() + 24, s_rect.top() + 94 + i * 28), OutputSanitizer.sanitize_plain_text(b)
                     )
 
                 f_rect = QRectF(s_rect.left() + 22, s_rect.bottom() - 62, s_rect.width() - 44, 42)
-                painter.setBrush(QBrush(QColor(15, 23, 42, 235)))
+                painter.setBrush(QBrush(QColor(15, 23, 42, 235) if self.dark_mode else QColor("#EEF2FF")))
                 painter.setPen(QPen(QColor(PRIMARY_INDIGO), 1.2))
                 painter.drawRoundedRect(f_rect, 8.0, 8.0)
-                painter.setPen(QColor(SECONDARY_TEAL))
+                painter.setPen(QColor(SECONDARY_TEAL if self.dark_mode else PRIMARY_INDIGO))
                 painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
-                painter.drawText(f_rect, Qt.AlignCenter, slide["formula"])
+                painter.drawText(f_rect, Qt.AlignCenter, OutputSanitizer.sanitize_plain_text(slide["formula"]))
 
-        # 3. Vector Ink Strokes
+        # 3. Committed Vector Ink Strokes
         for s in self.strokes:
             pts = s["points"]
             if len(pts) >= 2:
@@ -1701,6 +2515,74 @@ class SmartboardCanvas(QWidget):
                     path.lineTo(p)
                 painter.drawPath(path)
 
+        # 3B. Agentic Whiteboard Rendered Math & Text Annotations
+        now_ms = self._now_ms()
+        for ann in self.annotations:
+            ax = float(ann.get("x", 40.0))
+            ay = float(ann.get("y", 60.0))
+            aw = float(ann.get("w", 200.0))
+            ah = float(ann.get("h", 44.0))
+            reveal_until = float(ann.get("reveal_until_ms", 0.0))
+            alpha_f = 1.0
+            if reveal_until > now_ms:
+                has_active_reveal = True
+                alpha_f = max(0.15, min(1.0, 1.0 - (reveal_until - now_ms) / 420.0))
+
+            painter.save()
+            painter.setOpacity(alpha_f)
+            box = QRectF(ax, ay, aw, ah)
+            ann_bg = QColor(15, 23, 42, 215) if self.dark_mode else QColor(255, 255, 255, 240)
+            ann_border = QColor(SECONDARY_TEAL if self.dark_mode else PRIMARY_INDIGO)
+            painter.setBrush(QBrush(ann_bg))
+            painter.setPen(QPen(ann_border, 1.2))
+            painter.drawRoundedRect(box, 8.0, 8.0)
+
+            ann_pm: Optional[QPixmap] = ann.get("pixmap")
+            if ann_pm is not None and not ann_pm.isNull():
+                tx = int(ax + (aw - ann_pm.width()) * 0.5)
+                ty = int(ay + (ah - ann_pm.height()) * 0.5)
+                painter.drawPixmap(tx, ty, ann_pm)
+            else:
+                painter.setPen(QColor(ann.get("color") or (NEON_CYAN if self.dark_mode else "#0F172A")))
+                painter.setFont(QFont("Segoe UI", max(11, int(ann.get("font_size") or 14)), QFont.Bold))
+                painter.drawText(box.adjusted(10.0, 4.0, -10.0, -4.0), Qt.AlignVCenter | Qt.AlignLeft, str(ann.get("text") or ""))
+            painter.restore()
+
+        return has_active_reveal
+
+    def paintEvent(self, _event) -> None:
+        scene_key = (
+            self.width(),
+            self.height(),
+            self.dark_mode,
+            self.grid_enabled,
+            self.slide_visible,
+            self.current_slide_idx,
+            self._scene_rev,
+        )
+        has_active_reveal = any(float(a.get("reveal_until_ms", 0.0)) > self._now_ms() for a in self.annotations)
+        if (
+            has_active_reveal
+            or self._backing_pixmap is None
+            or self._dirty_tracker.needs_rebuild(scene_key)
+        ):
+            pm = QPixmap(max(1, self.width()), max(1, self.height()))
+            bg_p = QPainter(pm)
+            bg_p.setRenderHint(QPainter.Antialiasing)
+            still_anim = self._paint_static_scene(bg_p)
+            bg_p.end()
+            self._backing_pixmap = pm
+            if not still_anim:
+                self._dirty_tracker.mark_clean(scene_key)
+            else:
+                QTimer.singleShot(25, self.update)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        if self._backing_pixmap is not None:
+            painter.drawPixmap(0, 0, self._backing_pixmap)
+
+        # Active live stroke (never blocked by backing cache)
         if len(self.current_stroke) >= 2:
             pen = QPen(self.ink_color, self.pen_thickness, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             painter.setPen(pen)
@@ -1709,8 +2591,17 @@ class SmartboardCanvas(QWidget):
                 path.lineTo(p)
             painter.drawPath(path)
 
-        # 4. Region Selection Rectangle
-        if self.selection_start and self.selection_end:
+        # Smart Lasso polygon or Region Selection overlay
+        if len(self.lasso_points) >= 2:
+            lpath = QPainterPath(self.lasso_points[0])
+            for p in self.lasso_points[1:]:
+                lpath.lineTo(p)
+            if self.lasso_region is not None:
+                lpath.closeSubpath()
+            painter.setBrush(QBrush(QColor(124, 58, 237, 40)))
+            painter.setPen(QPen(QColor(NEON_CYAN), 2.0, Qt.DashLine))
+            painter.drawPath(lpath)
+        elif self.selection_start and self.selection_end:
             sel_rect = QRectF(self.selection_start, self.selection_end).normalized()
             painter.setBrush(QBrush(QColor(79, 70, 229, 40)))
             painter.setPen(QPen(QColor(ALERT_ROSE), 2.0))
@@ -1822,18 +2713,127 @@ class AboutBrandDialog(QDialog):
         layout.addWidget(btns)
 
 
+class ApiKeyOnboardingDialog(QDialog):
+    """Zero-Friction First-Run Onboarding: Paste Gemini API Key, Test Connection, or Use Offline."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Chào mừng đến với AirTeach AI — Cấu hình Gemini API")
+        self.setModal(True)
+        self.setMinimumWidth(480)
+        if APP_LOGO_ICO.exists():
+            self.setWindowIcon(QIcon(str(APP_LOGO_ICO)))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+
+        hdr = QHBoxLayout()
+        hdr.addWidget(make_brand_logo_widget(36))
+        title = QLabel("Thiết lập Trợ giảng AI (Gemini API Key)")
+        title.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {TEXT_LIGHT};")
+        hdr.addWidget(title, 1)
+        layout.addLayout(hdr)
+
+        desc = QLabel(
+            "Dán Gemini API Key để AI có thể giải bài, vẽ hình và viết công thức trực tiếp lên bảng trắng.\n"
+            "Key được lưu an toàn tại thư mục dữ liệu người dùng (%APPDATA%\\AirTeachAI\\config.json)."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
+        layout.addWidget(desc)
+
+        self.key_input = QLineEdit()
+        self.key_input.setPlaceholderText("Dán Gemini API Key (AIza...) tại đây")
+        self.key_input.setEchoMode(QLineEdit.Password)
+        layout.addWidget(self.key_input)
+
+        self.status_lbl = QLabel("Trạng thái: Chưa kiểm tra")
+        self.status_lbl.setWordWrap(True)
+        self.status_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
+        layout.addWidget(self.status_lbl)
+
+        btn_row = QHBoxLayout()
+        self.test_btn = QPushButton("Kiểm tra kết nối (Test API)")
+        self.test_btn.clicked.connect(self._on_test)
+        self.save_btn = QPushButton("Lưu & Bắt đầu")
+        self.save_btn.setStyleSheet(f"background-color: {PRIMARY_INDIGO}; color: white; font-weight: 700;")
+        self.save_btn.clicked.connect(self._on_save)
+        self.offline_btn = QPushButton("Dùng ngoại tuyến (Bỏ qua)")
+        self.offline_btn.clicked.connect(self._on_offline)
+        btn_row.addWidget(self.test_btn)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.offline_btn)
+        btn_row.addWidget(self.save_btn)
+        layout.addLayout(btn_row)
+
+        self.saved_key: str = ""
+        self.skipped_offline: bool = False
+        self._health_worker: Optional[GeminiHealthCheckWorker] = None
+
+    def _on_test(self) -> None:
+        key = self.key_input.text().strip()
+        if not key:
+            self.status_lbl.setText("Vui lòng nhập API Key trước khi kiểm tra.")
+            self.status_lbl.setStyleSheet(f"color: {ALERT_ROSE}; font-size: 12px;")
+            return
+        self.test_btn.setEnabled(False)
+        self.status_lbl.setText("Đang gọi thử Gemini API...")
+        self.status_lbl.setStyleSheet(f"color: {SECONDARY_TEAL}; font-size: 12px;")
+        self._health_worker = GeminiHealthCheckWorker(key)
+        self._health_worker.completed.connect(self._on_test_done)
+        self._health_worker.start()
+
+    def _on_test_done(self, res: Any) -> None:
+        self.test_btn.setEnabled(True)
+        if getattr(res, "status", None) == ApiConnectionStatus.CONNECTED:
+            self.status_lbl.setText(f"✓ Sẵn sàng ({res.model_used}, {res.latency_ms:.0f} ms)")
+            self.status_lbl.setStyleSheet(f"color: {NEON_CYAN}; font-size: 12px; font-weight: 600;")
+        else:
+            self.status_lbl.setText(f"⚠ {getattr(res, 'message_vi', 'Lỗi kết nối')}")
+            self.status_lbl.setStyleSheet(f"color: {ALERT_ROSE}; font-size: 12px;")
+
+    def _on_save(self) -> None:
+        key = self.key_input.text().strip()
+        if not key:
+            self._on_offline()
+            return
+        save_ui_api_settings({"ui_gemini_api_key": key, "onboarding_skipped": False})
+        self.saved_key = key
+        self.accept()
+
+    def _on_offline(self) -> None:
+        cur = load_ui_api_settings()
+        cur["onboarding_skipped"] = "true"
+        save_ui_api_settings(cur)
+        self.skipped_offline = True
+        self.reject()
+
+
 class AirTeachMainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("AirTeach AI — Clean Studio Smartboard (DNT - Victer)")
+        if APP_LOGO_ICO.exists():
+            self.setWindowIcon(QIcon(str(APP_LOGO_ICO)))
         self.resize(1400, 820)
 
         self.logged_in_user: Dict[str, Any] = {}
         self.api_key_state = resolve_api_key_layered()
         self.api_key: str = self.api_key_state.api_key
         self.gemini_conn_status: ApiConnectionStatus = ApiConnectionStatus.UNCONFIGURED
+        self.perf_pipeline = PerformancePipeline()
+        self.local_ai_manager = LocalAIManager()
         self.gemini_worker: Optional[GeminiVisionWorker] = None
+        self.hybrid_worker: Optional[HybridAiWorker] = None
+        self.discovery_worker: Optional[LocalDiscoveryWorker] = None
         self.health_worker: Optional[GeminiHealthCheckWorker] = None
+        self.dark_mode: bool = True
+        self.chat_history: List[Dict[str, str]] = []
+        self.last_ai_raw_text: str = ""
+        self._stream_raw_accum: str = ""
+        self._active_lasso_action: Optional[LassoQuickAction] = None
+        self._active_lasso_region: Optional[LassoSelectionRegion] = None
         self.is_recording_audio = False
         self.audio_frames: List[np.ndarray] = []
         self.vu_db: float = -60.0
@@ -1854,14 +2854,20 @@ class AirTeachMainWindow(QMainWindow):
         self._build_studio_ui(self.studio_page)
         self.stack.addWidget(self.studio_page)
 
-        # Global Shortcuts: Esc -> Instant Cancel + 300ms Lock | Ctrl+Z -> 400ms Cooldown Undo
+        # Global Shortcuts: Esc -> Cancel + 300ms Lock | Ctrl+Z -> Undo | L -> Smart Lasso | Ctrl+Shift+D -> Vision Debug HUD
         self.esc_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self.esc_shortcut.activated.connect(self._on_hotkey_esc)
         self.undo_shortcut = QShortcut(QKeySequence.Undo, self)
         self.undo_shortcut.activated.connect(self._on_hotkey_undo)
+        self.lasso_shortcut = QShortcut(QKeySequence(Qt.Key_L), self)
+        self.lasso_shortcut.activated.connect(lambda: self._set_tool("LASSO"))
+        self.debug_hud_shortcut = QShortcut(QKeySequence("Ctrl+Shift+D"), self)
+        self.debug_hud_shortcut.activated.connect(self._on_toggle_vision_debug_hud)
 
         self.stack.setCurrentIndex(0)
         self.cam_worker.start()
+        QTimer.singleShot(450, self._on_discover_local_ai)
+        QTimer.singleShot(600, self._maybe_show_first_run_onboarding)
 
         # Optional Real Microphone Stream for VU Meter
         self.audio_stream = None
@@ -1950,6 +2956,16 @@ class AirTeachMainWindow(QMainWindow):
         grid_btn.clicked.connect(self._on_toggle_grid)
         h_layout.addWidget(grid_btn)
 
+        self.theme_btn = QPushButton("[Sáng/Tối]")
+        self.theme_btn.clicked.connect(self._on_toggle_theme)
+        h_layout.addWidget(self.theme_btn)
+
+        self.status_pill_lbl = QLabel(self.perf_pipeline.telemetry.status_pill_text())
+        self.status_pill_lbl.setStyleSheet(
+            f"background: {SURFACE_DARK}; color: {NEON_CYAN}; border: 1px solid {SECONDARY_TEAL}; border-radius: 10px; padding: 3px 9px; font-size: 11px; font-weight: 700;"
+        )
+        h_layout.addWidget(self.status_pill_lbl)
+
         h_layout.addStretch(1)
 
         self.rec_btn = QPushButton("[Ghi Âm]")
@@ -2021,6 +3037,30 @@ class AirTeachMainWindow(QMainWindow):
         cam_ctrl_row.addWidget(self.hdr_chk)
         l_layout.addLayout(cam_ctrl_row)
 
+        cam_opt_row = QHBoxLayout()
+        cam_opt_row.setSpacing(6)
+        self.hd_cam_chk = QCheckBox("HD 720p")
+        self.hd_cam_chk.setChecked(bool(self.cam_worker.prefer_hd))
+        self.hd_cam_chk.toggled.connect(self._on_toggle_hd_camera)
+        cam_opt_row.addWidget(self.hd_cam_chk)
+
+        self.debug_hud_btn = QPushButton("[Debug HUD]")
+        self.debug_hud_btn.setCheckable(True)
+        self.debug_hud_btn.setChecked(bool(self.cam_worker.debug_hud_enabled))
+        self.debug_hud_btn.setFixedHeight(24)
+        self.debug_hud_btn.setToolTip("Bật/tắt Vision Debug HUD (Ctrl+Shift+D)")
+        self.debug_hud_btn.clicked.connect(self._on_toggle_vision_debug_hud)
+        cam_opt_row.addWidget(self.debug_hud_btn)
+        l_layout.addLayout(cam_opt_row)
+
+        self.vision_debug_lbl = QLabel()
+        self.vision_debug_lbl.setWordWrap(True)
+        self.vision_debug_lbl.setVisible(bool(self.cam_worker.debug_hud_enabled))
+        self.vision_debug_lbl.setStyleSheet(
+            f"background: {BG_DARK}; color: {NEON_CYAN}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; padding: 5px; font-family: Consolas, monospace; font-size: 10px;"
+        )
+        l_layout.addWidget(self.vision_debug_lbl)
+
         # 4 Compact 4-Tier HUD Mode & Gesture Badges (2x2 Grid)
         badge_grid = QGridLayout()
         badge_grid.setSpacing(6)
@@ -2063,6 +3103,7 @@ class AirTeachMainWindow(QMainWindow):
         # Center Smartboard Canvas
         self.canvas = SmartboardCanvas()
         self.canvas.region_cropped_for_ai.connect(self._on_region_cropped_for_ai)
+        self.canvas.lasso_action_requested.connect(self._on_lasso_quick_action)
         self.canvas.slides_changed.connect(self._update_slide_counter)
         workspace.addWidget(self.canvas, stretch=1)
 
@@ -2158,6 +3199,23 @@ class AirTeachMainWindow(QMainWindow):
         self.api_key_frame.setVisible(not bool(self.api_key))
         self._refresh_api_key_ui(detail_msg="")
 
+        # Smart Hybrid / Local AI Discovery Strip
+        local_row = QHBoxLayout()
+        local_row.setSpacing(4)
+        self.routing_combo = QComboBox()
+        self.routing_combo.addItems(["Hybrid", "Local", "Cloud"])
+        self.routing_combo.currentTextChanged.connect(self._on_routing_mode_changed)
+        self.local_model_combo = QComboBox()
+        self.local_model_combo.addItem("Auto (Local chưa bật)")
+        self.local_model_combo.currentIndexChanged.connect(self._on_local_model_selected)
+        scan_local_btn = QPushButton("Quét Local")
+        scan_local_btn.setFixedWidth(74)
+        scan_local_btn.clicked.connect(self._on_discover_local_ai)
+        local_row.addWidget(self.routing_combo, stretch=1)
+        local_row.addWidget(self.local_model_combo, stretch=2)
+        local_row.addWidget(scan_local_btn)
+        r_layout.addLayout(local_row)
+
         for label, prompt_prefix, struct_json in [
             (
                 "[1. Giải & Chữa Bài Trên Bảng]",
@@ -2195,13 +3253,42 @@ class AirTeachMainWindow(QMainWindow):
         r_layout.addWidget(self.crop_preview_lbl)
 
         self.ai_output = QTextBrowser()
+        self.ai_output.setOpenLinks(False)
         self.ai_output.setStyleSheet(
             f"background: {BG_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 8px; padding: 8px; font-size: 13px;"
         )
-        self.ai_output.setPlainText(
-            f"Sẵn sàng phân tích bảng vẽ.\n• Dùng công cụ [Phân Tích Vùng] bên dưới để khoanh vùng gửi tới {DEFAULT_GEMINI_MODEL}.\n• Mất mạng vẫn vẽ bảng, nắn hình & CV 100%."
+        init_msg = (
+            f"Sẵn sàng hỗ trợ giảng dạy.\n"
+            f"• Nhập lệnh trực tiếp như: **ghi lên bảng hộ tôi 2x + 1 = 3 đi** hoặc **vẽ trục tọa độ** (<5ms).\n"
+            f"• Dùng **[Khoanh AI (Lasso)]** (phím `L`) để khoanh vùng viết tay → Giải / Viết lên bảng / Làm đẹp LaTeX.\n"
+            f"• Hỗ trợ Local AI (Ollama / LM Studio / llama.cpp) + {DEFAULT_GEMINI_MODEL} bền bỉ ngoại tuyến."
         )
+        self.last_ai_raw_text = init_msg
+        self.ai_output.setHtml(OutputSanitizer.to_rich_html(init_msg, dark_mode=self.dark_mode))
         r_layout.addWidget(self.ai_output, stretch=1)
+
+        push_board_btn = QPushButton("[Đưa nội dung AI lên bảng]")
+        push_board_btn.setFixedHeight(26)
+        push_board_btn.setStyleSheet(
+            f"background: {SURFACE_DARK}; color: {SECONDARY_TEAL}; border: 1px solid {SECONDARY_TEAL}; border-radius: 6px; font-weight: 700; font-size: 11px;"
+        )
+        push_board_btn.clicked.connect(self._on_push_last_ai_to_board)
+        r_layout.addWidget(push_board_btn)
+
+        chat_in_row = QHBoxLayout()
+        chat_in_row.setSpacing(4)
+        self.chat_input_edit = QLineEdit()
+        self.chat_input_edit.setPlaceholderText("Hỏi AI hoặc ra lệnh: ghi lên bảng 2x + 1 = 3...")
+        self.chat_input_edit.returnPressed.connect(self._on_chat_submit)
+        send_chat_btn = QPushButton("Gửi")
+        send_chat_btn.setFixedWidth(52)
+        send_chat_btn.setStyleSheet(
+            f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 6px; font-weight: 700;"
+        )
+        send_chat_btn.clicked.connect(self._on_chat_submit)
+        chat_in_row.addWidget(self.chat_input_edit)
+        chat_in_row.addWidget(send_chat_btn)
+        r_layout.addLayout(chat_in_row)
 
         workspace.addWidget(self.right_dock)
         root.addLayout(workspace, stretch=1)
@@ -2219,6 +3306,7 @@ class AirTeachMainWindow(QMainWindow):
         b_layout.setSpacing(6)
 
         for tool_id, label in [
+            ("LASSO", "[Khoanh AI (Lasso)]"),
             ("SELECT_REGION", "[Phân Tích Vùng]"),
             ("PEN", "[Bút vẽ]"),
             ("ERASER", "[Tẩy]"),
@@ -2315,6 +3403,24 @@ class AirTeachMainWindow(QMainWindow):
         else:
             self.cam_worker.release_camera_hardware()
 
+    def _on_toggle_hd_camera(self, checked: bool) -> None:
+        self.cam_worker.set_hd_resolution(bool(checked))
+
+    def _on_toggle_vision_debug_hud(self) -> None:
+        new_state = not bool(self.cam_worker.debug_hud_enabled)
+        self.cam_worker.set_debug_hud(new_state)
+        if hasattr(self, "debug_hud_btn"):
+            self.debug_hud_btn.blockSignals(True)
+            self.debug_hud_btn.setChecked(new_state)
+            self.debug_hud_btn.blockSignals(False)
+            self.debug_hud_btn.setStyleSheet(
+                f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; font-weight: 700;"
+                if new_state
+                else ""
+            )
+        if hasattr(self, "vision_debug_lbl"):
+            self.vision_debug_lbl.setVisible(new_state)
+
     def _on_camera_packet(self, pkt: dict) -> None:
         if self.stack.currentIndex() == 0:
             self.auth_gate.on_camera_packet(pkt)
@@ -2338,6 +3444,32 @@ class AirTeachMainWindow(QMainWindow):
         luma = float(light.get("mean_luma") or 0.0)
         sharp = float(light.get("laplacian_var") or 0.0)
         self.telemetry_lbl.setText(f"Sáng: {luma:.0f} | Nét: {sharp:.0f} | {fps:.1f} FPS")
+        self.perf_pipeline.update_cv_fps(fps)
+        self._refresh_status_pill()
+
+        if hasattr(self, "vision_debug_lbl") and self.cam_worker.debug_hud_enabled:
+            vt = pkt.get("vision_telemetry") or {}
+            fstates = vt.get("finger_states") or []
+            fangs = vt.get("finger_angles_deg") or []
+            short_st = "/".join(s[0] for s in fstates[:5]) if len(fstates) == 5 else "-"
+            short_ang = "/".join(str(int(round(a))) for a in fangs[:5]) if len(fangs) == 5 else "-"
+            pr_val = vt.get("pinch_ratio")
+            pr_txt = f"{float(pr_val):.2f}" if pr_val is not None else "--"
+            lmode = vt.get("lighting_mode", "NORMAL")
+            byp = "BYPASS" if vt.get("clahe_bypassed") else "CLAHE"
+            palm_ok = "FRONT" if vt.get("palm_facing_ok", True) else "SIDE"
+            roi_tag = " ROI2x" if vt.get("stage2_roi_zoom") else ""
+            kal_tag = " KAL" if vt.get("kalman_predicted") else ""
+            cam_fps_v = float(vt.get("cam_fps") or fps)
+            ai_fps_v = float(vt.get("ai_fps") or fps)
+            cv_ms_v = float(vt.get("cv_latency_ms") or 0.0)
+            palm_sc_v = float(vt.get("palm_facing_score") or 0.0)
+            self.vision_debug_lbl.setText(
+                f"Cam {cam_fps_v:.0f}fps | AI {ai_fps_v:.0f}fps ({cv_ms_v:.1f}ms) {vt.get('resolution', '')}\n"
+                f"Light: {lmode} [{byp}] | Lock: {vt.get('teacher_mode', '-')} #{vt.get('locked_teacher_id', '-')} (Ign:{vt.get('ignored_count', 0)})\n"
+                f"5-Ngón: {short_st} ({short_ang}°) | Pinch: {pr_txt}\n"
+                f"Palm: {palm_ok} ({palm_sc_v:.2f}) | FSM: {vt.get('fsm_state', 'IDLE')}{roi_tag}{kal_tag}"
+            )
 
         fsm_upd = self.canvas.apply_cv_fsm_packet(pkt)
         hud_key = fsm_upd.hud_mode.value
@@ -2373,16 +3505,19 @@ class AirTeachMainWindow(QMainWindow):
         if self.canvas.current_slide_idx > 0:
             self.canvas.current_slide_idx -= 1
             self._update_slide_counter()
+            self.canvas._bump_scene()
             self.canvas.update()
 
     def _on_next_slide(self) -> None:
         if self.canvas.current_slide_idx + 1 < len(self.canvas.slides):
             self.canvas.current_slide_idx += 1
             self._update_slide_counter()
+            self.canvas._bump_scene()
             self.canvas.update()
 
     def _on_toggle_grid(self) -> None:
         self.canvas.grid_enabled = not self.canvas.grid_enabled
+        self.canvas._bump_scene()
         self.canvas.update()
 
     def _on_open_slide_file(self) -> None:
@@ -2402,6 +3537,7 @@ class AirTeachMainWindow(QMainWindow):
                 })
                 self.canvas.current_slide_idx = len(self.canvas.slides) - 1
                 self._update_slide_counter()
+                self.canvas._bump_scene()
                 self.canvas.update()
 
     def _on_toggle_recording(self) -> None:
@@ -2560,25 +3696,233 @@ class AirTeachMainWindow(QMainWindow):
         if isinstance(status_obj, ApiConnectionStatus):
             self._refresh_api_key_ui(status=status_obj)
 
-    def _on_region_cropped_for_ai(self, png_bytes: bytes, cropped_pm: QPixmap) -> None:
+    def _set_sanitized_ai_html(self, raw_text: str) -> None:
+        self.last_ai_raw_text = raw_text
+        self.ai_output.setHtml(OutputSanitizer.to_rich_html(raw_text, dark_mode=self.dark_mode))
+
+    def _refresh_status_pill(self) -> None:
+        mode = self.local_ai_manager.routing_mode.label_vi
+        if self.local_ai_manager.active_model and self.local_ai_manager.routing_mode != AiRoutingMode.CLOUD:
+            mdl = self.local_ai_manager.active_model
+        else:
+            mdl = DEFAULT_GEMINI_MODEL
+        self.perf_pipeline.update_ai_metrics(
+            ai_mode=mode,
+            active_model=mdl,
+            tokens_per_sec=self.local_ai_manager.last_tokens_per_sec,
+        )
+        if hasattr(self, "status_pill_lbl"):
+            self.status_pill_lbl.setText(self.perf_pipeline.telemetry.status_pill_text())
+
+    def _on_toggle_theme(self) -> None:
+        self.dark_mode = not self.dark_mode
+        self.canvas.set_dark_mode(self.dark_mode)
+        bg = BG_DARK if self.dark_mode else "#F8FAFC"
+        fg = TEXT_LIGHT if self.dark_mode else "#0F172A"
+        bd = BORDER_SLATE if self.dark_mode else "#CBD5E1"
+        self.ai_output.setStyleSheet(
+            f"background: {bg}; color: {fg}; border: 1px solid {bd}; border-radius: 8px; padding: 8px; font-size: 13px;"
+        )
+        if self.last_ai_raw_text:
+            self._set_sanitized_ai_html(self.last_ai_raw_text)
+
+    def _on_routing_mode_changed(self, text: str) -> None:
+        mapping = {"Hybrid": AiRoutingMode.HYBRID, "Local": AiRoutingMode.LOCAL, "Cloud": AiRoutingMode.CLOUD}
+        self.local_ai_manager.routing_mode = mapping.get(text, AiRoutingMode.HYBRID)
+        self._refresh_status_pill()
+
+    def _on_discover_local_ai(self) -> None:
+        if self.discovery_worker is not None and self.discovery_worker.isRunning():
+            return
+        self.discovery_worker = LocalDiscoveryWorker(self.local_ai_manager)
+        self.discovery_worker.discovered.connect(self._on_local_discovered)
+        self.discovery_worker.start()
+
+    def _on_local_discovered(self, servers: List[DiscoveredLocalServer]) -> None:
+        if not hasattr(self, "local_model_combo"):
+            return
+        self.local_model_combo.blockSignals(True)
+        self.local_model_combo.clear()
+        added = 0
+        for srv in servers:
+            for mdl in srv.models:
+                self.local_model_combo.addItem(f"{srv.provider}: {mdl}", (srv.base_url, mdl, srv.provider))
+                added += 1
+            if not srv.models:
+                self.local_model_combo.addItem(f"{srv.provider} ({srv.base_url})", (srv.base_url, "", srv.provider))
+                added += 1
+        if added == 0:
+            self.local_model_combo.addItem("Chưa phát hiện Ollama/LM Studio", ("", "", ""))
+        self.local_model_combo.blockSignals(False)
+        self._refresh_status_pill()
+
+    def _on_local_model_selected(self, idx: int) -> None:
+        if idx < 0:
+            return
+        data = self.local_model_combo.itemData(idx)
+        if isinstance(data, tuple) and len(data) == 3 and data[0] and data[1]:
+            self.local_ai_manager.select_local_model(data[0], data[1], data[2])
+            self.local_ai_manager.warmup_async()
+            self._refresh_status_pill()
+
+    def _on_chat_submit(self) -> None:
+        user_msg = self.chat_input_edit.text().strip()
+        if not user_msg:
+            return
+        self.chat_input_edit.clear()
+        self.right_dock.setVisible(True)
+
+        # Tier 1: Fast Local Intent Parser (<5ms, instant board write/draw/clear)
+        fast_act = WhiteboardAgent.parse_fast_intent(user_msg)
+        if fast_act is not None:
+            summary = self.canvas.execute_whiteboard_actions([fast_act])
+            self.perf_pipeline.update_ai_metrics(ai_mode="Instant", active_model="Local-Intent", tokens_per_sec=0.0)
+            self._refresh_status_pill()
+            self._set_sanitized_ai_html(f"**Lệnh tức thì (<5ms):** {user_msg}\n\n✓ {summary}")
+            return
+
+        self.chat_history.append({"role": "user", "content": user_msg})
+        self._set_sanitized_ai_html(f"Đang xử lý yêu cầu: **{user_msg}**...")
+        self._start_hybrid_worker(user_msg, png_bytes=None, structured_json=False)
+
+    def _on_push_last_ai_to_board(self) -> None:
+        if not self.last_ai_raw_text.strip():
+            return
+        lines = [
+            ln.strip("•-* ").strip()
+            for ln in OutputSanitizer.sanitize_plain_text(self.last_ai_raw_text).splitlines()
+            if ln.strip()
+        ]
+        if not lines:
+            return
+        if len(lines) == 1:
+            act = WhiteboardAction(tool="write_on_board", args={"content": lines[0], "format": "latex"})
+        else:
+            act = WhiteboardAction(tool="solve_on_board", args={"steps": lines[:6]})
+        self.canvas.execute_whiteboard_actions([act])
+
+    def _on_lasso_quick_action(self, action_id: str, region: LassoSelectionRegion) -> None:
+        try:
+            qact = LassoQuickAction(action_id)
+        except Exception:
+            qact = LassoQuickAction.SOLVE_AI
+        self._active_lasso_action = qact
+        self._active_lasso_region = region
+        rect = QRectF(region.bbox_x, region.bbox_y, region.bbox_w, region.bbox_h)
+        png_bytes, cropped_pm = self.canvas.export_board_png(rect, enhance_crop=True)
         self.right_dock.setVisible(True)
         self.crop_preview_lbl.setVisible(True)
         self.crop_preview_lbl.setPixmap(
             cropped_pm.scaled(300, 86, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )
-        self.ai_output.setPlainText(f"Đang phân tích nét vẽ vùng chọn với {DEFAULT_GEMINI_MODEL}...")
-        prompt = "Hãy đọc chính xác chữ viết tay hoặc công thức toán/hóa trong ảnh vùng chọn này và giải thích từng bước."
-        self._start_gemini_worker(prompt, png_bytes, structured_json=False)
+        prompt = build_lasso_prompt(qact)
+        self._set_sanitized_ai_html(f"Đang xử lý vùng khoanh ({qact.value})...")
+        self._start_hybrid_worker(prompt, png_bytes=png_bytes, structured_json=False, include_board_tools=(qact != LassoQuickAction.BEAUTIFY_LATEX))
+
+    def _on_region_cropped_for_ai(self, _png_bytes: bytes, cropped_pm: QPixmap) -> None:
+        self.right_dock.setVisible(True)
+        self.crop_preview_lbl.setVisible(True)
+        self.crop_preview_lbl.setPixmap(
+            cropped_pm.scaled(300, 86, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        )
 
     def _analyze_full_board(self, prompt: str, structured_json: bool = False) -> None:
         self.right_dock.setVisible(True)
-        png_bytes, cropped_pm = self.canvas.export_board_png(None)
+        self._active_lasso_action = None
+        png_bytes, cropped_pm = self.canvas.export_board_png(None, enhance_crop=True)
         self.crop_preview_lbl.setVisible(True)
         self.crop_preview_lbl.setPixmap(
             cropped_pm.scaled(300, 86, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         )
-        self.ai_output.setPlainText(f"Đang phân tích toàn bảng với {DEFAULT_GEMINI_MODEL}...")
-        self._start_gemini_worker(prompt, png_bytes, structured_json=structured_json)
+        self._set_sanitized_ai_html(f"Đang phân tích toàn bảng...")
+        self._start_hybrid_worker(prompt, png_bytes=png_bytes, structured_json=structured_json)
+
+    def _start_hybrid_worker(
+        self,
+        prompt: str,
+        png_bytes: Optional[bytes],
+        structured_json: bool = False,
+        include_board_tools: bool = True,
+    ) -> None:
+        self.api_key_state = resolve_api_key_layered(
+            self.api_key_edit.text().strip() if self.api_key_edit.text().strip() else None
+        )
+        self.api_key = self.api_key_state.api_key
+        self._stream_raw_accum = ""
+        eff_prompt = prompt
+        if include_board_tools and not structured_json:
+            canvas_sz = (float(max(640, self.canvas.width())), float(max(420, self.canvas.height())))
+            free_regs = find_free_regions_normalized(self.canvas._occupied_rects(), canvas_sz, max_regions=3)
+            eff_prompt = f"{prompt}\n\n{WhiteboardAgent.build_tool_prompt_instruction(canvas_size=canvas_sz, free_regions_norm=free_regs)}"
+        self.hybrid_worker = HybridAiWorker(
+            self.local_ai_manager,
+            eff_prompt,
+            history=self.chat_history[-10:],
+            png_bytes=png_bytes,
+            cloud_api_key=self.api_key,
+            structured_json=structured_json,
+            include_board_tools=False,
+        )
+        self.hybrid_worker.token_delta.connect(self._on_hybrid_token)
+        self.hybrid_worker.finished_result.connect(self._on_hybrid_finished)
+        self.hybrid_worker.start()
+
+    def _on_hybrid_token(self, chunk: str) -> None:
+        self._stream_raw_accum += chunk
+        self._set_sanitized_ai_html(self._stream_raw_accum)
+
+    def _on_hybrid_finished(self, res: LocalAiRunResult) -> None:
+        if not res.ok:
+            self._set_sanitized_ai_html(
+                f"⚠ **{res.error_message_vi}**\n\nBảng trắng, vẽ tay & cử chỉ vẫn hoạt động 100%."
+            )
+            if res.engine_used == "Cloud":
+                self._refresh_api_key_ui(status=ApiConnectionStatus.ERROR)
+            return
+
+        if res.engine_used == "Cloud":
+            self._refresh_api_key_ui(status=ApiConnectionStatus.CONNECTED)
+
+        self.perf_pipeline.update_ai_metrics(
+            ai_mode=res.engine_used,
+            active_model=res.model_used,
+            tokens_per_sec=res.tokens_per_sec,
+            latency_ms=res.total_ms,
+        )
+        self._refresh_status_pill()
+
+        # Handle Smart Lasso Beauty Replace flow
+        if self._active_lasso_action == LassoQuickAction.BEAUTIFY_LATEX and self._active_lasso_region is not None:
+            clean_formula = extract_clean_beautified_formula(res.text)
+            if clean_formula:
+                self.canvas.replace_lasso_with_formula(self._active_lasso_region, clean_formula)
+                self._set_sanitized_ai_html(f"✓ Đã làm đẹp công thức trên bảng:\n\n$${clean_formula}$$")
+                self._active_lasso_action = None
+                self._active_lasso_region = None
+                return
+
+        actions, clean_reply = WhiteboardAgent.extract_actions_from_response(res.text)
+        pref_anchor = (
+            (self._active_lasso_region.bbox_x + self._active_lasso_region.bbox_w + 24.0, self._active_lasso_region.bbox_y)
+            if self._active_lasso_region is not None
+            else None
+        )
+        if actions:
+            act_report = self.canvas.execute_whiteboard_actions(actions, preferred_anchor=pref_anchor)
+            if act_report:
+                clean_reply = f"{clean_reply}\n\n---\n{act_report}" if clean_reply else act_report
+        elif self._active_lasso_action == LassoQuickAction.WRITE_SOLUTION_TO_BOARD and clean_reply.strip():
+            step_lines = [ln.strip() for ln in clean_reply.splitlines() if ln.strip()][:6]
+            self.canvas.execute_whiteboard_actions(
+                [WhiteboardAction(tool="solve_on_board", args={"steps": step_lines})],
+                preferred_anchor=pref_anchor,
+            )
+
+        self._active_lasso_action = None
+        self._active_lasso_region = None
+        self.chat_history.append({"role": "assistant", "content": clean_reply})
+        badge_hdr = f"*[{res.engine_used} · {res.model_used} · {res.tokens_per_sec:.1f} tok/s]*"
+        self._set_sanitized_ai_html(f"{badge_hdr}\n\n{clean_reply}")
 
     def _start_gemini_worker(
         self, prompt: str, png_bytes: Optional[bytes], structured_json: bool = False
@@ -2588,9 +3932,22 @@ class AirTeachMainWindow(QMainWindow):
         self.gemini_worker = GeminiVisionWorker(
             self.api_key, prompt, png_bytes, structured_json=structured_json
         )
-        self.gemini_worker.finished_text.connect(self.ai_output.setMarkdown)
+        self.gemini_worker.finished_text.connect(self._set_sanitized_ai_html)
         self.gemini_worker.status_changed.connect(self._on_worker_status_changed)
         self.gemini_worker.start()
+
+    def _maybe_show_first_run_onboarding(self) -> None:
+        if self.api_key:
+            return
+        cfg = load_ui_api_settings()
+        if str(cfg.get("onboarding_skipped", "")).lower() in ("true", "1"):
+            return
+        dlg = ApiKeyOnboardingDialog(self)
+        if dlg.exec() == QDialog.Accepted and dlg.saved_key:
+            self.api_key_state = resolve_api_key_layered(dlg.saved_key)
+            self.api_key = self.api_key_state.api_key
+            self.api_key_edit.setText(self.api_key)
+            self._refresh_api_key_ui(status=ApiConnectionStatus.CONNECTED)
 
     def closeEvent(self, event) -> None:
         if self.audio_stream is not None:
@@ -2605,7 +3962,11 @@ class AirTeachMainWindow(QMainWindow):
 
 
 def main() -> None:
+    set_windows_app_user_model_id()
+    setup_app_logging()
     app = QApplication(sys.argv)
+    if APP_LOGO_ICO.exists():
+        app.setWindowIcon(QIcon(str(APP_LOGO_ICO)))
     for fam in ("Segoe UI", "Arial", "Tahoma"):
         if fam in QFontDatabase.families():
             app.setFont(QFont(fam, 10))

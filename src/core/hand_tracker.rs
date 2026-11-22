@@ -377,6 +377,28 @@ pub struct SidecarExposureDiag {
     pub laplacian_variance: f32,
     #[serde(default)]
     pub quality_gate_passed: bool,
+    #[serde(default)]
+    pub clahe_bypassed: bool,
+}
+
+/// Compact Copy-friendly telemetry summary for the toggleable `Ctrl+Shift+D` Vision Debug HUD.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct VisionHudTelemetry {
+    /// Per-finger flexion state encoded as `0=Curled, 1=HalfBent, 2=Extended` `[Thumb, Index, Middle, Ring, Pinky]`.
+    pub finger_states: [u8; 5],
+    pub finger_angles_deg: [f32; 5],
+    pub pinch_ratio: f32,
+    pub palm_facing_score: f32,
+    pub palm_facing_ok: bool,
+    pub stage2_roi_zoom: bool,
+    pub kalman_predicted: bool,
+    pub clahe_bypassed: bool,
+    pub locked_teacher_id: u32,
+    pub has_locked_torso: bool,
+    pub locked_torso_bbox: [f32; 4],
+    pub ignored_face_count: u8,
+    pub ignored_face_bboxes: [[f32; 4]; 4],
+    pub sidecar_cv_latency_ms: f32,
 }
 
 /// Output of a single frame's two-hand tracking pass + optional MediaPipe face box, 5-pt alignment & 128-D/512-D embeddings.
@@ -391,6 +413,8 @@ pub struct TwoHandFrame {
     pub detected_face_emb_512: Option<ArcFace512Embedding>,
     #[serde(default)]
     pub sidecar_diag: Option<SidecarExposureDiag>,
+    #[serde(default)]
+    pub vision_hud: VisionHudTelemetry,
     pub inference_ms: f32,
     pub using_onnx_session: bool,
 }
@@ -399,6 +423,30 @@ pub struct TwoHandFrame {
 struct WorkerHandJson {
     score: f32,
     lm: Vec<[f32; 3]>,
+    #[serde(default)]
+    pinch_ratio: Option<f32>,
+    #[serde(default)]
+    finger_states: Vec<String>,
+    #[serde(default)]
+    finger_angles_deg: Vec<f32>,
+    #[serde(default)]
+    palm_facing_score: Option<f32>,
+    #[serde(default)]
+    palm_facing_ok: Option<bool>,
+    #[serde(default)]
+    stage2_roi_zoom: bool,
+    #[serde(default)]
+    kalman_predicted: bool,
+}
+
+#[derive(Deserialize, Default)]
+struct WorkerSubjectJson {
+    #[serde(default)]
+    locked_teacher_id: Option<u32>,
+    #[serde(default)]
+    locked_torso_bbox: Option<[f32; 4]>,
+    #[serde(default)]
+    ignored_face_bboxes: Vec<[f32; 4]>,
 }
 
 #[derive(Deserialize)]
@@ -416,6 +464,10 @@ struct WorkerResponseJson {
     face_emb_512: Option<Vec<f32>>,
     #[serde(default)]
     diag: Option<SidecarExposureDiag>,
+    #[serde(default)]
+    subject: Option<WorkerSubjectJson>,
+    #[serde(default)]
+    cv_latency_ms: f32,
 }
 
 #[derive(Default)]
@@ -428,6 +480,7 @@ struct WorkerDetectResult {
     face_emb: Option<SFaceEmbedding>,
     face_emb_512: Option<ArcFace512Embedding>,
     sidecar_diag: Option<SidecarExposureDiag>,
+    vision_hud: VisionHudTelemetry,
 }
 
 struct MediaPipeSubprocessBridge {
@@ -630,6 +683,41 @@ impl MediaPipeSubprocessBridge {
             }
         };
 
+        let mut vision_hud = VisionHudTelemetry {
+            clahe_bypassed: parsed.diag.map(|d| d.clahe_bypassed).unwrap_or(false),
+            sidecar_cv_latency_ms: parsed.cv_latency_ms,
+            ..Default::default()
+        };
+        if let Some(subj) = parsed.subject {
+            vision_hud.locked_teacher_id = subj.locked_teacher_id.unwrap_or(0);
+            if let Some(tb) = subj.locked_torso_bbox {
+                vision_hud.locked_torso_bbox = tb;
+                vision_hud.has_locked_torso = true;
+            }
+            vision_hud.ignored_face_count = subj.ignored_face_bboxes.len().min(4) as u8;
+            for (idx, bb) in subj.ignored_face_bboxes.iter().take(4).enumerate() {
+                vision_hud.ignored_face_bboxes[idx] = *bb;
+            }
+        }
+        let primary_meta = parsed.right.as_ref().or(parsed.left.as_ref());
+        if let Some(pm) = primary_meta {
+            for (i, st) in pm.finger_states.iter().take(5).enumerate() {
+                vision_hud.finger_states[i] = match st.as_str() {
+                    "EXTENDED" => 2,
+                    "HALF_BENT" => 1,
+                    _ => 0,
+                };
+            }
+            for (i, &ang) in pm.finger_angles_deg.iter().take(5).enumerate() {
+                vision_hud.finger_angles_deg[i] = ang;
+            }
+            vision_hud.pinch_ratio = pm.pinch_ratio.unwrap_or(1.0);
+            vision_hud.palm_facing_score = pm.palm_facing_score.unwrap_or(1.0);
+            vision_hud.palm_facing_ok = pm.palm_facing_ok.unwrap_or(true);
+            vision_hud.stage2_roi_zoom = pm.stage2_roi_zoom;
+            vision_hud.kalman_predicted = pm.kalman_predicted;
+        }
+
         let left = parsed.left.and_then(|h| parse_hand(h, Handedness::Left));
         let right = parsed.right.and_then(|h| parse_hand(h, Handedness::Right));
         let face_5pt = parsed.face_5pt.and_then(|v| {
@@ -677,6 +765,7 @@ impl MediaPipeSubprocessBridge {
             face_emb,
             face_emb_512,
             sidecar_diag: parsed.diag,
+            vision_hud,
         })
     }
 }
@@ -821,6 +910,7 @@ impl TwoHandTracker {
                 detected_face_emb: None,
                 detected_face_emb_512: None,
                 sidecar_diag: None,
+                vision_hud: VisionHudTelemetry::default(),
                 inference_ms: start.elapsed().as_secs_f32() * 1000.0,
                 using_onnx_session: true,
             };
@@ -839,6 +929,7 @@ impl TwoHandTracker {
         let mut detected_face_emb = None;
         let mut detected_face_emb_512 = None;
         let mut sidecar_diag = None;
+        let mut vision_hud = VisionHudTelemetry::default();
         let mut active = false;
 
         let min_conf = self.hand_min_confidence;
@@ -854,6 +945,7 @@ impl TwoHandTracker {
                 detected_face_emb = res.face_emb;
                 detected_face_emb_512 = res.face_emb_512;
                 sidecar_diag = res.sidecar_diag;
+                vision_hud = res.vision_hud;
                 active = true;
             } else {
                 self.mp_bridge = None;
@@ -886,6 +978,7 @@ impl TwoHandTracker {
             detected_face_emb,
             detected_face_emb_512,
             sidecar_diag,
+            vision_hud,
             inference_ms: start.elapsed().as_secs_f32() * 1000.0,
             using_onnx_session: active,
         }

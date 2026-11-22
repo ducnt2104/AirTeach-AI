@@ -1,0 +1,57 @@
+{
+  "camera": {
+    "width": 640,
+    "height": 480,
+    "target_fps": 30,
+    "hd_width": 1280,
+    "hd_height": 720,
+    "prefer_hd": false
+  },
+  "preprocessing": {
+    "exposure_check_interval_n": 4,
+    "low_light_mean_luma": 72.0,
+    "backlit_p95_luma": 232.0,
+    "flicker_delta_luma": 14.0,
+    "clahe_clip_limit": 2.4,
+    "clahe_tile_grid_size": 8,
+    "adaptive_gamma_low": 0.62,
+    "adaptive_gamma_high": 1.24,
+    "quality_gate_min_sharpness": 22.0
+  },
+  "subject_tracker": {
+    "teacher_grace_sec": 1.5,
+    "teacher_match_iou_min": 0.18,
+    "teacher_face_sim_threshold": 0.48,
+    "wrist_gate_radius_scale": 2.35,
+    "enable_pose_landmarker": true,
+    "pose_min_detection_confidence": 0.50,
+    "pose_min_presence_confidence": 0.50,
+    "pose_min_tracking_confidence": 0.55
+  },
+  "hand_tracking": {
+    "min_detection_confidence": 0.55,
+    "min_presence_confidence": 0.52,
+    "min_tracking_confidence": 0.65,
+    "roi_area_threshold": 0.08,
+    "roi_expand_factor": 2.2,
+    "roi_padding_ratio": 0.45,
+    "roi_target_size": 384
+  },
+  "gesture_3d": {
+    "finger_extended_max_deg": 40.0,
+    "finger_half_bent_max_deg": 78.0,
+    "pinch_enter_ratio": 0.28,
+    "pinch_exit_ratio": 0.42,
+    "palm_facing_min_z": 0.20,
+    "one_euro_min_cutoff": 1.35,
+    "one_euro_beta": 0.015,
+    "one_euro_d_cutoff": 1.0,
+    "voting_window_size": 7,
+    "voting_min_votes": 5,
+    "debounce_ms": 150.0,
+    "grace_period_ms": 160.0
+  },
+  "hud": {
+    "debug_hud_default_enabled": false
+  }
+}

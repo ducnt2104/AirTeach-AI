@@ -739,3 +739,412 @@ def test_gemini_client_layered_keys_masking_health_check_backoff_and_errors(
     assert not r_net.ok
     assert "mạng" in r_net.error_message_vi.lower()
 
+
+# =============================================================================
+# 6. MASTER UPGRADE: SANITIZER, AGENTIC WHITEBOARD, LASSO-TO-AI, LOCAL AI & PERF
+# =============================================================================
+def test_output_sanitizer_streaming_and_math_rendering() -> None:
+    from cv_engine.output_sanitizer import (  # noqa: E402
+        OutputSanitizer,
+        StreamingSanitizer,
+        arrow_svg_data_uri,
+        render_latex_to_png_bytes,
+    )
+
+    dirty = r"Bước 1: $$$2x + 1 = 3$$$ <arrow> $x = \frac{3 - 1}{2} = 1$ <check> $x^2 + \sqrt{9} \geq 3$"
+    plain = OutputSanitizer.sanitize_plain_text(dirty)
+    assert "$" not in plain
+    assert "$$$" not in plain
+    assert "<arrow>" not in plain
+    assert "<check>" not in plain
+    assert "→" in plain
+    assert "✓" in plain
+    assert "√(9)" in plain
+    assert "x²" in plain
+
+    html_out = OutputSanitizer.to_rich_html(dirty, dark_mode=True)
+    assert "<arrow>" not in html_out
+    assert "$$$" not in html_out
+    assert "data:image/svg+xml;base64," in html_out
+
+    svg_uri = arrow_svg_data_uri("right")
+    assert svg_uri.startswith("data:image/svg+xml;base64,")
+
+    png = render_latex_to_png_bytes(r"\frac{-b \pm \sqrt{\Delta}}{2a}")
+    if png is not None:
+        assert png.startswith(b"\x89PNG")
+
+    # Streaming chunk buffer holds broken delimiters/tags until complete
+    st = StreamingSanitizer()
+    p1 = st.feed("Kết quả <arr")
+    assert "<arr" not in p1
+    p2 = st.feed("ow> $2x")
+    assert "$" not in p2
+    assert "→" in p2
+    p3 = st.feed(" + 1 = 3$")
+    tail = st.flush()
+    combined = p1 + p2 + p3 + tail
+    assert "$" not in combined and "<arrow>" not in combined
+
+
+def test_whiteboard_agent_fast_intent_and_free_region_canvas() -> None:
+    import main  # noqa: E402
+    import time as pytime  # noqa: E402
+    from PySide6.QtCore import QPointF  # noqa: E402
+    from PySide6.QtWidgets import QApplication  # noqa: E402
+    from cv_engine.whiteboard_agent import WhiteboardAgent  # noqa: E402
+
+    _ = QApplication.instance() or QApplication([])
+    t0 = pytime.perf_counter()
+    act = WhiteboardAgent.parse_fast_intent("ghi lên bảng hộ tôi 2x + 1 = 3 đi")
+    elapsed_ms = (pytime.perf_counter() - t0) * 1000.0
+    assert act is not None
+    assert elapsed_ms < 5.0
+    assert act.tool == "write_on_board"
+    assert act.args["content"] == "2x + 1 = 3"
+
+    act_py = WhiteboardAgent.parse_fast_intent("viết công thức định lý Pytago lên bảng")
+    assert act_py is not None and "a^2 + b^2 = c^2" in act_py.args["content"]
+
+    act_axis = WhiteboardAgent.parse_fast_intent("vẽ trục tọa độ")
+    assert act_axis is not None and act_axis.tool == "draw_shape" and act_axis.args["type"] == "axis"
+
+    canvas = main.SmartboardCanvas()
+    canvas.resize(1100, 720)
+    canvas.slide_visible = False
+    # Place existing ink stroke occupying top-left zone
+    canvas.strokes.append({
+        "raw_points": [QPointF(20.0, 50.0), QPointF(360.0, 260.0)],
+        "points": [QPointF(20.0, 50.0), QPointF(360.0, 260.0)],
+        "color": main.QColor("#00F5D4"),
+        "thickness": 4,
+    })
+
+    report = canvas.execute_whiteboard_actions([act])
+    assert "2x + 1 = 3" in report
+    assert len(canvas.annotations) == 1
+    ann = canvas.annotations[0]
+    # Non-overlapping guarantee: must not collide with (20..360, 50..260)
+    assert ann["x"] >= 350.0 or ann["y"] >= 250.0
+
+    # AI Draw shape vector + undo_last_ai_action
+    canvas.execute_whiteboard_actions([act_axis])
+    assert len(canvas.strokes) > 1
+    assert canvas.undo_last_ai_action() is True
+    assert len(canvas.strokes) == 1
+
+
+def test_lasso_ai_service_bbox_enhance_and_beautify_replace() -> None:
+    import main  # noqa: E402
+    from PySide6.QtCore import QPointF  # noqa: E402
+    from PySide6.QtWidgets import QApplication  # noqa: E402
+    from cv_engine.lasso_ai_service import (  # noqa: E402
+        LassoQuickAction,
+        build_lasso_prompt,
+        compute_lasso_bounding_box,
+        enhance_lasso_crop_png,
+        stroke_inside_lasso,
+    )
+
+    _ = QApplication.instance() or QApplication([])
+    poly = [(95.0, 95.0), (260.0, 95.0), (260.0, 190.0), (95.0, 190.0), (95.0, 100.0)]
+    reg = compute_lasso_bounding_box(poly, (1000.0, 700.0), padding=18.0)
+    assert reg is not None
+    assert reg.bbox_x == 77.0 and reg.bbox_y == 77.0
+    assert stroke_inside_lasso([(130.0, 140.0), (190.0, 140.0)], reg) is True
+    assert stroke_inside_lasso([(600.0, 500.0), (650.0, 520.0)], reg) is False
+    assert "whiteboard_actions" in build_lasso_prompt(LassoQuickAction.WRITE_SOLUTION_TO_BOARD)
+
+    sample = np.full((120, 240, 3), 20, dtype=np.uint8)
+    cv2.putText(sample, "2x+1=3", (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (230, 245, 245), 3)
+    ok, raw_enc = cv2.imencode(".png", sample)
+    assert ok
+    boosted = enhance_lasso_crop_png(raw_enc.tobytes(), max_dim=1024)
+    assert boosted is not None and boosted.startswith(b"\x89PNG")
+
+    canvas = main.SmartboardCanvas()
+    canvas.strokes.append({
+        "raw_points": [QPointF(120.0, 130.0), QPointF(210.0, 130.0)],
+        "points": [QPointF(120.0, 130.0), QPointF(210.0, 130.0)],
+        "color": main.QColor("#00F5D4"),
+        "thickness": 4,
+    })
+    canvas.strokes.append({
+        "raw_points": [QPointF(550.0, 480.0), QPointF(650.0, 480.0)],
+        "points": [QPointF(550.0, 480.0), QPointF(650.0, 480.0)],
+        "color": main.QColor("#00F5D4"),
+        "thickness": 4,
+    })
+    canvas.replace_lasso_with_formula(reg, "$$2x + 1 = 3$$")
+    # Inner handwritten stroke replaced by clean annotation, outer stroke preserved!
+    assert len(canvas.strokes) == 1
+    assert len(canvas.annotations) == 1
+    assert "2x + 1 = 3" in canvas.annotations[0]["text"]
+
+
+def test_local_ai_manager_mock_discovery_sse_cache_and_hybrid(tmp_path: Path) -> None:
+    import http.server  # noqa: E402
+    import json as _json  # noqa: E402
+    import threading  # noqa: E402
+    from cv_engine.local_ai_manager import (  # noqa: E402
+        AiRoutingMode,
+        LocalAIManager,
+        LocalResponseCache,
+    )
+
+    class MockOpenAILocalHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_GET(self):
+            if self.path == "/v1/models":
+                body = _json.dumps({"data": [{"id": "qwen3:4b-q4_K_M"}]}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            _ = self.rfile.read(length)
+            if self.path == "/v1/chat/completions":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                chunks = ["Ta có $$$2x ", "+ 1 = 3$$$ <arr", "ow> $x = 1$"]
+                for ch in chunks:
+                    line = f"data: {_json.dumps({'choices': [{'delta': {'content': ch}}]})}\n\n"
+                    self.wfile.write(line.encode("utf-8"))
+                    self.wfile.flush()
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), MockOpenAILocalHandler)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        cache = LocalResponseCache(db_path=tmp_path / "cache.sqlite")
+        mgr = LocalAIManager(
+            routing_mode=AiRoutingMode.LOCAL,
+            preferred_base_url=f"http://127.0.0.1:{port}",
+            cache=cache,
+        )
+        found = mgr.discover_local_engines(timeout=1.5)
+        assert any("qwen3:4b-q4_K_M" in s.models for s in found)
+        mgr.select_local_model(f"http://127.0.0.1:{port}", "qwen3:4b-q4_K_M", "LM Studio")
+
+        streamed_chunks: List[str] = []
+        r1 = mgr.generate_hybrid("Giải 2x+1=3", on_token=streamed_chunks.append)
+        assert r1.ok is True
+        assert r1.engine_used == "Local"
+        assert "$" not in r1.sanitized_text
+        assert "<arrow>" not in r1.sanitized_text
+        assert "→" in r1.sanitized_text
+
+        # Second call hits 0ms Local Cache
+        r2 = mgr.generate_hybrid("Giải 2x+1=3")
+        assert r2.ok is True and r2.from_cache is True and r2.engine_used == "Cache"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_performance_pipeline_scaling_and_dirty_cache() -> None:
+    from cv_engine.performance_pipeline import (  # noqa: E402
+        DirtyCanvasBackingTracker,
+        PerformancePipeline,
+        compute_cv_tracking_size,
+    )
+
+    assert compute_cv_tracking_size(1920, 1080, 640, 480) == (640, 360)
+    assert compute_cv_tracking_size(640, 480, 640, 480) == (640, 480)
+
+    tracker = DirtyCanvasBackingTracker()
+    key1 = (1280, 720, True, 0)
+    assert tracker.needs_rebuild(key1) is True
+    tracker.mark_clean(key1)
+    assert tracker.needs_rebuild(key1) is False
+    tracker.mark_dirty()
+    assert tracker.needs_rebuild(key1) is True
+
+    pipe = PerformancePipeline()
+    pipe.update_cv_fps(60.0)
+    pipe.update_ai_metrics(ai_mode="Local", active_model="qwen3:4b", tokens_per_sec=48.5)
+    pill = pipe.telemetry.status_pill_text()
+    assert "Local" in pill and "48.5 tok/s" in pill and "60 FPS" in pill
+
+
+# =============================================================================
+# 6. 4-TIER VISION ENGINE UPGRADE TESTS (LIGHTING BYPASS, TEACHER LOCK, ROI 2X, 3D + KALMAN)
+# =============================================================================
+def test_tier1_adaptive_exposure_n_frame_sampling_and_bypass() -> None:
+    from cv_engine.preprocessing import AdaptiveExposureController  # noqa: E402
+
+    ctrl = AdaptiveExposureController(check_interval_n=4)
+    # Normal room-lit gradient frame (contrast_span >= 65, mean ~125)
+    y_vals = np.linspace(45, 205, 480, dtype=np.uint8)[:, None]
+    normal = np.repeat(np.repeat(y_vals, 640, axis=1)[:, :, None], 3, axis=2)
+
+    out0, d0 = ctrl.process(normal, is_rgb=True, enabled=True)
+    assert d0.lighting_mode == "NORMAL"
+    assert d0.clahe_bypassed is True
+    assert d0.sampled_frame is True
+    assert out0 is normal  # zero-copy true bypass!
+
+    # Intermediate frame 1..3 must NOT re-sample exposure
+    out1, d1 = ctrl.process(normal, is_rgb=True, enabled=True)
+    assert d1.clahe_bypassed is True
+    assert d1.sampled_frame is False
+    assert out1 is normal
+
+    # Step through interval to dark frame on check frame #4
+    ctrl.process(normal, is_rgb=True, enabled=True)
+    ctrl.process(normal, is_rgb=True, enabled=True)
+    dark = np.full((480, 640, 3), 26, dtype=np.uint8)
+    out4, d4 = ctrl.process(dark, is_rgb=True, enabled=True)
+    assert d4.lighting_mode == "LOW_LIGHT"
+    assert d4.clahe_bypassed is False
+    assert d4.sampled_frame is True
+    assert float(np.mean(out4)) > float(np.mean(dark)) + 15.0
+
+
+def test_tier2_teacher_lock_anti_interference_and_grace_period() -> None:
+    from cv_engine.subject_tracker import PrimaryTeacherLockTracker  # noqa: E402
+
+    tracker = PrimaryTeacherLockTracker(teacher_grace_sec=1.5)
+    teacher_face = [0.40, 0.20, 0.16, 0.22]
+    passerby_face = [0.76, 0.24, 0.11, 0.15]
+
+    snap = tracker.update(
+        face_boxes=[teacher_face, passerby_face],
+        now_sec=10.0,
+    )
+    assert snap.locked_teacher_id is not None
+    locked_id = snap.locked_teacher_id
+    assert len(snap.ignored_face_bboxes) == 1
+    assert snap.mode == "FACE_TORSO_LOCK"
+
+    # Build a synthetic hand near passerby's torso (x=0.80, y=0.45) -> MUST be rejected!
+    passerby_hand = [[0.80, 0.48, 0.0]] * 21
+    passerby_hand[9] = [0.80, 0.43, 0.0]
+    assert tracker.is_hand_owned_by_locked_teacher(passerby_hand, snap) is False
+
+    # Build teacher hand inside teacher reach zone (x=0.35, y=0.50) -> MUST pass!
+    teacher_hand = [[0.35, 0.52, 0.0]] * 21
+    teacher_hand[9] = [0.35, 0.46, 0.0]
+    assert tracker.is_hand_owned_by_locked_teacher(teacher_hand, snap) is True
+
+    # Teacher briefly blocked for 1.1s (< 1.5s grace), only passerby visible -> MUST hold teacher ID!
+    snap_grace = tracker.update(
+        face_boxes=[passerby_face],
+        now_sec=11.1,
+    )
+    assert snap_grace.locked_teacher_id == locked_id
+    assert snap_grace.teacher_in_grace_period is True
+    assert snap_grace.mode == "GRACE_HOLD"
+
+    # Proactive Stage-2 Pose Wrist ROIs generated around locked teacher
+    rois = tracker.get_proactive_wrist_roi_boxes(snap_grace, roi_expand_factor=2.2)
+    assert len(rois) >= 2
+
+
+def test_tier3_long_range_hand_validation_and_roi_backprojection() -> None:
+    from cv_engine.hand_gesture import HandGestureEngine  # noqa: E402
+
+    # Tiny distant hand (~2.5m-3m, 4.5% x 5.0% = 0.00225 area) MUST pass pre-zoom validation
+    tiny_lm = _make_3d_hand_landmarks("INDEX_HOVER")
+    tiny_lm = [[0.50 + (p[0] - 0.50) * 0.22, 0.50 + (p[1] - 0.50) * 0.14, p[2] * 0.22] for p in tiny_lm]
+    assert HandGestureEngine.validate_real_hand(tiny_lm, score=0.55, face_boxes=[]) is True
+
+    # ROI crop [x0=200, y0=100, cw=160, ch=120] on 640x480 frame maps crop center (0.5, 0.5) accurately
+    mapped = HandGestureEngine.map_roi_landmarks_to_full_frame(
+        [[0.5, 0.5, -0.1]],
+        crop_box_px=(200, 100, 160, 120),
+        full_size_wh=(640, 480),
+    )
+    assert abs(mapped[0][0] - (280.0 / 640.0)) < 1e-3
+    assert abs(mapped[0][1] - (160.0 / 480.0)) < 1e-3
+
+
+def test_tier4_3d_rotation_scale_palm_normal_kalman_and_config() -> None:
+    from cv_engine.hand_gesture import (  # noqa: E402
+        FingerFlexionState,
+        GestureFsmEngine,
+        KalmanVelocityPredictor2D,
+        compute_palm_normal_3d,
+        compute_palm_scale_3d,
+    )
+    from cv_engine.vision_config import load_vision_config  # noqa: E402
+
+    cfg = load_vision_config()
+    assert cfg.gesture_3d.pinch_enter_ratio == pytest.approx(0.28, abs=1e-3)
+    assert cfg.gesture_3d.voting_window_size == 7
+    assert cfg.hud.debug_hud_default_enabled is False
+
+    # Test 0, 90, 180 degree planar rotation + scale invariance (0.25x & 2.0x)
+    base_idx = _make_3d_hand_landmarks("INDEX_HOVER")
+    for angle_deg in (0.0, 90.0, 180.0):
+        rad = math.radians(angle_deg)
+        ca, sa = math.cos(rad), math.sin(rad)
+        rot_lm = [
+            [
+                0.5 + (p[0] - 0.5) * ca - (p[1] - 0.5) * sa,
+                0.5 + (p[0] - 0.5) * sa + (p[1] - 0.5) * ca,
+                p[2],
+            ]
+            for p in base_idx
+        ]
+        res_rot = classify_hand_3d_vectors(rot_lm)
+        assert res_rot["pose_tag"] == "INDEX"
+        assert res_rot["finger_states"][1] == FingerFlexionState.EXTENDED.value
+        assert res_rot["finger_states"][2] in (FingerFlexionState.CURLED.value, FingerFlexionState.HALF_BENT.value)
+
+    scaled_small = [[0.5 + (p[0] - 0.5) * 0.25, 0.5 + (p[1] - 0.5) * 0.25, p[2] * 0.25] for p in _make_3d_hand_landmarks("PINCH_DRAW")]
+    res_small = classify_hand_3d_vectors(scaled_small)
+    assert res_small["pose_tag"] == "PINCH"
+    assert float(res_small["pinch_ratio"]) < 0.28
+
+    # Zero-division protection on degenerate zero-length landmarks
+    degenerate = [[0.5, 0.5, 0.0]] * 21
+    assert compute_palm_scale_3d(degenerate) > 0.0
+    pn_deg = compute_palm_normal_3d(degenerate)
+    assert pn_deg["facing_camera"] is False
+    res_deg = classify_hand_3d_vectors(degenerate)
+    assert math.isfinite(float(res_deg["pinch_ratio"]))
+
+    # Palm Normal differentiates frontal vs sideways (edge-on)
+    pn_front = compute_palm_normal_3d(base_idx, min_facing_z=0.20)
+    assert pn_front["facing_camera"] is True
+    sideways = [[0.5 + p[2], p[1], p[0] - 0.5] for p in base_idx]
+    pn_side = compute_palm_normal_3d(sideways, min_facing_z=0.20)
+    assert float(pn_side["facing_score"]) < float(pn_front["facing_score"])
+
+    # Kalman Grace Period velocity prediction keeps moving smoothly across dropout
+    fsm = GestureFsmEngine(min_hold_frames=5, min_hold_sec=0.140, grace_period_sec=0.160, voting_window_size=7, voting_min_votes=5)
+    t0 = 1.0
+    for k in range(6):
+        shifted = [[p[0] + k * 0.02, p[1], p[2]] for p in base_idx]
+        snap = fsm.update(shifted, t_sec=t0 + k * 0.032)
+    assert snap.active_gesture == "DRAW"
+    last_x = snap.cursor_norm[0]
+    grace_snap = fsm.update(None, t_sec=t0 + 6 * 0.032 + 0.060)
+    assert grace_snap.in_grace_period is True
+    assert grace_snap.kalman_predicted is True
+    assert grace_snap.cursor_norm is not None and grace_snap.cursor_norm[0] > last_x
+
+    # Kalman standalone predictor sanity
+    kp = KalmanVelocityPredictor2D()
+    kp.update(0.2, 0.5, 0.0)
+    kp.update(0.3, 0.5, 0.1)
+    pred_x, _ = kp.predict_dropout(0.15)
+    assert pred_x > 0.30
+
+
+

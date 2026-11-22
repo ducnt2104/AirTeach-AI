@@ -7,6 +7,7 @@
 
 use crate::ai::face_auth::FaceAuthEngine;
 use crate::ai::gemini_chat::{mask_api_key, ApiConnectionStatus, GeminiChatClient};
+use crate::ai::local_ai_manager::AiRoutingMode;
 use crate::app::{AirTeachApp, AppScreen};
 use crate::core::camera::CameraControlCmd;
 use crate::ui::brand::{render_about_modal, ThemeMode, ThemePalette};
@@ -218,6 +219,40 @@ pub fn render_settings_view(app: &mut AirTeachApp, ctx: &egui::Context) {
                                 {
                                     app.storage.save_config(&app.config);
                                 }
+                            }
+                        });
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Định tuyến AI:").color(palette.text_muted));
+                            for rmode in [AiRoutingMode::Hybrid, AiRoutingMode::Local, AiRoutingMode::Cloud] {
+                                if ui
+                                    .selectable_value(
+                                        &mut app.config.ai_routing_mode,
+                                        rmode,
+                                        rmode.label(),
+                                    )
+                                    .clicked()
+                                {
+                                    app.perf_pipeline.telemetry.ai_mode = rmode.label().to_string();
+                                    app.storage.save_config(&app.config);
+                                }
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Quét Ollama / LM Studio")
+                                            .color(palette.secondary)
+                                            .strong(),
+                                    )
+                                    .fill(palette.surface)
+                                    .stroke(Stroke::new(1.0_f32, palette.secondary))
+                                    .rounding(Rounding::same(6.0)),
+                                )
+                                .clicked()
+                            {
+                                app.discover_local_engines();
                             }
                         });
                     },
@@ -528,6 +563,11 @@ pub fn render_settings_view(app: &mut AirTeachApp, ctx: &egui::Context) {
                         {
                             filter_changed = true;
                         }
+
+                        ui.checkbox(
+                            &mut app.vision_debug_hud_enabled,
+                            "Hiển thị Vision Debug HUD theo thời gian thực (Ctrl+Shift+D)",
+                        );
 
                         if filter_changed {
                             app.sync_stroke_engine_config();

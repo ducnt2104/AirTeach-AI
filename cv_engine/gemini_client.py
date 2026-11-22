@@ -45,12 +45,14 @@ except Exception:
     genai_types = None  # type: ignore[assignment]
     HAS_GENAI_SDK = False
 
+from cv_engine.app_paths import get_config_file_path, resource_path
+
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_FALLBACK_MODELS: Tuple[str, ...] = ("gemini-3.5-flash", "gemini-3.5-flash-lite")
 EXPONENTIAL_BACKOFF_DELAYS_SEC: Tuple[float, ...] = (1.0, 2.0, 4.0)
 MAX_VISION_IMAGE_DIM = 1024
 PLACEHOLDER_KEYS = {"", "your_gemini_api_key_here", "YOUR_GEMINI_API_KEY"}
-DEFAULT_SETTINGS_PATH = Path("data") / "api_settings.json"
+DEFAULT_SETTINGS_PATH = get_config_file_path()
 
 
 class ApiConnectionStatus(str, Enum):
@@ -115,7 +117,7 @@ def _clean_env_value(raw: str) -> str:
 
 def read_dotenv_values(env_path: Optional[Path] = None) -> Dict[str, str]:
     """Read key=value pairs from `.env` cleanly without mutating OS env unnecessarily."""
-    candidates = [env_path] if env_path is not None else [Path(".env"), Path(__file__).resolve().parent.parent / ".env"]
+    candidates = [env_path] if env_path is not None else [Path(".env"), resource_path(".env"), Path(__file__).resolve().parent.parent / ".env"]
     out: Dict[str, str] = {}
     for p in candidates:
         if p is None or not p.exists():

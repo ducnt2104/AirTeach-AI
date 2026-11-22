@@ -7,6 +7,7 @@
 //!   3x Exponential Backoff (`1s, 2s, 4s`) on 429, SQLite response caching, and offline fallback.
 
 use crate::ai::subtitles_engine::TranscriptSegmentEvent;
+use crate::utils::output_sanitizer::{OutputSanitizer, StreamingSanitizer};
 use base64::Engine;
 use crossbeam_channel::Sender;
 use futures_util::StreamExt;
@@ -359,6 +360,11 @@ pub enum ChatStreamEvent {
     ApiStatusUpdated {
         status: ApiConnectionStatus,
         message: String,
+    },
+    MetricsUpdated {
+        engine: String,
+        model: String,
+        tokens_per_sec: f32,
     },
     CacheStore {
         cache_key: String,
@@ -1093,6 +1099,9 @@ impl GeminiChatClient {
             let mut stream = resp.bytes_stream();
             let mut line_buffer = String::new();
             let mut accumulated_text = String::new();
+            let mut stream_sanitizer = StreamingSanitizer::new();
+            let sse_start = Instant::now();
+            let mut chunk_count = 0usize;
 
             while let Some(chunk_res) = stream.next().await {
                 match chunk_res {
@@ -1119,13 +1128,17 @@ impl GeminiChatClient {
                                             if let Some(text_delta) =
                                                 part.get("text").and_then(|t| t.as_str())
                                             {
-                                                accumulated_text.push_str(text_delta);
-                                                let _ = event_tx.send(
-                                                    ChatStreamEvent::TokenDelta {
-                                                        message_index,
-                                                        delta: text_delta.to_string(),
-                                                    },
-                                                );
+                                                chunk_count += 1;
+                                                let safe_delta = stream_sanitizer.feed(text_delta);
+                                                if !safe_delta.is_empty() {
+                                                    accumulated_text.push_str(&safe_delta);
+                                                    let _ = event_tx.send(
+                                                        ChatStreamEvent::TokenDelta {
+                                                            message_index,
+                                                            delta: safe_delta,
+                                                        },
+                                                    );
+                                                }
                                             }
                                         }
                                     }
@@ -1143,11 +1156,29 @@ impl GeminiChatClient {
                 }
             }
 
+            let tail = stream_sanitizer.flush();
+            if !tail.is_empty() {
+                accumulated_text.push_str(&tail);
+                let _ = event_tx.send(ChatStreamEvent::TokenDelta {
+                    message_index,
+                    delta: tail,
+                });
+            }
+
+            let elapsed_s = sse_start.elapsed().as_secs_f32().max(0.05);
+            let words = accumulated_text.split_whitespace().count().max(chunk_count);
+            let tps = words as f32 / elapsed_s;
+            let _ = event_tx.send(ChatStreamEvent::MetricsUpdated {
+                engine: "Cloud".to_string(),
+                model: used_model.clone(),
+                tokens_per_sec: tps,
+            });
+
             if !cache_key.is_empty() && !accumulated_text.trim().is_empty() {
                 let _ = event_tx.send(ChatStreamEvent::CacheStore {
                     cache_key,
                     model_id: used_model,
-                    response_text: accumulated_text,
+                    response_text: OutputSanitizer::sanitize_plain_text(&accumulated_text),
                     structured_json: String::new(),
                 });
             }

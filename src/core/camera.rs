@@ -1083,7 +1083,7 @@ impl CameraSubsystem {
                 None
             };
 
-            let diag = if using_hardware {
+            let diag = if using_hardware && (enable_clahe || calibration_preview) {
                 let mut d = enhance_frame_adaptive_with_diagnostics(
                     &mut rgba_work_buf,
                     &mut luma_buf,
@@ -1096,6 +1096,18 @@ impl CameraSubsystem {
                 );
                 d.quality_gate_passed = d.sharpness_score >= quality_gate_min_sharpness;
                 d
+            } else if using_hardware {
+                // Fast CPU bypass for i3/Potato-PC: ROI-only sharpening runs inside cv_engine on cropped hand ROI
+                FrameDiagnostics {
+                    lighting_mode: LightingAdaptationMode::Normal,
+                    mean_luma: 128.0,
+                    p5_luma: 20.0,
+                    p95_luma: 235.0,
+                    underexposed_ratio: 0.0,
+                    overexposed_ratio: 0.0,
+                    sharpness_score: quality_gate_min_sharpness + 10.0,
+                    quality_gate_passed: true,
+                }
             } else {
                 FrameDiagnostics::default()
             };

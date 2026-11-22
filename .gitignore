@@ -35,6 +35,10 @@ __pycache__/
 .venv/
 venv/
 env/
+/dist/
+/build/
+/Output/
+*.log
 
 # OS & IDE noise
 .DS_Store

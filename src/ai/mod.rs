@@ -1,10 +1,13 @@
 pub mod face_auth;
 pub mod gemini_chat;
+pub mod lasso_ai_service;
 pub mod latex_engine;
+pub mod local_ai_manager;
 pub mod ocr_engine;
 pub mod rag_engine;
 pub mod stem_knowledge;
 pub mod subtitles_engine;
+pub mod whiteboard_agent;
 
 use crate::utils::model_downloader::ModelDownloader;
 use std::path::Path;

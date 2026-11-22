@@ -10,9 +10,11 @@ use crate::ai::gemini_chat::{
     mask_api_key, ApiConnectionStatus, GeminiChatClient, PedagogicalAnalysisMode,
     SubjectAssistantMode, DEFAULT_GEMINI_MODEL,
 };
+use crate::ai::local_ai_manager::AiRoutingMode;
+use crate::ai::whiteboard_agent::WhiteboardAction;
 use crate::app::AirTeachApp;
 use crate::ui::brand::ThemeMode;
-use crate::utils::document_loader::DocumentLoader;
+use crate::utils::output_sanitizer::OutputSanitizer;
 use egui::{Color32, FontId, RichText, Rounding, ScrollArea, Stroke, Vec2};
 
 fn format_model_badge(model_id: &str) -> String {
@@ -181,6 +183,76 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
 
             ui.add_space(6.0);
 
+            // Smart Hybrid Routing + Local Model Auto-Discovery Bar
+            ui.horizontal(|ui| {
+                for rmode in [AiRoutingMode::Hybrid, AiRoutingMode::Local, AiRoutingMode::Cloud] {
+                    let active = app.config.ai_routing_mode == rmode;
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(rmode.label())
+                                    .font(FontId::proportional(10.0))
+                                    .color(if active { Color32::WHITE } else { palette.text_muted })
+                                    .strong(),
+                            )
+                            .fill(if active { palette.secondary } else { palette.surface })
+                            .rounding(Rounding::same(5.0)),
+                        )
+                        .clicked()
+                    {
+                        app.config.ai_routing_mode = rmode;
+                        app.perf_pipeline.telemetry.ai_mode = rmode.label().to_string();
+                        app.storage.save_config(&app.config);
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Quét Local")
+                                    .font(FontId::proportional(10.0))
+                                    .color(palette.secondary),
+                            )
+                            .fill(palette.surface)
+                            .stroke(Stroke::new(1.0_f32, palette.border))
+                            .rounding(Rounding::same(5.0)),
+                        )
+                        .clicked()
+                    {
+                        app.discover_local_engines();
+                    }
+                });
+            });
+            if !app.discovered_local_servers.is_empty() {
+                let mut picked_local: Option<(String, String, String)> = None;
+                ui.horizontal_wrapped(|ui| {
+                    for srv in &app.discovered_local_servers {
+                        for mdl in srv.models.iter().take(4) {
+                            let is_sel = app.config.local_model == *mdl;
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(format!("{}: {}", srv.provider, mdl))
+                                            .font(FontId::proportional(9.5))
+                                            .color(if is_sel { Color32::WHITE } else { palette.text_secondary }),
+                                    )
+                                    .fill(if is_sel { palette.primary } else { palette.surface })
+                                    .rounding(Rounding::same(4.0)),
+                                )
+                                .clicked()
+                            {
+                                picked_local = Some((srv.provider.clone(), srv.base_url.clone(), mdl.clone()));
+                            }
+                        }
+                    }
+                });
+                if let Some((prov, url, mdl)) = picked_local {
+                    app.select_local_model(prov, url, mdl);
+                }
+            }
+
+            ui.add_space(4.0);
+
             // Compact Subject Pill Strip
             ui.horizontal(|ui| {
                 for mode in [
@@ -262,6 +334,7 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
             // =========================================================================
             let avail_h = (ui.available_height() - 84.0).max(120.0);
 
+            let mut push_board_text: Option<String> = None;
             ScrollArea::vertical()
                 .id_salt("gemini_chat_history_scroll")
                 .max_height(avail_h)
@@ -282,7 +355,7 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                         } else {
                             palette.border
                         };
-                        let clean_text = DocumentLoader::format_latex_to_unicode_math(&msg.text);
+                        let clean_text = OutputSanitizer::sanitize_plain_text(&msg.text);
 
                         egui::Frame::none()
                             .fill(card_fill)
@@ -335,21 +408,39 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
 
                                 if !is_user && !clean_text.trim().is_empty() {
                                     ui.add_space(4.0);
-                                    if ui
-                                        .add(
-                                            egui::Button::new(
-                                                RichText::new("Sao chép lời giải")
-                                                    .font(FontId::proportional(11.0))
-                                                    .color(palette.text_secondary),
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    RichText::new("Sao chép")
+                                                        .font(FontId::proportional(11.0))
+                                                        .color(palette.text_secondary),
+                                                )
+                                                .fill(palette.surface_elevated)
+                                                .stroke(Stroke::new(1.0_f32, palette.border))
+                                                .rounding(Rounding::same(5.0)),
                                             )
-                                            .fill(palette.surface_elevated)
-                                            .stroke(Stroke::new(1.0_f32, palette.border))
-                                            .rounding(Rounding::same(5.0)),
-                                        )
-                                        .clicked()
-                                    {
-                                        ctx.copy_text(clean_text.clone());
-                                    }
+                                            .clicked()
+                                        {
+                                            ctx.copy_text(clean_text.clone());
+                                        }
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    RichText::new("Đưa lên bảng")
+                                                        .font(FontId::proportional(11.0))
+                                                        .color(palette.secondary)
+                                                        .strong(),
+                                                )
+                                                .fill(palette.surface_elevated)
+                                                .stroke(Stroke::new(1.0_f32, palette.secondary))
+                                                .rounding(Rounding::same(5.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            push_board_text = Some(clean_text.clone());
+                                        }
+                                    });
                                 }
                             });
                         ui.add_space(5.0);
@@ -367,13 +458,42 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                     }
                 });
 
+            if let Some(txt) = push_board_text {
+                let steps: Vec<String> = txt
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .take(6)
+                    .collect();
+                if steps.len() == 1 {
+                    app.execute_whiteboard_actions(
+                        &[WhiteboardAction::WriteOnBoard {
+                            content: steps[0].clone(),
+                            is_latex: true,
+                            position: None,
+                            font_size: 16.0,
+                            color_rgba: None,
+                        }],
+                        None,
+                    );
+                } else if !steps.is_empty() {
+                    app.execute_whiteboard_actions(
+                        &[WhiteboardAction::SolveOnBoard {
+                            steps,
+                            target_region: None,
+                        }],
+                        None,
+                    );
+                }
+            }
+
             ui.add_space(4.0);
             ui.separator();
 
-            // Compact Question Input
+            // Compact Question & Agentic Command Input (`ghi lên bảng hộ tôi 2x + 1 = 3 đi`)
             let te_resp = ui.add(
                 egui::TextEdit::singleline(&mut app.chat_input_draft)
-                    .hint_text("Nhập câu hỏi sư phạm...")
+                    .hint_text("Hỏi AI hoặc gõ: ghi lên bảng 2x + 1 = 3...")
                     .desired_width(f32::INFINITY),
             );
 
@@ -382,7 +502,7 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                 let send_clicked = ui
                     .add(
                         egui::Button::new(
-                            RichText::new("Gửi câu hỏi")
+                            RichText::new("Gửi / Lệnh Bảng")
                                 .font(FontId::proportional(12.0))
                                 .color(Color32::WHITE)
                                 .strong(),
@@ -399,7 +519,7 @@ pub fn render_chat_drawer(app: &mut AirTeachApp, ctx: &egui::Context) {
                 if (send_clicked || enter_pressed) && !app.chat_input_draft.trim().is_empty() {
                     let prompt = app.chat_input_draft.trim().to_string();
                     app.chat_input_draft.clear();
-                    app.send_chat_message(prompt, false);
+                    app.submit_user_chat_or_command(prompt);
                 }
             });
         });

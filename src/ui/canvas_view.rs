@@ -10,6 +10,9 @@
 //!   * Zero floating status banners, zero fake OCR labels, zero bottom subtitle clutter.
 //!   * Dragging a region in `[Phân Tích Vùng]` mode crops that exact region to PNG and opens the Right Gemini AI Panel.
 
+use crate::ai::lasso_ai_service::{
+    LassoQuickAction, LassoSelectionRegion, DEFAULT_LASSO_PADDING_PX,
+};
 use crate::app::{ActiveBoardTool, AirTeachApp};
 use crate::core::camera::{CameraControlCmd, LightingAdaptationMode};
 use crate::core::gestures::{DrawingHudMode, RightGesture};
@@ -20,6 +23,7 @@ use crate::ui::toolbar_view::{
     ALERT_ROSE, BORDER_SLATE, PRIMARY_INDIGO, SECONDARY_TEAL, TEXT_LIGHT,
 };
 use crate::utils::document_loader::DocumentLoader;
+use crate::utils::output_sanitizer::OutputSanitizer;
 use crate::utils::storage::ClassroomContrastMode;
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Rounding, Sense, Stroke, Vec2};
 
@@ -201,6 +205,55 @@ pub fn render_left_camera_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                 }
                 if let Some(ref rh) = app.last_two_hand_frame.right_hand {
                     draw_hand_skeleton_on_rect(&painter, active_view_rect, rh);
+                }
+
+                // 1c-bis. Primary Teacher Lock (Green) vs Ignored Passersby (Red) when Debug HUD is ON
+                if app.vision_debug_hud_enabled {
+                    let vhud = app.last_two_hand_frame.vision_hud;
+                    if vhud.has_locked_torso {
+                        let [tx, ty, tw, th] = vhud.locked_torso_bbox;
+                        let tr = Rect::from_min_size(
+                            Pos2::new(
+                                active_view_rect.min.x + tx * active_view_rect.width(),
+                                active_view_rect.min.y + ty * active_view_rect.height(),
+                            ),
+                            Vec2::new(tw * active_view_rect.width(), th * active_view_rect.height()),
+                        );
+                        painter.rect_stroke(
+                            tr,
+                            Rounding::same(4.0),
+                            Stroke::new(1.5_f32, Color32::from_rgb(34, 197, 94)),
+                        );
+                        painter.text(
+                            Pos2::new(tr.min.x + 3.0, tr.min.y + 3.0),
+                            Align2::LEFT_TOP,
+                            format!("GV #{}", vhud.locked_teacher_id),
+                            FontId::monospace(9.5),
+                            Color32::from_rgb(34, 197, 94),
+                        );
+                    }
+                    for i in 0..(vhud.ignored_face_count as usize).min(4) {
+                        let [ix, iy, iw, ih] = vhud.ignored_face_bboxes[i];
+                        let ir = Rect::from_min_size(
+                            Pos2::new(
+                                active_view_rect.min.x + ix * active_view_rect.width(),
+                                active_view_rect.min.y + iy * active_view_rect.height(),
+                            ),
+                            Vec2::new(iw * active_view_rect.width(), ih * active_view_rect.height()),
+                        );
+                        painter.rect_stroke(
+                            ir,
+                            Rounding::same(4.0),
+                            Stroke::new(1.5_f32, Color32::from_rgb(239, 68, 68)),
+                        );
+                        painter.text(
+                            Pos2::new(ir.min.x + 2.0, (ir.min.y - 11.0).max(active_view_rect.min.y)),
+                            Align2::LEFT_TOP,
+                            "IGNORED",
+                            FontId::monospace(8.5),
+                            Color32::from_rgb(239, 68, 68),
+                        );
+                    }
                 }
 
                 // 1d. Top HUD Telemetry Pills (Lighting Mode + Quality Gate | FPS + Confidence)
@@ -855,28 +908,167 @@ pub fn render_lecture_canvas(app: &mut AirTeachApp, ctx: &egui::Context) {
             }
 
             // =========================================================================
-            // LAYER 4: SELECTION BOUNDING BOX ("PHÂN TÍCH VÙNG")
+            // LAYER 3B: AGENTIC WHITEBOARD ANNOTATIONS (MATH & PEDAGOGICAL CARDS)
             // =========================================================================
-            if let Some((min_b, max_b)) = app.selection_rect_board {
+            {
+                let palette = app.config.theme_mode.palette();
+                let ann_bg = if is_light_board || app.config.theme_mode == ThemeMode::Light {
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 240)
+                } else {
+                    Color32::from_rgba_unmultiplied(15, 23, 42, 224)
+                };
+                let ann_border = palette.secondary;
+                for ann in &app.annotations {
+                    let clean_txt = OutputSanitizer::sanitize_plain_text(&ann.text);
+                    if clean_txt.is_empty() {
+                        continue;
+                    }
+                    let ax = origin.x + pan.x + ann.position.x * zoom;
+                    let ay = origin.y + pan.y + ann.position.y * zoom;
+                    let font = FontId::proportional((15.0 * zoom).clamp(11.0, 28.0));
+                    let text_col = if is_light_board || app.config.theme_mode == ThemeMode::Light {
+                        Color32::from_rgb(0x1e, 0x29, 0x3b)
+                    } else {
+                        Color32::from_rgba_unmultiplied(
+                            ann.color_rgba[0],
+                            ann.color_rgba[1],
+                            ann.color_rgba[2],
+                            255,
+                        )
+                    };
+                    let galley = painter.layout(clean_txt, font, text_col, (480.0 * zoom).max(160.0));
+                    let box_rect = Rect::from_min_size(
+                        Pos2::new(ax, ay),
+                        Vec2::new(galley.size().x + 20.0, galley.size().y + 12.0),
+                    );
+                    painter.rect_filled(box_rect, Rounding::same(8.0), ann_bg);
+                    painter.rect_stroke(box_rect, Rounding::same(8.0), Stroke::new(1.2_f32, ann_border));
+                    painter.galley(Pos2::new(ax + 10.0, ay + 6.0), galley, text_col);
+                }
+            }
+
+            // =========================================================================
+            // LAYER 4: SMART LASSO POLYGON / SELECTION BOX + FLOATING ACTION BAR
+            // =========================================================================
+            if app.lasso_points.len() >= 2 {
+                let lpts: Vec<Pos2> = app
+                    .lasso_points
+                    .iter()
+                    .map(|p| Pos2::new(origin.x + pan.x + p.x * zoom, origin.y + pan.y + p.y * zoom))
+                    .collect();
+                for pair in lpts.windows(2) {
+                    painter.line_segment([pair[0], pair[1]], Stroke::new(2.2_f32, Color32::from_rgb(0x00, 0xf5, 0xd4)));
+                }
+                if app.active_lasso_region.is_some() && lpts.len() >= 3 {
+                    painter.line_segment(
+                        [*lpts.last().unwrap(), lpts[0]],
+                        Stroke::new(2.2_f32, Color32::from_rgb(0x00, 0xf5, 0xd4)),
+                    );
+                }
+            }
+            let mut triggered_lasso_global: Option<LassoQuickAction> = None;
+            let mut dismiss_lasso_global = false;
+            if let Some(ref reg) = app.active_lasso_region {
                 let s_min = Pos2::new(
-                    origin.x + pan.x + min_b.x * zoom,
-                    origin.y + pan.y + min_b.y * zoom,
+                    origin.x + pan.x + reg.min_pt.x * zoom,
+                    origin.y + pan.y + reg.min_pt.y * zoom,
                 );
                 let s_max = Pos2::new(
-                    origin.x + pan.x + max_b.x * zoom,
-                    origin.y + pan.y + max_b.y * zoom,
+                    origin.x + pan.x + reg.max_pt.x * zoom,
+                    origin.y + pan.y + reg.max_pt.y * zoom,
                 );
                 let sel_rect = Rect::from_two_pos(s_min, s_max);
                 painter.rect_filled(
                     sel_rect,
                     Rounding::same(8.0),
-                    Color32::from_rgba_unmultiplied(0x4f, 0x46, 0xe5, 36),
+                    Color32::from_rgba_unmultiplied(0x4f, 0x46, 0xe5, 28),
                 );
                 painter.rect_stroke(
                     sel_rect,
                     Rounding::same(8.0),
-                    Stroke::new(2.2_f32, palette.danger),
+                    Stroke::new(1.8_f32, Color32::from_rgb(0x00, 0xf5, 0xd4)),
                 );
+
+                let bar_w = 485.0_f32.min((canvas_rect.width() - 24.0).max(260.0));
+                let bar_x = s_min.x.clamp(
+                    canvas_rect.min.x + 12.0,
+                    (canvas_rect.max.x - bar_w - 12.0).max(canvas_rect.min.x + 12.0),
+                );
+                let mut bar_y = s_min.y - 42.0;
+                if bar_y < canvas_rect.min.y + 46.0 {
+                    bar_y = (s_max.y + 8.0).min((canvas_rect.max.y - 42.0).max(canvas_rect.min.y + 46.0));
+                }
+                let bar_rect = Rect::from_min_size(Pos2::new(bar_x, bar_y), Vec2::new(bar_w, 34.0));
+                let palette = app.config.theme_mode.palette();
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
+                    egui::Frame::none()
+                        .fill(palette.surface_elevated)
+                        .stroke(Stroke::new(1.4_f32, Color32::from_rgb(0x00, 0xf5, 0xd4)))
+                        .rounding(Rounding::same(9.0))
+                        .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for (act, lbl, col) in [
+                                    (LassoQuickAction::SolveAi, "Giải bằng AI", palette.primary),
+                                    (LassoQuickAction::WriteSolutionToBoard, "Viết lời giải lên bảng", Color32::from_rgb(13, 148, 136)),
+                                    (LassoQuickAction::BeautifyLatex, "Làm đẹp chữ/LaTeX", Color32::from_rgb(124, 58, 237)),
+                                    (LassoQuickAction::ExplainQuick, "Giải thích nhanh", palette.surface),
+                                ] {
+                                    let txt_col = if col == palette.surface { palette.text_primary } else { Color32::WHITE };
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new(lbl).font(FontId::proportional(11.0)).color(txt_col).strong(),
+                                            )
+                                            .fill(col)
+                                            .rounding(Rounding::same(5.0)),
+                                        )
+                                        .clicked()
+                                    {
+                                        triggered_lasso_global = Some(act);
+                                    }
+                                }
+                                if ui
+                                    .add(
+                                        egui::Button::new(RichText::new("✕").color(Color32::WHITE).strong())
+                                            .fill(palette.danger)
+                                            .rounding(Rounding::same(5.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    dismiss_lasso_global = true;
+                                }
+                            });
+                        });
+                });
+            }
+            if let Some(act) = triggered_lasso_global {
+                app.execute_lasso_quick_action(act);
+            } else if dismiss_lasso_global {
+                app.clear_lasso_selection();
+            }
+            if app.active_lasso_region.is_none() {
+                if let Some((min_b, max_b)) = app.selection_rect_board {
+                    let s_min = Pos2::new(
+                        origin.x + pan.x + min_b.x * zoom,
+                        origin.y + pan.y + min_b.y * zoom,
+                    );
+                    let s_max = Pos2::new(
+                        origin.x + pan.x + max_b.x * zoom,
+                        origin.y + pan.y + max_b.y * zoom,
+                    );
+                    let sel_rect = Rect::from_two_pos(s_min, s_max);
+                    painter.rect_filled(
+                        sel_rect,
+                        Rounding::same(8.0),
+                        Color32::from_rgba_unmultiplied(0x4f, 0x46, 0xe5, 36),
+                    );
+                    painter.rect_stroke(
+                        sel_rect,
+                        Rounding::same(8.0),
+                        Stroke::new(2.2_f32, palette.danger),
+                    );
+                }
             }
 
             // =========================================================================
@@ -1022,6 +1214,84 @@ pub fn render_lecture_canvas(app: &mut AirTeachApp, ctx: &egui::Context) {
             }
 
             // =========================================================================
+            // LAYER 5C: REAL-TIME VISION DEBUG HUD OVERLAY (Ctrl+Shift+D, Default OFF)
+            // =========================================================================
+            if app.vision_debug_hud_enabled {
+                let vhud = app.last_two_hand_frame.vision_hud;
+                let ai_fps = if app.last_two_hand_frame.inference_ms > 0.5 {
+                    (1000.0 / app.last_two_hand_frame.inference_ms).clamp(0.0, 120.0)
+                } else {
+                    app.camera_fps
+                };
+                let state_char = |code: u8| -> &str {
+                    match code {
+                        2 => "E",
+                        1 => "H",
+                        _ => "C",
+                    }
+                };
+                let light_badge = if vhud.clahe_bypassed {
+                    format!("{} [BYPASS]", app.camera_lighting_mode.label())
+                } else {
+                    format!("{} [CLAHE]", app.camera_lighting_mode.label())
+                };
+                let hud_txt = format!(
+                    "VISION DEBUG HUD (Ctrl+Shift+D)\n\
+                     Cam: {:.1} fps | AI: {:.1} fps ({:.1} ms)\n\
+                     Light: {}\n\
+                     Teacher Lock: #{} | Ignored: {}\n\
+                     5-Ngón: {}/{}/{}/{}/{} ({:.0}°/{:.0}°/{:.0}°/{:.0}°/{:.0}°)\n\
+                     Pinch: {:.2} | Palm: {} ({:.2}) | FSM: {}{}{}",
+                    app.camera_fps,
+                    ai_fps,
+                    app.last_two_hand_frame.inference_ms,
+                    light_badge,
+                    vhud.locked_teacher_id,
+                    vhud.ignored_face_count,
+                    state_char(vhud.finger_states[0]),
+                    state_char(vhud.finger_states[1]),
+                    state_char(vhud.finger_states[2]),
+                    state_char(vhud.finger_states[3]),
+                    state_char(vhud.finger_states[4]),
+                    vhud.finger_angles_deg[0],
+                    vhud.finger_angles_deg[1],
+                    vhud.finger_angles_deg[2],
+                    vhud.finger_angles_deg[3],
+                    vhud.finger_angles_deg[4],
+                    vhud.pinch_ratio,
+                    if vhud.palm_facing_ok { "FRONT" } else { "SIDE" },
+                    vhud.palm_facing_score,
+                    app.hud_mode.label_vi(),
+                    if vhud.stage2_roi_zoom { " [ROI 2x]" } else { "" },
+                    if vhud.kalman_predicted { " [Kalman]" } else { "" },
+                );
+                let hud_rect = Rect::from_min_size(
+                    Pos2::new(
+                        canvas_rect.min.x + 14.0,
+                        (canvas_rect.max.y - 122.0).max(canvas_rect.min.y + 46.0),
+                    ),
+                    Vec2::new(365.0_f32.min(canvas_rect.width() - 28.0), 108.0),
+                );
+                painter.rect_filled(
+                    hud_rect,
+                    Rounding::same(8.0),
+                    Color32::from_rgba_unmultiplied(10, 15, 28, 224),
+                );
+                painter.rect_stroke(
+                    hud_rect,
+                    Rounding::same(8.0),
+                    Stroke::new(1.2_f32, Color32::from_rgb(0x00, 0xf5, 0xd4)),
+                );
+                painter.text(
+                    Pos2::new(hud_rect.min.x + 8.0, hud_rect.min.y + 7.0),
+                    Align2::LEFT_TOP,
+                    hud_txt,
+                    FontId::monospace(10.5),
+                    Color32::from_rgb(0x00, 0xf5, 0xd4),
+                );
+            }
+
+            // =========================================================================
             // LAYER 6: TOP-LEFT SLIDE VISIBILITY + 1-CLICK TUTORIAL HIDE/DELETE BAR
             // =========================================================================
             let active_is_tutorial = app
@@ -1150,10 +1420,20 @@ fn handle_pointer_interaction(
 
     let Some(pointer_pos) = response.interact_pointer_pos() else {
         if response.drag_stopped() {
-            if app.active_tool == ActiveBoardTool::SelectRegion
+            if app.active_tool == ActiveBoardTool::Lasso && app.lasso_points.len() >= 3 {
+                if let Some(reg) = LassoSelectionRegion::from_points(&app.lasso_points, DEFAULT_LASSO_PADDING_PX) {
+                    app.active_lasso_region = Some(reg);
+                } else {
+                    app.lasso_points.clear();
+                }
+            } else if app.active_tool == ActiveBoardTool::SelectRegion
                 && app.selection_rect_board.is_some()
             {
-                app.inspect_selection_with_gemini();
+                if let Some((p0, p1)) = app.selection_rect_board.take() {
+                    if let Some(reg) = LassoSelectionRegion::from_points(&[p0, p1], DEFAULT_LASSO_PADDING_PX) {
+                        app.active_lasso_region = Some(reg);
+                    }
+                }
             } else {
                 app.finish_pointer_gesture();
             }
@@ -1197,8 +1477,30 @@ fn handle_pointer_interaction(
             }
         }
         ActiveBoardTool::LaserPointer => {}
+        ActiveBoardTool::Lasso => {
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                app.clear_lasso_selection();
+                app.lasso_points.push(board_pt);
+            } else if response.dragged_by(egui::PointerButton::Primary) {
+                let push = app
+                    .lasso_points
+                    .last()
+                    .map(|p| p.dist(board_pt) >= 4.0)
+                    .unwrap_or(true);
+                if push {
+                    app.lasso_points.push(board_pt);
+                }
+            } else if response.drag_stopped_by(egui::PointerButton::Primary) {
+                if let Some(reg) = LassoSelectionRegion::from_points(&app.lasso_points, DEFAULT_LASSO_PADDING_PX) {
+                    app.active_lasso_region = Some(reg);
+                } else {
+                    app.lasso_points.clear();
+                }
+            }
+        }
         ActiveBoardTool::SelectRegion => {
             if response.drag_started_by(egui::PointerButton::Primary) {
+                app.clear_lasso_selection();
                 app.selection_anchor_board = Some(board_pt);
                 app.selection_rect_board = Some((board_pt, board_pt));
             } else if response.dragged_by(egui::PointerButton::Primary) {
@@ -1208,7 +1510,11 @@ fn handle_pointer_interaction(
                     app.selection_rect_board = Some((min_pt, max_pt));
                 }
             } else if response.drag_stopped_by(egui::PointerButton::Primary) {
-                app.inspect_selection_with_gemini();
+                if let Some((p0, p1)) = app.selection_rect_board.take() {
+                    if let Some(reg) = LassoSelectionRegion::from_points(&[p0, p1], DEFAULT_LASSO_PADDING_PX) {
+                        app.active_lasso_region = Some(reg);
+                    }
+                }
             }
         }
         ActiveBoardTool::Eraser => {

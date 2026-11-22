@@ -175,6 +175,69 @@ pub fn joint_angle_3d_deg(u: [f32; 3], v: [f32; 3]) -> f32 {
     cos_theta.acos().to_degrees()
 }
 
+/// 3-state 3D joint flexion classification (scale & rotation invariant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FingerFlexionState {
+    Extended,
+    HalfBent,
+    Curled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PalmNormalInfo {
+    pub normal: [f32; 3],
+    pub facing_score: f32,
+    pub facing_camera: bool,
+}
+
+/// Compute 3D Palm Normal via `cross(LM5 - LM0, LM17 - LM0)` with zero-division protection.
+pub fn compute_palm_normal_3d(lm: &[Landmark3D; 21], min_facing_z: f32) -> PalmNormalInfo {
+    let v_index = bone_vec_3d(lm[WRIST], lm[INDEX_MCP]);
+    let v_pinky = bone_vec_3d(lm[WRIST], lm[PINKY_MCP]);
+    let c = vec3_cross(v_index, v_pinky);
+    let norm = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+    if norm < 1e-6 {
+        return PalmNormalInfo {
+            normal: [0.0, 0.0, 0.0],
+            facing_score: 0.0,
+            facing_camera: false,
+        };
+    }
+    let unit = [c[0] / norm, c[1] / norm, c[2] / norm];
+    let facing_score = unit[2].abs();
+    PalmNormalInfo {
+        normal: unit,
+        facing_score,
+        facing_camera: facing_score >= min_facing_z,
+    }
+}
+
+/// Classify finger flexion into `Extended`, `HalfBent`, or `Curled` using pure 3D bone angles.
+pub fn classify_finger_flexion_3d(
+    lm: &[Landmark3D; 21],
+    mcp_idx: usize,
+    pip_idx: usize,
+    dip_idx: usize,
+    tip_idx: usize,
+) -> (FingerFlexionState, f32) {
+    let palm_scale = compute_palm_scale(lm);
+    let (pip_deg, dip_deg, overall_deg) =
+        finger_joint_angles_deg(lm, mcp_idx, pip_idx, dip_idx, tip_idx);
+    let r_pip = lm[WRIST].dist_3d(lm[pip_idx]) / palm_scale;
+    let r_tip = lm[WRIST].dist_3d(lm[tip_idx]) / palm_scale;
+    let radial_ratio = r_tip / r_pip.max(0.15);
+    let effective_deg = pip_deg.max(overall_deg * 0.92);
+
+    if pip_deg < 42.0 && dip_deg < 48.0 && overall_deg < 40.0 && radial_ratio > 1.12 && r_tip > 1.18
+    {
+        (FingerFlexionState::Extended, effective_deg)
+    } else if effective_deg < 78.0 && radial_ratio > 0.92 && r_tip > 0.95 {
+        (FingerFlexionState::HalfBent, effective_deg)
+    } else {
+        (FingerFlexionState::Curled, effective_deg)
+    }
+}
+
 /// Return `(pip_angle_deg, dip_angle_deg, overall_angle_deg)` for a 4-joint finger chain
 /// (`MCP -> PIP -> DIP -> TIP`) using 3D `arccos(dot(u, v) / (|u||v|))`.
 #[inline]
@@ -440,6 +503,8 @@ pub struct GestureDebounceFsm {
     last_right_seen_sec: Option<f64>,
     right_fingers: [bool; 4],
     right_deadzone_cursor: Option<Point2D>,
+    right_vel_xy: (f32, f32),
+    right_grace_cursor: Option<Point2D>,
     no_hand_frames: u8,
     frame_clock_sec: f64,
 }
@@ -465,6 +530,8 @@ impl GestureDebounceFsm {
             last_right_seen_sec: None,
             right_fingers: [false; 4],
             right_deadzone_cursor: None,
+            right_vel_xy: (0.0, 0.0),
+            right_grace_cursor: None,
             no_hand_frames: 3,
             frame_clock_sec: 0.0,
         }
@@ -491,6 +558,8 @@ impl GestureDebounceFsm {
             last_right_seen_sec: None,
             right_fingers: [false; 4],
             right_deadzone_cursor: None,
+            right_vel_xy: (0.0, 0.0),
+            right_grace_cursor: None,
             no_hand_frames: 3,
             frame_clock_sec: 0.0,
         }
@@ -614,6 +683,8 @@ impl GestureDebounceFsm {
         let prev_right = self.stable_right;
         let mut right_in_grace = false;
         let right_cursor_norm = if let Some(rh) = right_hand {
+            let prev_t = self.last_right_seen_sec;
+            let prev_c = self.right_deadzone_cursor;
             self.last_right_seen_sec = Some(t_sec);
             let was_pinch = self.stable_right == RightGesture::PinchToolSelect;
             let (raw_right, raw_right_pt, right_palm) =
@@ -623,6 +694,18 @@ impl GestureDebounceFsm {
                 right_palm,
                 &mut self.right_deadzone_cursor,
             );
+            if let (Some(pt), Some(old_c), Some(old_t)) = (cursor, prev_c, prev_t) {
+                let dt = (t_sec - old_t) as f32;
+                if dt > 1e-3 && dt < 0.25 {
+                    let vx = ((pt.x - old_c.x) / dt).clamp(-2.5, 2.5);
+                    let vy = ((pt.y - old_c.y) / dt).clamp(-2.5, 2.5);
+                    self.right_vel_xy = (
+                        0.55 * self.right_vel_xy.0 + 0.45 * vx,
+                        0.55 * self.right_vel_xy.1 + 0.45 * vy,
+                    );
+                }
+            }
+            self.right_grace_cursor = cursor;
             let needed = self.required_frames_for_right(raw_right);
             if raw_right == self.stable_right {
                 self.candidate_right = raw_right;
@@ -648,12 +731,23 @@ impl GestureDebounceFsm {
             cursor
         } else if let Some(last_r) = self.last_right_seen_sec {
             if self.grace_period_sec > 0.0 && (t_sec - last_r) <= self.grace_period_sec {
-                // Grace period active: hold gesture and cursor across brief dropout
+                // Grace period active: extrapolate gently using damped Kalman-like constant velocity
                 right_in_grace = self.stable_right != RightGesture::Idle;
-                self.right_deadzone_cursor
+                if let Some(base) = self.right_grace_cursor.or(self.right_deadzone_cursor) {
+                    let dt = ((t_sec - last_r) as f32).clamp(0.0, 0.16);
+                    let pred = Point2D::new(
+                        (base.x + self.right_vel_xy.0 * dt * 0.65).clamp(0.0, 1.0),
+                        (base.y + self.right_vel_xy.1 * dt * 0.65).clamp(0.0, 1.0),
+                    );
+                    Some(pred)
+                } else {
+                    self.right_deadzone_cursor
+                }
             } else {
                 self.right_fingers = [false; 4];
                 self.right_deadzone_cursor = None;
+                self.right_grace_cursor = None;
+                self.right_vel_xy = (0.0, 0.0);
                 let needed = self.required_frames_for_right(RightGesture::Idle);
                 if self.stable_right == RightGesture::Idle {
                     self.candidate_right = RightGesture::Idle;
@@ -679,6 +773,8 @@ impl GestureDebounceFsm {
         } else {
             self.right_fingers = [false; 4];
             self.right_deadzone_cursor = None;
+            self.right_grace_cursor = None;
+            self.right_vel_xy = (0.0, 0.0);
             None
         };
 
@@ -1861,5 +1957,50 @@ mod tests {
         );
         assert_eq!(jump_split.hud_mode, DrawingHudMode::Hover);
         assert_eq!(jump_split.cancel_reason, "JUMP_GUARD");
+    }
+
+    #[test]
+    fn test_finger_flexion_states_and_palm_normal_zero_div_safe() {
+        let mut h_ext = HandLandmarks::from_pose_preset(
+            Handedness::Right,
+            0.5,
+            0.5,
+            1.0,
+            false,
+            true,
+            false,
+            false,
+            false,
+        );
+        let (st_idx, ang_idx) =
+            classify_finger_flexion_3d(&h_ext.landmarks, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP);
+        assert_eq!(st_idx, FingerFlexionState::Extended);
+        assert!(ang_idx < 40.0);
+
+        let (st_mid, ang_mid) = classify_finger_flexion_3d(
+            &h_ext.landmarks,
+            MIDDLE_MCP,
+            MIDDLE_PIP,
+            MIDDLE_DIP,
+            MIDDLE_TIP,
+        );
+        assert_eq!(st_mid, FingerFlexionState::Curled);
+        assert!(ang_mid >= 45.0);
+
+        // Palm normal check with normal frontal pose
+        let pn = compute_palm_normal_3d(&h_ext.landmarks, 0.20);
+        assert!(pn.facing_camera);
+        assert!(pn.facing_score > 0.20);
+
+        // Zero-length degenerate landmarks must NEVER NaN or panic
+        for lm in &mut h_ext.landmarks {
+            *lm = Landmark3D::new(0.5, 0.5, 0.0);
+        }
+        let pn_zero = compute_palm_normal_3d(&h_ext.landmarks, 0.20);
+        assert!(!pn_zero.facing_camera);
+        assert!(pn_zero.facing_score.is_finite());
+        let (_, ang_zero) =
+            classify_finger_flexion_3d(&h_ext.landmarks, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP);
+        assert!(ang_zero.is_finite());
     }
 }

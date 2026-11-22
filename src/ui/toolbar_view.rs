@@ -177,6 +177,39 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                     app.storage.save_config(&app.config);
                 }
 
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("[Sáng/Tối]")
+                                .font(FontId::proportional(12.0))
+                                .color(palette.text_primary)
+                                .strong(),
+                        )
+                        .fill(palette.surface)
+                        .stroke(Stroke::new(1.0_f32, palette.border))
+                        .rounding(Rounding::same(6.0))
+                        .min_size(Vec2::new(0.0, 30.0)),
+                    )
+                    .clicked()
+                {
+                    app.toggle_theme_mode(ctx);
+                }
+
+                // Live Telemetry Status Pill (AI Mode | Model | tokens/s | CV FPS)
+                egui::Frame::none()
+                    .fill(palette.surface)
+                    .stroke(Stroke::new(1.0_f32, palette.secondary))
+                    .rounding(Rounding::same(10.0))
+                    .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(app.perf_pipeline.telemetry.status_pill_text())
+                                .font(FontId::proportional(11.0))
+                                .color(palette.secondary)
+                                .strong(),
+                        );
+                    });
+
                 // MIDDLE FLEXIBLE STRETCH + RIGHT GROUP:
                 // [Ghi Âm Bài Giảng] | [Ẩn/Hiện Camera] | [Trợ Lý AI (Đóng/Mở)]
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -263,8 +296,9 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.horizontal_centered(|ui| {
-                // GROUP 1: [Phân Tích Vùng] | [Bút vẽ] | [Tẩy] | [Laser] | [Nắn hình: TẮT/BẬT]
+                // GROUP 1: [Khoanh AI (Lasso)] | [Phân Tích Vùng] | [Bút vẽ] | [Tẩy] | [Laser]
                 for (tool, label) in [
+                    (ActiveBoardTool::Lasso, "[Khoanh AI (Lasso)]"),
                     (ActiveBoardTool::SelectRegion, "[Phân Tích Vùng]"),
                     (ActiveBoardTool::Pen, "[Bút vẽ]"),
                     (ActiveBoardTool::Eraser, "[Tẩy]"),
@@ -274,6 +308,8 @@ pub fn render_bottom_drawing_dock(app: &mut AirTeachApp, ctx: &egui::Context) {
                     let (fill, text_col) = if selected {
                         let bg = if tool == ActiveBoardTool::SelectRegion {
                             palette.danger
+                        } else if tool == ActiveBoardTool::Lasso {
+                            Color32::from_rgb(124, 58, 237)
                         } else {
                             palette.primary
                         };

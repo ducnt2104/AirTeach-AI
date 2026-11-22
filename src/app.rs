@@ -20,11 +20,20 @@ use crate::ai::gemini_chat::{
     GeminiHealthCheckResult, PedagogicalAnalysisMode, SubjectAssistantMode,
     PEDAGOGICAL_INSPECTOR_SYSTEM_PROMPT,
 };
+use crate::ai::lasso_ai_service::{
+    extract_clean_beautified_formula, LassoQuickAction, LassoSelectionRegion,
+    DEFAULT_LASSO_PADDING_PX,
+};
 use crate::ai::latex_engine::{LatexEngine, LatexRecognitionResult};
+use crate::ai::local_ai_manager::{AiRoutingMode, DiscoveredLocalServer, LocalAIManager};
 use crate::ai::ocr_engine::{OcrEngine, OcrRecognitionResult};
 use crate::ai::rag_engine::SlideRagIndex;
 use crate::ai::stem_knowledge::StemKnowledgeEngine;
 use crate::ai::subtitles_engine::{LiveSubtitlesEngine, TranscriptSegmentEvent};
+use crate::ai::whiteboard_agent::{
+    build_vector_shape_strokes, find_free_board_region, find_free_regions_normalized, BoardRect,
+    WhiteboardAction, WhiteboardAgent,
+};
 use crate::core::audio_recorder::{AudioRecorder, RecordingState};
 use crate::core::camera::{CameraControlCmd, CameraSubsystem, LightingAdaptationMode};
 use crate::core::gestures::{
@@ -33,6 +42,7 @@ use crate::core::gestures::{
     RightTransitionEvent, UNDO_COOLDOWN_MS,
 };
 use crate::core::hand_tracker::TwoHandFrame;
+use crate::core::performance_pipeline::PerformancePipeline;
 use crate::core::stroke_engine::{
     interpolate_bridge_points_2d, Point2D, SnappedShape, StrokeEngine, DEFAULT_INTERP_STEP_PX,
 };
@@ -46,6 +56,7 @@ use crate::ui::{
 };
 use crate::utils::document_loader::{DocumentLoader, SlidePage};
 use crate::utils::model_downloader::ModelDownloader;
+use crate::utils::output_sanitizer::OutputSanitizer;
 use crate::utils::storage::{
     AirTeachBundle, AppConfig, BoardTextAnnotation, LectureHistoryEntry, LocalStorage,
     PersistedStroke, VectorStroke,
@@ -75,6 +86,7 @@ pub enum AppScreen {
 pub enum ActiveBoardTool {
     Pen,
     LaserPointer,
+    Lasso,
     SelectRegion,
     Eraser,
 }
@@ -218,14 +230,24 @@ pub struct AirTeachApp {
     pub laser_pointer_board: Option<Point2D>,
     pub selection_anchor_board: Option<Point2D>,
     pub selection_rect_board: Option<(Point2D, Point2D)>,
+    pub lasso_points: Vec<Point2D>,
+    pub active_lasso_region: Option<LassoSelectionRegion>,
+    pub pending_lasso_action: Option<LassoQuickAction>,
     pub pending_low_confidence_confirmation: Option<BoardTextAnnotation>,
+    pub ai_action_undo_stack: Vec<(Vec<PersistedStroke>, Vec<BoardTextAnnotation>)>,
+    pub pending_ai_strokes: Vec<(usize, Vec<Point2D>)>,
 
     // Bounded(2) Background OCR & LaTeX Worker Channels (Workstream 4.2 Zero-Leak Guarantee)
     vision_req_tx: Sender<VisionTaskReq>,
     vision_resp_rx: Receiver<VisionTaskResp>,
 
-    // Gemini Multimodal Streaming Chat Assistant
+    // Gemini & Local Hybrid AI Streaming + Performance Telemetry
+    pub perf_pipeline: PerformancePipeline,
     pub gemini_client: GeminiChatClient,
+    pub discovered_local_servers: Vec<DiscoveredLocalServer>,
+    pub active_local_provider: String,
+    local_discovery_tx: Sender<Vec<DiscoveredLocalServer>>,
+    local_discovery_rx: Receiver<Vec<DiscoveredLocalServer>>,
     pub api_connection_status: ApiConnectionStatus,
     pub api_status_detail_vi: String,
     pub api_test_in_flight: bool,
@@ -244,6 +266,7 @@ pub struct AirTeachApp {
     pub show_api_key_plain: bool,
     pub new_pin_edit_buffer: String,
     pub settings_status_banner: String,
+    pub vision_debug_hud_enabled: bool,
 }
 
 impl AirTeachApp {
@@ -367,7 +390,10 @@ impl AirTeachApp {
 
         let (chat_event_tx, chat_event_rx) = unbounded::<ChatStreamEvent>();
         let (api_health_tx, api_health_rx) = unbounded::<GeminiHealthCheckResult>();
+        let (local_discovery_tx, local_discovery_rx) = unbounded::<Vec<DiscoveredLocalServer>>();
         let (stt_event_tx, stt_event_rx) = unbounded::<Result<TranscriptSegmentEvent, String>>();
+
+        LocalAIManager::discover_async(&gemini_client.runtime, local_discovery_tx.clone());
 
         let mut stroke_engine = StrokeEngine::new(
             config.one_euro_min_cutoff,
@@ -518,10 +544,20 @@ impl AirTeachApp {
             laser_pointer_board: None,
             selection_anchor_board: None,
             selection_rect_board: None,
+            lasso_points: Vec::with_capacity(128),
+            active_lasso_region: None,
+            pending_lasso_action: None,
             pending_low_confidence_confirmation: None,
+            ai_action_undo_stack: Vec::with_capacity(16),
+            pending_ai_strokes: Vec::new(),
             vision_req_tx,
             vision_resp_rx,
+            perf_pipeline: PerformancePipeline::new(),
             gemini_client,
+            discovered_local_servers: Vec::new(),
+            active_local_provider: String::new(),
+            local_discovery_tx,
+            local_discovery_rx,
             api_connection_status: ApiConnectionStatus::Unconfigured,
             api_status_detail_vi: String::new(),
             api_test_in_flight: false,
@@ -538,6 +574,7 @@ impl AirTeachApp {
             show_api_key_plain: false,
             new_pin_edit_buffer: String::new(),
             settings_status_banner: String::new(),
+            vision_debug_hud_enabled: false,
         }
     }
 
@@ -767,6 +804,7 @@ impl AirTeachApp {
         };
 
         self.camera_fps = pkt.camera_fps;
+        self.perf_pipeline.telemetry.cv_fps = pkt.camera_fps;
         self.camera_sharpness = pkt.sharpness_score;
         self.camera_lighting_mode = pkt.lighting_mode;
         self.camera_mean_luma = pkt.mean_luma;
@@ -948,6 +986,15 @@ impl AirTeachApp {
             let esc_pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
             let ctrl_z_pressed =
                 ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z));
+            let ctrl_shift_d_pressed = ctx.input(|i| {
+                i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::D)
+            });
+            if ctrl_shift_d_pressed {
+                self.vision_debug_hud_enabled = !self.vision_debug_hud_enabled;
+            }
+            if !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::L)) {
+                self.active_tool = ActiveBoardTool::Lasso;
+            }
             let mouse_button_down = ctx.input(|i| i.pointer.any_down());
 
             if self.camera_using_hardware {
@@ -2003,18 +2050,613 @@ impl AirTeachApp {
 
         let api_key = self.storage.get_decrypted_api_key(&self.config);
         self.chat_streaming_active = true;
-        self.gemini_client.stream_completion_with_options(
-            api_key,
-            resolved_model,
-            self.subject_mode,
-            prompt,
-            slide_rag_context,
-            b64_img,
-            use_structured_json,
-            cache_key,
-            model_msg_idx,
-            self.chat_event_tx.clone(),
-        );
+        let final_prompt = if !use_structured_json {
+            let (cw, ch) = self
+                .last_canvas_rect
+                .map(|r| (r.width().max(640.0), r.height().max(420.0)))
+                .unwrap_or((1020.0, 620.0));
+            let free_regs = find_free_regions_normalized(&self.occupied_board_rects(), cw, ch, 3);
+            format!(
+                "{prompt}\n\n{}",
+                WhiteboardAgent::tool_protocol_prompt_with_context(cw, ch, &free_regs)
+            )
+        } else {
+            prompt
+        };
+        let hist: Vec<(String, String)> = self
+            .chat_messages
+            .iter()
+            .take(model_msg_idx)
+            .filter(|m| m.role == "user" || m.role == "model")
+            .map(|m| {
+                let role = if m.role == "model" {
+                    "assistant".to_string()
+                } else {
+                    "user".to_string()
+                };
+                (role, m.text.clone())
+            })
+            .collect();
+
+        if use_structured_json {
+            self.gemini_client.stream_completion_with_options(
+                api_key,
+                resolved_model,
+                self.subject_mode,
+                final_prompt,
+                slide_rag_context,
+                b64_img,
+                true,
+                cache_key,
+                model_msg_idx,
+                self.chat_event_tx.clone(),
+            );
+        } else {
+            LocalAIManager::stream_with_hybrid_fallback(
+                &self.gemini_client,
+                self.config.ai_routing_mode,
+                self.active_local_provider.clone(),
+                self.config.local_endpoint.clone(),
+                self.config.local_model.clone(),
+                hist,
+                final_prompt,
+                b64_img,
+                api_key,
+                resolved_model,
+                self.subject_mode,
+                slide_rag_context,
+                cache_key,
+                model_msg_idx,
+                self.chat_event_tx.clone(),
+            );
+        }
+    }
+
+    pub fn discover_local_engines(&self) {
+        LocalAIManager::discover_async(&self.gemini_client.runtime, self.local_discovery_tx.clone());
+    }
+
+    pub fn select_local_model(&mut self, provider: String, base_url: String, model: String) {
+        self.active_local_provider = provider.clone();
+        self.config.local_endpoint = base_url.clone();
+        self.config.local_model = model.clone();
+        self.storage.save_config(&self.config);
+        self.perf_pipeline.telemetry.ai_mode = self.config.ai_routing_mode.label().to_string();
+        if !model.is_empty() {
+            self.perf_pipeline.telemetry.active_model = model.clone();
+        }
+        LocalAIManager::warmup_async(&self.gemini_client.runtime, provider, base_url, model);
+    }
+
+    fn poll_local_discovery_events(&mut self) {
+        while let Ok(servers) = self.local_discovery_rx.try_recv() {
+            self.discovered_local_servers = servers;
+            if let Some(first) = self.discovered_local_servers.first() {
+                if self.config.local_endpoint.trim().is_empty()
+                    || self.config.local_model.trim().is_empty()
+                {
+                    let chosen_model = first.models.first().cloned().unwrap_or_default();
+                    self.active_local_provider = first.provider.clone();
+                    self.config.local_endpoint = first.base_url.clone();
+                    if !chosen_model.is_empty() {
+                        self.config.local_model = chosen_model.clone();
+                        self.perf_pipeline.telemetry.active_model = chosen_model.clone();
+                    }
+                    LocalAIManager::warmup_async(
+                        &self.gemini_client.runtime,
+                        first.provider.clone(),
+                        first.base_url.clone(),
+                        self.config.local_model.clone(),
+                    );
+                }
+            }
+        }
+    }
+
+    pub fn submit_user_chat_or_command(&mut self, user_text: String) {
+        let trimmed = user_text.trim().to_string();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.chat_drawer_open = true;
+        if let Some(fast_act) = WhiteboardAgent::parse_fast_intent(&trimmed) {
+            let summary = self.execute_whiteboard_actions(&[fast_act], None);
+            let now_str = chrono::Local::now().format("%H:%M:%S").to_string();
+            self.perf_pipeline.telemetry.ai_mode = "Instant".to_string();
+            self.perf_pipeline.telemetry.active_model = "Local-Intent".to_string();
+            self.chat_messages.push(ChatMessage {
+                role: "user".to_string(),
+                text: trimmed,
+                subject: self.subject_mode,
+                has_image_attachment: false,
+                image_dimensions: None,
+                rag_slide_badge: None,
+                timestamp: now_str.clone(),
+            });
+            self.chat_messages.push(ChatMessage {
+                role: "model".to_string(),
+                text: format!("⚡ [Lệnh tức thì <5ms]\n{summary}"),
+                subject: self.subject_mode,
+                has_image_attachment: false,
+                image_dimensions: None,
+                rag_slide_badge: None,
+                timestamp: now_str,
+            });
+            return;
+        }
+        self.send_chat_message(trimmed, false);
+    }
+
+    pub fn clear_lasso_selection(&mut self) {
+        self.lasso_points.clear();
+        self.active_lasso_region = None;
+        self.selection_anchor_board = None;
+        self.selection_rect_board = None;
+    }
+
+    pub fn execute_lasso_quick_action(&mut self, action: LassoQuickAction) {
+        let Some(region) = self.active_lasso_region.clone() else {
+            return;
+        };
+        self.chat_drawer_open = true;
+        self.pending_lasso_action = Some(action);
+        self.selection_rect_board = Some((region.min_pt, region.max_pt));
+        self.send_chat_message(action.prompt().to_string(), true);
+        if action != LassoQuickAction::BeautifyLatex {
+            self.active_lasso_region = None;
+            self.lasso_points.clear();
+        }
+        self.selection_rect_board = None;
+        self.selection_anchor_board = None;
+    }
+
+    fn occupied_board_rects(&self) -> Vec<BoardRect> {
+        let mut rects = Vec::new();
+        if self.slide_card_visible && !self.slides.is_empty() {
+            rects.push(BoardRect {
+                x: 16.0,
+                y: 46.0,
+                w: 740.0,
+                h: 416.0,
+            });
+        }
+        for s in &self.strokes {
+            if s.display_points.len() >= 2 {
+                let mut x0 = f32::INFINITY;
+                let mut y0 = f32::INFINITY;
+                let mut x1 = f32::NEG_INFINITY;
+                let mut y1 = f32::NEG_INFINITY;
+                for p in &s.display_points {
+                    x0 = x0.min(p.x);
+                    y0 = y0.min(p.y);
+                    x1 = x1.max(p.x);
+                    y1 = y1.max(p.y);
+                }
+                rects.push(BoardRect {
+                    x: x0,
+                    y: y0,
+                    w: (x1 - x0).max(20.0),
+                    h: (y1 - y0).max(20.0),
+                });
+            }
+        }
+        for ann in &self.annotations {
+            let clean = OutputSanitizer::sanitize_plain_text(&ann.text);
+            let w = ((clean.chars().count() as f32) * 9.5 + 32.0).clamp(140.0, 480.0);
+            let h = ((clean.lines().count().max(1) as f32) * 24.0 + 18.0).max(40.0);
+            rects.push(BoardRect {
+                x: ann.position.x,
+                y: ann.position.y,
+                w,
+                h,
+            });
+        }
+        rects
+    }
+
+    pub fn execute_whiteboard_actions(
+        &mut self,
+        actions: &[WhiteboardAction],
+        preferred_anchor: Option<Point2D>,
+    ) -> String {
+        if actions.is_empty() {
+            return String::new();
+        }
+        let (cw, ch) = self
+            .last_canvas_rect
+            .map(|r| (r.width().max(640.0), r.height().max(420.0)))
+            .unwrap_or((1020.0, 620.0));
+        let mut reports = Vec::new();
+
+        for act in actions {
+            match act {
+                WhiteboardAction::ClearBoard => {
+                    self.ai_action_undo_stack
+                        .push((self.strokes.clone(), self.annotations.clone()));
+                    self.strokes.clear();
+                    self.annotations.clear();
+                    reports.push("Đã xóa bảng.".to_string());
+                }
+                WhiteboardAction::UndoLastAiAction => {
+                    if self.undo_last_ai_action() {
+                        reports.push("Đã hoàn tác thao tác AI gần nhất.".to_string());
+                    } else {
+                        reports.push("Không có thao tác AI để hoàn tác.".to_string());
+                    }
+                }
+                WhiteboardAction::WriteOnBoard {
+                    content,
+                    is_latex,
+                    position,
+                    ..
+                } => {
+                    self.ai_action_undo_stack
+                        .push((self.strokes.clone(), self.annotations.clone()));
+                    let clean = OutputSanitizer::sanitize_plain_text(content);
+                    let est_w = (clean.chars().count() as f32 * 10.0 + 36.0).clamp(160.0, 480.0);
+                    let pos = position.unwrap_or_else(|| {
+                        find_free_board_region(
+                            &self.occupied_board_rects(),
+                            cw,
+                            ch,
+                            est_w,
+                            52.0,
+                            preferred_anchor,
+                        )
+                    });
+                    self.annotations.push(BoardTextAnnotation {
+                        position: pos,
+                        text: clean.clone(),
+                        is_latex: *is_latex,
+                        confidence: 1.0,
+                        color_rgba: self.current_ink_color,
+                    });
+                    reports.push(format!(
+                        "Đã ghi lên bảng tại ({:.0}, {:.0}): {}",
+                        pos.x, pos.y, clean
+                    ));
+                }
+                WhiteboardAction::SolveOnBoard { steps, .. } => {
+                    self.ai_action_undo_stack
+                        .push((self.strokes.clone(), self.annotations.clone()));
+                    let block_h = (steps.len() as f32 * 38.0).clamp(64.0, ch - 80.0);
+                    let base = find_free_board_region(
+                        &self.occupied_board_rects(),
+                        cw,
+                        ch,
+                        360.0,
+                        block_h,
+                        preferred_anchor,
+                    );
+                    for (idx, st) in steps.iter().enumerate() {
+                        let clean = OutputSanitizer::sanitize_plain_text(st);
+                        self.annotations.push(BoardTextAnnotation {
+                            position: Point2D::new(base.x, base.y + idx as f32 * 40.0),
+                            text: clean,
+                            is_latex: true,
+                            confidence: 1.0,
+                            color_rgba: [0x06, 0xb6, 0xd4, 255],
+                        });
+                    }
+                    reports.push(format!("Đã ghi {} bước lời giải lên bảng.", steps.len()));
+                }
+                WhiteboardAction::DrawText {
+                    x,
+                    y,
+                    text,
+                    color_rgba,
+                    normalized,
+                    ..
+                } => {
+                    self.ai_action_undo_stack
+                        .push((self.strokes.clone(), self.annotations.clone()));
+                    let clean = OutputSanitizer::sanitize_plain_text(text);
+                    let px = if *normalized { (*x / 1000.0) * cw } else { *x };
+                    let py = if *normalized { (*y / 1000.0) * ch } else { *y };
+                    self.annotations.push(BoardTextAnnotation {
+                        position: Point2D::new(px, py),
+                        text: clean.clone(),
+                        is_latex: true,
+                        confidence: 1.0,
+                        color_rgba: color_rgba.unwrap_or([0xFE, 0xE4, 0x40, 255]),
+                    });
+                    reports.push(format!("Đã viết lên bảng tại ({:.0}, {:.0}): {}", px, py, clean));
+                }
+                WhiteboardAction::DrawPolyline {
+                    points,
+                    color_rgba,
+                    stroke_width,
+                    smooth,
+                    normalized,
+                } => {
+                    if points.len() >= 2 {
+                        self.ai_action_undo_stack
+                            .push((self.strokes.clone(), self.annotations.clone()));
+                        let mut px_pts: Vec<Point2D> = points
+                            .iter()
+                            .map(|p| {
+                                if *normalized {
+                                    Point2D::new((p.x / 1000.0) * cw, (p.y / 1000.0) * ch)
+                                } else {
+                                    *p
+                                }
+                            })
+                            .collect();
+                        if *smooth && px_pts.len() >= 3 {
+                            let mut smoothed = Vec::with_capacity(px_pts.len() * 4);
+                            crate::core::stroke_engine::generate_cubic_bezier_spline_into(&px_pts, 4, &mut smoothed);
+                            if !smoothed.is_empty() {
+                                px_pts = smoothed;
+                            }
+                        }
+                        let ts = self.current_recording_timestamp_ms();
+                        let col = color_rgba.unwrap_or([0x00, 0xF5, 0xD4, 255]);
+                        let init_len = px_pts.len().min(2);
+                        let stroke_idx = self.strokes.len();
+                        self.strokes.push(PersistedStroke {
+                            timestamp_ms: ts,
+                            raw_points: px_pts.clone(),
+                            display_points: px_pts[..init_len].to_vec(),
+                            color_rgba: col,
+                            thickness: *stroke_width,
+                            snapped_shape: SnappedShape::Freehand,
+                        });
+                        if px_pts.len() > 2 {
+                            self.pending_ai_strokes.push((stroke_idx, px_pts));
+                        }
+                        reports.push(format!("Đã vẽ đường cong/đồ thị ({} điểm).", points.len()));
+                    }
+                }
+                WhiteboardAction::HighlightRegion {
+                    x,
+                    y,
+                    w,
+                    h,
+                    color_rgba,
+                    label,
+                    normalized,
+                } => {
+                    self.ai_action_undo_stack
+                        .push((self.strokes.clone(), self.annotations.clone()));
+                    let rx = if *normalized { (*x / 1000.0) * cw } else { *x };
+                    let ry = if *normalized { (*y / 1000.0) * ch } else { *y };
+                    let rw = if *normalized { (*w / 1000.0) * cw } else { *w };
+                    let rh = if *normalized { (*h / 1000.0) * ch } else { *h };
+                    let col = color_rgba.unwrap_or([0xFE, 0xE4, 0x40, 220]);
+                    let poly = vec![
+                        Point2D::new(rx, ry),
+                        Point2D::new(rx + rw, ry),
+                        Point2D::new(rx + rw, ry + rh),
+                        Point2D::new(rx, ry + rh),
+                        Point2D::new(rx, ry),
+                    ];
+                    let ts = self.current_recording_timestamp_ms();
+                    self.strokes.push(PersistedStroke {
+                        timestamp_ms: ts,
+                        raw_points: poly.clone(),
+                        display_points: poly,
+                        color_rgba: col,
+                        thickness: 2.5,
+                        snapped_shape: SnappedShape::Freehand,
+                    });
+                    if let Some(lbl) = label {
+                        if !lbl.is_empty() {
+                            self.annotations.push(BoardTextAnnotation {
+                                position: Point2D::new(rx + 6.0, (ry - 24.0).max(20.0)),
+                                text: OutputSanitizer::sanitize_plain_text(lbl),
+                                is_latex: false,
+                                confidence: 1.0,
+                                color_rgba: col,
+                            });
+                        }
+                    }
+                    reports.push(format!("Đã khoanh sáng vùng ({:.0}, {:.0}, {:.0}x{:.0}).", rx, ry, rw, rh));
+                }
+                WhiteboardAction::ClearRegion {
+                    x,
+                    y,
+                    w,
+                    h,
+                    normalized,
+                } => {
+                    self.ai_action_undo_stack
+                        .push((self.strokes.clone(), self.annotations.clone()));
+                    let rx = if *normalized { (*x / 1000.0) * cw } else { *x };
+                    let ry = if *normalized { (*y / 1000.0) * ch } else { *y };
+                    let rw = if *normalized { (*w / 1000.0) * cw } else { *w };
+                    let rh = if *normalized { (*h / 1000.0) * ch } else { *h };
+                    self.strokes.retain(|st| {
+                        !st.display_points
+                            .iter()
+                            .any(|p| p.x >= rx && p.x <= rx + rw && p.y >= ry && p.y <= ry + rh)
+                    });
+                    self.annotations.retain(|ann| {
+                        !(ann.position.x >= rx
+                            && ann.position.x <= rx + rw
+                            && ann.position.y >= ry
+                            && ann.position.y <= ry + rh)
+                    });
+                    self.pending_ai_strokes.clear();
+                    reports.push("Đã xóa vùng chỉ định trên bảng.".to_string());
+                }
+                WhiteboardAction::DrawShapeNorm {
+                    shape_type,
+                    x,
+                    y,
+                    w,
+                    h,
+                    radius,
+                    x2,
+                    y2,
+                    points,
+                    color_rgba,
+                    stroke_width,
+                    label,
+                    normalized,
+                } => {
+                    self.ai_action_undo_stack
+                        .push((self.strokes.clone(), self.annotations.clone()));
+                    let px = if *normalized { (*x / 1000.0) * cw } else { *x };
+                    let py = if *normalized { (*y / 1000.0) * ch } else { *y };
+                    let pw = if *normalized { ((*w / 1000.0) * cw).max(36.0) } else { *w };
+                    let ph = if *normalized { ((*h / 1000.0) * ch).max(36.0) } else { *h };
+                    let pr = if *normalized { ((*radius / 1000.0) * cw.min(ch)).max(20.0) } else { *radius };
+                    let pos = Point2D::new(px, py);
+                    let col = color_rgba.unwrap_or([0x00, 0xF5, 0xD4, 255]);
+                    let ts = self.current_recording_timestamp_ms();
+
+                    let polylines = if let Some(pts) = points {
+                        if pts.len() >= 3 {
+                            let mut ring: Vec<Point2D> = pts
+                                .iter()
+                                .map(|p| {
+                                    if *normalized {
+                                        Point2D::new((p.x / 1000.0) * cw, (p.y / 1000.0) * ch)
+                                    } else {
+                                        *p
+                                    }
+                                })
+                                .collect();
+                            ring.push(ring[0]);
+                            vec![ring]
+                        } else {
+                            build_vector_shape_strokes(shape_type, pos, pw, ph, pr)
+                        }
+                    } else if shape_type == "line" || shape_type == "arrow" {
+                        if let (Some(nx2), Some(ny2)) = (x2, y2) {
+                            let ex = if *normalized { (*nx2 / 1000.0) * cw } else { *nx2 };
+                            let ey = if *normalized { (*ny2 / 1000.0) * ch } else { *ny2 };
+                            let dx = ex - pos.x;
+                            let dy = ey - pos.y;
+                            if shape_type == "arrow" {
+                                let ang = dy.atan2(dx);
+                                let head = 15.0_f32;
+                                vec![
+                                    vec![pos, Point2D::new(ex, ey)],
+                                    vec![
+                                        Point2D::new(ex - head * (ang - 0.45).cos(), ey - head * (ang - 0.45).sin()),
+                                        Point2D::new(ex, ey),
+                                        Point2D::new(ex - head * (ang + 0.45).cos(), ey - head * (ang + 0.45).sin()),
+                                    ],
+                                ]
+                            } else {
+                                vec![vec![pos, Point2D::new(ex, ey)]]
+                            }
+                        } else {
+                            build_vector_shape_strokes(shape_type, pos, pw, ph, pr)
+                        }
+                    } else {
+                        build_vector_shape_strokes(shape_type, pos, pw, ph, pr)
+                    };
+
+                    for poly in polylines {
+                        let init_len = if poly.len() > 3 { 2 } else { poly.len() };
+                        let stroke_idx = self.strokes.len();
+                        self.strokes.push(PersistedStroke {
+                            timestamp_ms: ts,
+                            raw_points: poly.clone(),
+                            display_points: poly[..init_len].to_vec(),
+                            color_rgba: col,
+                            thickness: *stroke_width,
+                            snapped_shape: SnappedShape::Freehand,
+                        });
+                        if poly.len() > 3 {
+                            self.pending_ai_strokes.push((stroke_idx, poly));
+                        }
+                    }
+                    if let Some(lbl) = label {
+                        if !lbl.is_empty() {
+                            self.annotations.push(BoardTextAnnotation {
+                                position: Point2D::new(pos.x + 6.0, (pos.y - 24.0).max(20.0)),
+                                text: OutputSanitizer::sanitize_plain_text(lbl),
+                                is_latex: false,
+                                confidence: 1.0,
+                                color_rgba: col,
+                            });
+                        }
+                    }
+                    reports.push(format!("Đã vẽ vector `{}` tại ({:.0}, {:.0}).", shape_type, pos.x, pos.y));
+                }
+                WhiteboardAction::DrawShape {
+                    shape_type,
+                    origin,
+                    w,
+                    h,
+                    radius,
+                    color_rgba,
+                } => {
+                    self.ai_action_undo_stack
+                        .push((self.strokes.clone(), self.annotations.clone()));
+                    let pos = origin.unwrap_or_else(|| {
+                        find_free_board_region(
+                            &self.occupied_board_rects(),
+                            cw,
+                            ch,
+                            *w,
+                            *h,
+                            preferred_anchor,
+                        )
+                    });
+                    let ts = self.current_recording_timestamp_ms();
+                    let col = color_rgba.unwrap_or(self.current_ink_color);
+                    let polylines = build_vector_shape_strokes(shape_type, pos, *w, *h, *radius);
+                    for poly in polylines {
+                        let init_len = if poly.len() > 3 { 2 } else { poly.len() };
+                        let stroke_idx = self.strokes.len();
+                        self.strokes.push(PersistedStroke {
+                            timestamp_ms: ts,
+                            raw_points: poly.clone(),
+                            display_points: poly[..init_len].to_vec(),
+                            color_rgba: col,
+                            thickness: 3.5,
+                            snapped_shape: SnappedShape::Freehand,
+                        });
+                        if poly.len() > 3 {
+                            self.pending_ai_strokes.push((stroke_idx, poly));
+                        }
+                    }
+                    reports.push(format!(
+                        "Đã vẽ vector `{}` tại ({:.0}, {:.0}).",
+                        shape_type, pos.x, pos.y
+                    ));
+                }
+            }
+        }
+        reports.join("\n")
+    }
+
+    pub fn tick_animated_ai_strokes(&mut self, ctx: &egui::Context) {
+        if self.pending_ai_strokes.is_empty() {
+            return;
+        }
+        let mut still_pending = Vec::new();
+        for (idx, full_pts) in self.pending_ai_strokes.drain(..) {
+            if let Some(stroke) = self.strokes.get_mut(idx) {
+                let cur = stroke.display_points.len();
+                let total = full_pts.len();
+                let step = (total / 14).max(2);
+                let next_len = (cur + step).min(total);
+                stroke.display_points = full_pts[..next_len].to_vec();
+                if next_len < total {
+                    still_pending.push((idx, full_pts));
+                }
+            }
+        }
+        self.pending_ai_strokes = still_pending;
+        if !self.pending_ai_strokes.is_empty() {
+            ctx.request_repaint();
+        }
+    }
+
+    pub fn undo_last_ai_action(&mut self) -> bool {
+        if let Some((prev_s, prev_a)) = self.ai_action_undo_stack.pop() {
+            self.strokes = prev_s;
+            self.annotations = prev_a;
+            self.last_snapped_shape_banner = "Đã hoàn tác thao tác AI gần nhất".to_string();
+            true
+        } else {
+            false
+        }
     }
 
     fn poll_chat_stream_events(&mut self) {
@@ -2035,8 +2677,80 @@ impl AirTeachApp {
                     self.api_connection_status = status;
                     self.api_status_detail_vi = message;
                 }
-                ChatStreamEvent::Completed { .. } => {
+                ChatStreamEvent::MetricsUpdated {
+                    engine,
+                    model,
+                    tokens_per_sec,
+                } => {
+                    self.perf_pipeline.telemetry.ai_mode = engine;
+                    self.perf_pipeline.telemetry.active_model = model;
+                    self.perf_pipeline.telemetry.tokens_per_sec = tokens_per_sec;
+                }
+                ChatStreamEvent::Completed { message_index } => {
                     self.chat_streaming_active = false;
+                    let raw_reply = self
+                        .chat_messages
+                        .get(message_index)
+                        .map(|m| m.text.clone())
+                        .unwrap_or_default();
+                    let pending_lasso = self.pending_lasso_action.take();
+                    if pending_lasso == Some(LassoQuickAction::BeautifyLatex) {
+                        if let Some(region) = self.active_lasso_region.take() {
+                            let formula = extract_clean_beautified_formula(&raw_reply);
+                            let clean_formula = OutputSanitizer::sanitize_plain_text(&formula);
+                            if !clean_formula.is_empty() {
+                                self.ai_action_undo_stack
+                                    .push((self.strokes.clone(), self.annotations.clone()));
+                                self.strokes
+                                    .retain(|s| !region.contains_stroke(&s.display_points));
+                                self.annotations.push(BoardTextAnnotation {
+                                    position: Point2D::new(
+                                        region.min_pt.x + 8.0,
+                                        region.min_pt.y + 8.0,
+                                    ),
+                                    text: clean_formula.clone(),
+                                    is_latex: true,
+                                    confidence: 1.0,
+                                    color_rgba: self.current_ink_color,
+                                });
+                            }
+                            self.lasso_points.clear();
+                        }
+                    }
+
+                    let (actions, clean_txt) = WhiteboardAgent::extract_actions_from_response(&raw_reply);
+                    let mut final_msg = clean_txt.clone();
+                    if !actions.is_empty() {
+                        let summary = self.execute_whiteboard_actions(&actions, None);
+                        if !summary.is_empty() {
+                            if final_msg.is_empty() {
+                                final_msg = summary;
+                            } else {
+                                final_msg.push_str(&format!("\n\n---\n{summary}"));
+                            }
+                        }
+                    } else if pending_lasso == Some(LassoQuickAction::WriteSolutionToBoard)
+                        && !clean_txt.trim().is_empty()
+                    {
+                        let lines: Vec<String> = clean_txt
+                            .lines()
+                            .map(|l| l.trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .take(6)
+                            .collect();
+                        if !lines.is_empty() {
+                            self.execute_whiteboard_actions(
+                                &[WhiteboardAction::SolveOnBoard {
+                                    steps: lines,
+                                    target_region: None,
+                                }],
+                                None,
+                            );
+                        }
+                    }
+                    if let Some(msg) = self.chat_messages.get_mut(message_index) {
+                        msg.text = final_msg;
+                    }
                 }
                 ChatStreamEvent::CacheStore {
                     cache_key,
@@ -2744,10 +3458,13 @@ impl AirTeachApp {
 
 impl eframe::App for AirTeachApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.perf_pipeline.record_render_tick();
+        self.tick_animated_ai_strokes(ctx);
         self.poll_camera_and_gestures(ctx);
         self.poll_vision_worker_results();
         self.poll_chat_stream_events();
         self.poll_gemini_health_events();
+        self.poll_local_discovery_events();
         self.poll_lecture_replay_and_subtitles();
 
         if self.calibration_modal_open {
