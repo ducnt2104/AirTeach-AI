@@ -55,13 +55,108 @@ TEXT_MUTED = "#94A3B8"
 
 
 class GestureDiagramWidget(QWidget):
-    """Crisp custom QPainter vector schematic for each hand/mouse/AI guide card."""
+    """Crisp custom QPainter vector hand & UI schematic for each guide card."""
 
     def __init__(self, diagram_kind: str, accent_hex: str = NEON_CYAN, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.diagram_kind = diagram_kind
         self.accent = QColor(accent_hex)
         self.setFixedSize(92, 80)
+
+    @staticmethod
+    def _draw_hand(
+        p: QPainter,
+        cx: float,
+        cy: float,
+        scale: float,
+        pose: str,
+        accent: QColor,
+        mirror: bool = False,
+    ) -> None:
+        """Render a clean articulated vector hand silhouette for 1-hand & 2-hand gestures."""
+        p.save()
+        p.translate(cx, cy)
+        if mirror:
+            p.scale(-scale, scale)
+        else:
+            p.scale(scale, scale)
+
+        palm_fill = QColor(accent.red(), accent.green(), accent.blue(), 46)
+        palm_pen = QPen(accent, 1.9, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        curled_pen = QPen(QColor(TEXT_MUTED), 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+
+        # Palm base (rounded trapezoid/box)
+        p.setBrush(palm_fill)
+        p.setPen(palm_pen)
+        p.drawRoundedRect(QRectF(-12.0, -2.0, 24.0, 22.0), 6.0, 6.0)
+
+        # Finger anchor X positions (index, middle, ring, pinky)
+        fx = (-8.5, -3.0, 2.8, 8.2)
+        flen = (20.0, 23.0, 20.5, 16.0)
+        fspread = (-2.2, -0.5, 1.2, 3.0)
+
+        if pose == "PINCH":
+            # Thumb + Index form an unmistakable pinch ring on top-left
+            p.setPen(palm_pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawLine(QPointF(-12.0, 9.0), QPointF(-16.0, -3.0))
+            p.drawLine(QPointF(-16.0, -3.0), QPointF(-9.5, -13.5))
+            p.drawLine(QPointF(fx[0], -2.0), QPointF(-7.5, -13.5))
+            # Glowing pinch contact dot
+            p.setBrush(QColor(BRIGHT_YELLOW))
+            p.setPen(QPen(QColor("#FFFFFF"), 1.0))
+            p.drawEllipse(QPointF(-8.5, -13.8), 3.6, 3.6)
+            # Curled remaining 3 fingers
+            p.setBrush(QColor(30, 41, 59, 190))
+            p.setPen(curled_pen)
+            for i in (1, 2, 3):
+                p.drawRoundedRect(QRectF(fx[i] - 2.3, -6.0, 4.6, 7.0), 2.2, 2.2)
+        elif pose == "FIST":
+            # All 4 fingers tightly folded across top of palm + thumb tucked in front
+            p.setBrush(palm_fill)
+            p.setPen(palm_pen)
+            for i in range(4):
+                p.drawRoundedRect(QRectF(fx[i] - 2.6, -7.5, 5.2, 8.0), 2.5, 2.5)
+            p.drawRoundedRect(QRectF(-13.5, 1.5, 13.0, 6.0), 3.0, 3.0)
+        else:
+            # Decide extended fingers per pose
+            if pose == "INDEX":
+                ext = (True, False, False, False)
+                thumb_out = False
+            elif pose == "TWO_FINGERS":
+                ext = (True, True, False, False)
+                thumb_out = False
+            elif pose == "THREE_FINGERS":
+                ext = (True, True, True, False)
+                thumb_out = False
+            else:  # OPEN_PALM / SWIPE
+                ext = (True, True, True, True)
+                thumb_out = True
+
+            # Thumb
+            if thumb_out:
+                p.setPen(QPen(accent, 3.6, Qt.SolidLine, Qt.RoundCap))
+                p.drawLine(QPointF(-11.5, 10.0), QPointF(-20.0, 1.0))
+            else:
+                p.setBrush(QColor(30, 41, 59, 190))
+                p.setPen(curled_pen)
+                p.drawRoundedRect(QRectF(-12.5, 4.0, 9.5, 5.2), 2.5, 2.5)
+
+            for i in range(4):
+                if ext[i]:
+                    spread = fspread[i] * (1.8 if pose == "TWO_FINGERS" and i in (0, 1) else 1.0)
+                    tip = QPointF(fx[i] + spread, -2.0 - flen[i])
+                    p.setPen(QPen(accent, 3.8, Qt.SolidLine, Qt.RoundCap))
+                    p.drawLine(QPointF(fx[i], -2.0), tip)
+                    p.setBrush(QColor("#FFFFFF"))
+                    p.setPen(Qt.NoPen)
+                    p.drawEllipse(tip, 1.6, 1.6)
+                else:
+                    p.setBrush(QColor(30, 41, 59, 190))
+                    p.setPen(curled_pen)
+                    p.drawRoundedRect(QRectF(fx[i] - 2.4, -6.5, 4.8, 7.2), 2.2, 2.2)
+
+        p.restore()
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
@@ -76,64 +171,65 @@ class GestureDiagramWidget(QWidget):
         k = self.diagram_kind
 
         if k == "POINTER":
-            p.setPen(QPen(self.accent, 2.4))
-            p.drawEllipse(QPointF(cx, cy), 14.0, 14.0)
+            # 2-finger V-sign hand + subtle cursor halo
+            self._draw_hand(p, cx - 4.0, cy + 12.0, 1.05, "TWO_FINGERS", self.accent)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(BRIGHT_YELLOW), 1.6))
+            p.drawEllipse(QPointF(cx + 18.0, 18.0), 7.0, 7.0)
             p.setBrush(QColor(ALERT_ROSE))
-            p.setPen(QPen(QColor(BRIGHT_YELLOW), 2.0))
-            p.drawEllipse(QPointF(cx, cy), 5.0, 5.0)
-            p.setPen(QPen(self.accent, 2.0, Qt.SolidLine, Qt.RoundCap))
-            p.drawLine(QPointF(cx - 12.0, cy + 22.0), QPointF(cx - 2.0, cy + 8.0))
-        elif k == "PINCH_DRAW":
-            p.setPen(QPen(self.accent, 3.0, Qt.SolidLine, Qt.RoundCap))
-            p.drawLine(QPointF(16.0, 54.0), QPointF(38.0, 28.0))
-            p.drawLine(QPointF(38.0, 28.0), QPointF(60.0, 46.0))
-            p.drawLine(QPointF(60.0, 46.0), QPointF(76.0, 22.0))
-            p.setBrush(QColor(self.accent))
             p.setPen(Qt.NoPen)
-            p.drawEllipse(QPointF(76.0, 22.0), 5.0, 5.0)
-        elif k == "PINCH_GRAB":
-            p.setBrush(QColor(250, 204, 21, 55))
-            p.setPen(QPen(QColor(BRIGHT_YELLOW), 2.0, Qt.DashLine))
-            p.drawRoundedRect(QRectF(20.0, 18.0, 52.0, 42.0), 6.0, 6.0)
-            p.setPen(QPen(QColor(NEON_CYAN), 2.2))
-            p.drawLine(QPointF(cx - 12.0, cy), QPointF(cx + 12.0, cy))
-            p.drawLine(QPointF(cx, cy - 12.0), QPointF(cx, cy + 12.0))
-        elif k == "OPEN_ERASE":
-            p.setBrush(QColor(244, 63, 94, 55))
-            p.setPen(QPen(QColor(ALERT_ROSE), 2.0, Qt.DashLine))
-            p.drawEllipse(QPointF(cx, cy), 21.0, 21.0)
-            p.setPen(QPen(QColor(TEXT_LIGHT), 2.0))
-            p.drawLine(QPointF(cx - 8.0, cy - 8.0), QPointF(cx + 8.0, cy + 8.0))
-            p.drawLine(QPointF(cx + 8.0, cy - 8.0), QPointF(cx - 8.0, cy + 8.0))
-        elif k == "SWIPE_H":
+            p.drawEllipse(QPointF(cx + 18.0, 18.0), 2.6, 2.6)
+        elif k == "PINCH_DRAW":
+            # 1-finger Index hand + smooth ink curve from fingertip
+            self._draw_hand(p, 34.0, 52.0, 1.02, "INDEX", self.accent)
             p.setPen(QPen(self.accent, 2.6, Qt.SolidLine, Qt.RoundCap))
-            p.drawLine(QPointF(16.0, cy), QPointF(76.0, cy))
-            p.drawLine(QPointF(66.0, cy - 9.0), QPointF(76.0, cy))
-            p.drawLine(QPointF(66.0, cy + 9.0), QPointF(76.0, cy))
-            p.drawLine(QPointF(26.0, cy - 9.0), QPointF(16.0, cy))
-            p.drawLine(QPointF(26.0, cy + 9.0), QPointF(16.0, cy))
+            p.drawLine(QPointF(24.0, 24.0), QPointF(46.0, 16.0))
+            p.drawLine(QPointF(46.0, 16.0), QPointF(62.0, 32.0))
+            p.drawLine(QPointF(62.0, 32.0), QPointF(78.0, 18.0))
+        elif k == "PINCH_GRAB":
+            # Pinch hand grabbing a floating dashed object card
+            p.setBrush(QColor(250, 204, 21, 35))
+            p.setPen(QPen(QColor(BRIGHT_YELLOW), 1.6, Qt.DashLine))
+            p.drawRoundedRect(QRectF(48.0, 14.0, 32.0, 26.0), 5.0, 5.0)
+            self._draw_hand(p, 38.0, 52.0, 1.05, "PINCH", self.accent, mirror=True)
+        elif k == "OPEN_ERASE":
+            # 5-finger open palm + rose dashed eraser ring
+            p.setBrush(QColor(244, 63, 94, 34))
+            p.setPen(QPen(QColor(ALERT_ROSE), 1.6, Qt.DashLine))
+            p.drawEllipse(QPointF(cx, cy), 28.0, 28.0)
+            self._draw_hand(p, cx + 2.0, cy + 12.0, 0.98, "OPEN_PALM", self.accent)
+        elif k == "SWIPE_H":
+            # Open hand + horizontal swipe left/right arrows
+            self._draw_hand(p, cx, cy + 14.0, 0.90, "OPEN_PALM", self.accent)
+            p.setPen(QPen(QColor(BRIGHT_YELLOW), 2.2, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(12.0, 18.0), QPointF(80.0, 18.0))
+            p.drawLine(QPointF(73.0, 13.0), QPointF(80.0, 18.0))
+            p.drawLine(QPointF(73.0, 23.0), QPointF(80.0, 18.0))
+            p.drawLine(QPointF(19.0, 13.0), QPointF(12.0, 18.0))
+            p.drawLine(QPointF(19.0, 23.0), QPointF(12.0, 18.0))
         elif k == "DUAL_ZOOM":
-            p.setPen(QPen(self.accent, 2.2))
-            p.drawEllipse(QPointF(22.0, cy), 8.0, 8.0)
-            p.drawEllipse(QPointF(70.0, cy), 8.0, 8.0)
-            p.setPen(QPen(QColor(BRIGHT_YELLOW), 2.2))
-            p.drawLine(QPointF(32.0, cy), QPointF(60.0, cy))
-            p.drawLine(QPointF(37.0, cy - 6.0), QPointF(31.0, cy))
-            p.drawLine(QPointF(37.0, cy + 6.0), QPointF(31.0, cy))
-            p.drawLine(QPointF(55.0, cy - 6.0), QPointF(61.0, cy))
-            p.drawLine(QPointF(55.0, cy + 6.0), QPointF(61.0, cy))
+            # Two pinching hands spreading apart + outward zoom arrows
+            self._draw_hand(p, 24.0, 52.0, 0.80, "PINCH", self.accent, mirror=True)
+            self._draw_hand(p, 68.0, 52.0, 0.80, "PINCH", self.accent, mirror=False)
+            p.setPen(QPen(QColor(BRIGHT_YELLOW), 2.0, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(30.0, 20.0), QPointF(62.0, 20.0))
+            p.drawLine(QPointF(36.0, 15.0), QPointF(30.0, 20.0))
+            p.drawLine(QPointF(36.0, 25.0), QPointF(30.0, 20.0))
+            p.drawLine(QPointF(56.0, 15.0), QPointF(62.0, 20.0))
+            p.drawLine(QPointF(56.0, 25.0), QPointF(62.0, 20.0))
         elif k == "DUAL_PAN":
-            p.setBrush(QColor(56, 189, 248, 45))
-            p.setPen(QPen(self.accent, 1.8))
-            p.drawRoundedRect(QRectF(18.0, 16.0, 56.0, 48.0), 6.0, 6.0)
-            p.setPen(QPen(QColor(TEXT_LIGHT), 2.0))
-            p.drawLine(QPointF(cx - 14.0, cy), QPointF(cx + 14.0, cy))
-            p.drawLine(QPointF(cx, cy - 14.0), QPointF(cx, cy + 14.0))
+            # Two open hands gliding in parallel + 4-way pan arrows
+            self._draw_hand(p, 26.0, 52.0, 0.74, "OPEN_PALM", self.accent, mirror=True)
+            self._draw_hand(p, 66.0, 52.0, 0.74, "OPEN_PALM", self.accent, mirror=False)
+            p.setPen(QPen(QColor(TEXT_LIGHT), 1.8, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(cx - 12.0, 18.0), QPointF(cx + 12.0, 18.0))
+            p.drawLine(QPointF(cx, 10.0), QPointF(cx, 26.0))
         elif k == "MOD_LOCK":
-            p.setPen(QPen(self.accent, 2.4))
-            p.drawLine(QPointF(18.0, 56.0), QPointF(74.0, 24.0))
-            p.setPen(QPen(QColor(BRIGHT_YELLOW), 1.8))
-            p.drawRect(QRectF(20.0, 18.0, 20.0, 16.0))
+            # Off-hand Fist + Primary hand drawing straight line
+            self._draw_hand(p, 25.0, 52.0, 0.78, "FIST", QColor(BRIGHT_YELLOW), mirror=True)
+            self._draw_hand(p, 67.0, 54.0, 0.78, "PINCH", self.accent, mirror=False)
+            p.setPen(QPen(self.accent, 2.6, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(20.0, 24.0), QPointF(76.0, 14.0))
         elif k == "PIE_MENU":
             p.setPen(QPen(self.accent, 1.8))
             p.drawEllipse(QPointF(cx, cy), 27.0, 27.0)
@@ -151,15 +247,21 @@ class GestureDiagramWidget(QWidget):
             p.setBrush(QColor(BRIGHT_YELLOW))
             p.drawRoundedRect(QRectF(43.0, 17.0, 6.0, 12.0), 3.0, 3.0)
         elif k == "SHAPES":
-            p.setPen(QPen(self.accent, 2.2))
-            p.drawEllipse(QPointF(34.0, cy), 14.0, 14.0)
-            p.setPen(QPen(QColor(BRIGHT_YELLOW), 2.0))
-            p.drawRect(QRectF(48.0, cy - 12.0, 24.0, 24.0))
+            # Off-hand 2-Finger V + crisp geometric circle/square snap badge
+            self._draw_hand(p, 26.0, 54.0, 0.78, "TWO_FINGERS", self.accent, mirror=True)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(self.accent, 2.0))
+            p.drawEllipse(QPointF(58.0, 28.0), 11.0, 11.0)
+            p.setPen(QPen(QColor(BRIGHT_YELLOW), 1.8))
+            p.drawRect(QRectF(56.0, 44.0, 20.0, 18.0))
         elif k == "UNDO":
-            p.setPen(QPen(self.accent, 2.6, Qt.SolidLine, Qt.RoundCap))
-            p.drawArc(QRectF(24.0, 22.0, 44.0, 38.0), -40 * 16, 200 * 16)
-            p.drawLine(QPointF(24.0, 34.0), QPointF(24.0, 20.0))
-            p.drawLine(QPointF(24.0, 34.0), QPointF(38.0, 34.0))
+            # 3-Finger hand + curved Undo arrow
+            self._draw_hand(p, 34.0, 54.0, 0.86, "THREE_FINGERS", self.accent)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(BRIGHT_YELLOW), 2.2, Qt.SolidLine, Qt.RoundCap))
+            p.drawArc(QRectF(50.0, 14.0, 28.0, 24.0), -30 * 16, 200 * 16)
+            p.drawLine(QPointF(50.0, 24.0), QPointF(50.0, 14.0))
+            p.drawLine(QPointF(50.0, 24.0), QPointF(60.0, 24.0))
         elif k == "DOCS":
             p.setPen(QPen(self.accent, 2.0))
             p.drawRoundedRect(QRectF(20.0, 12.0, 36.0, 46.0), 5.0, 5.0)

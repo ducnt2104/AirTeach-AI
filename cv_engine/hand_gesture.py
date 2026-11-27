@@ -1755,15 +1755,15 @@ class HandGestureEngine:
                     self._last_hand_roi_boxes = []
                     roi_missed = True
 
-            # Stage B: Wide Full-Frame Acquisition (640x480 base + 800x600 HD sweep if distant)
+            # Stage B: Fast Adaptive Full-Frame Acquisition respecting CPU preset `search_size`
             need_full_scan = (not unfiltered_candidates) or (
                 self.num_hands > 1 and len(unfiltered_candidates) < self.num_hands and (self._detect_tick % 4 == 0)
             )
             if need_full_scan:
                 self.last_tracking_mode = "FALLBACK_FULL" if roi_missed else "FULL_SCAN"
                 wide_wh = (
-                    min(fw, max(640, int(search_size[0]))),
-                    min(fh, max(480, int(search_size[1]))),
+                    min(fw, max(320, int(search_size[0]))),
+                    min(fh, max(180, int(search_size[1]))),
                 )
                 scan_hits = self._run_frame_scan(
                     rgb_contig,
@@ -1774,8 +1774,8 @@ class HandGestureEngine:
                 )
                 self._merge_unique_hand_candidates(unfiltered_candidates, scan_hits)
 
-                # If 640x480 full-frame found 0 hands on a high-res sensor, step up to 800x600 full-frame
-                if not unfiltered_candidates and (fw >= 800 or fh >= 600):
+                # Periodic 800x600 HD fallback on 720p+ sensors for distant hands without doubling every frame
+                if not unfiltered_candidates and (fw >= 800 or fh >= 600) and (self._detect_tick % 6 == 0):
                     self.last_tracking_mode = "FULL_FRAME_HD"
                     hd_hits = self._run_frame_scan(
                         rgb_contig,
@@ -1786,8 +1786,8 @@ class HandGestureEngine:
                     )
                     self._merge_unique_hand_candidates(unfiltered_candidates, hd_hits)
 
-            # Stage C: Proactive Long-Range Recovery via Teacher Pose Wrist Hints
-            if not unfiltered_candidates:
+            # Stage C: Proactive Long-Range Recovery via Teacher Pose Wrist Hints (throttled to avoid 3x-4x cost/frame)
+            if not unfiltered_candidates and (self._detect_tick % 4 == 1):
                 probe_rois: List[List[float]] = []
                 if wrist_roi_hints:
                     probe_rois.extend([list(b) for b in wrist_roi_hints])

@@ -198,12 +198,23 @@ class RadialPieMenuOverlay(QWidget):
             self.update()
 
     def open_at(self, parent_pos: QPointF, *, smart_shape_enabled: bool = True) -> None:
-        self.center_in_parent = QPointF(parent_pos)
+        cx = float(parent_pos.x())
+        cy = float(parent_pos.y())
+        par = self.parentWidget()
+        if par is not None:
+            pw = float(par.width())
+            ph = float(par.height())
+            margin = self.outer_radius + 18.0
+            if pw >= margin * 2.2:
+                cx = max(margin, min(pw - margin, cx))
+            if ph >= margin * 2.2:
+                cy = max(margin, min(ph - margin, cy))
+        self.center_in_parent = QPointF(cx, cy)
         self.smart_shape_active = bool(smart_shape_enabled)
         self.active_slice_idx = None
         self.active_sub_item = None
         half = self._widget_size * 0.5
-        self.move(int(round(parent_pos.x() - half)), int(round(parent_pos.y() - half)))
+        self.move(int(round(cx - half)), int(round(cy - half)))
         self.show()
         self.raise_()
         self._scale_anim.stop()
@@ -591,7 +602,7 @@ class RadialPieMenuOverlay(QWidget):
 
         # Bottom glassmorphic description pill
         if full_banner:
-            pill_w = max(180.0, len(full_banner) * 6.9 + 28.0)
+            pill_w = min(float(self._widget_size) - 16.0, max(180.0, len(full_banner) * 6.9 + 28.0))
             pill_y = self.sub_outer_radius + 10.0 if (self.active_slice_idx is not None and PIE_MENU_SLICES[self.active_slice_idx].action_id in PIE_SUB_ACTIONS) else (r_out + 14.0)
             pill_rect = QRectF(-0.5 * pill_w, pill_y, pill_w, 26.0)
             painter.setBrush(QColor(15, 23, 42, 240) if self.dark_mode else QColor(255, 255, 255, 244))

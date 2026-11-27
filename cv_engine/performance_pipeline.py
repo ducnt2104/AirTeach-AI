@@ -164,22 +164,27 @@ class StaggeredInferenceScheduler:
         has_locked_teacher: bool,
         teacher_lost_sec: float,
     ) -> Tuple[bool, bool]:
-        """Return `(run_pose, run_face)` for the current AI tick."""
+        """Return `(run_pose, run_face)` for the current AI tick (always throttled & staggered)."""
         self.frame_idx += 1
-        run_pose = (
-            not has_locked_teacher
-            or (self.frame_idx - self._last_pose_frame) >= max(1, preset.pose_interval_frames)
+        pose_cadence = (
+            max(1, preset.pose_interval_frames)
+            if has_locked_teacher
+            else max(5, preset.pose_interval_frames // 2)
         )
-        if run_pose:
-            self._last_pose_frame = self.frame_idx
+        face_cadence = (
+            max(0.5, preset.face_interval_sec)
+            if (has_locked_teacher and teacher_lost_sec <= 2.0)
+            else max(0.55, preset.face_interval_sec * 0.5)
+        )
 
-        run_face = (
-            not has_locked_teacher
-            or teacher_lost_sec > 2.0
-            or (now_sec - self._last_face_ts) >= max(0.5, preset.face_interval_sec)
-        )
+        run_face = (now_sec - self._last_face_ts) >= face_cadence
         if run_face:
             self._last_face_ts = now_sec
+
+        # Stagger Pose so heavy Face + Pose never collide synchronously on the same frame
+        run_pose = (not run_face) and ((self.frame_idx - self._last_pose_frame) >= pose_cadence)
+        if run_pose:
+            self._last_pose_frame = self.frame_idx
 
         return run_pose, run_face
 

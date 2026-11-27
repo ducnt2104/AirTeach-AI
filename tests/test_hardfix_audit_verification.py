@@ -337,3 +337,129 @@ def test_clean_ui_no_brackets_gesture_cheatsheet_and_spotlight_trigger(qapp):
         assert win.rec_btn.text() == "🎙"
     finally:
         _teardown(win, orig_start)
+
+
+# =============================================================================
+# 6. REGRESSION GUARDS: NON-DESTRUCTIVE SLICE 8, SELECT PINCH SAFETY,
+#    1366PX HEADER ZERO-CRUSH, LOCAL AI HUB DARK SCROLL & AI STREAMING
+# =============================================================================
+def test_radial_slice_8_opens_gesture_map_without_deleting_ink(qapp):
+    win, orig_start = _make_studio_window(qapp)
+    try:
+        canvas = win.canvas
+        obj = canvas.add_text_object("Giữ nguyên bài giảng", 280.0, 220.0, select=False)
+        qapp.processEvents()
+        assert canvas.scene.get_by_id(obj.id) is not None
+
+        emitted: list[str] = []
+        # Intercept pie_tool_selected to avoid blocking modal exec() while verifying signal routing
+        canvas.pie_tool_selected.disconnect(win._on_canvas_pie_tool_selected)
+        canvas.pie_tool_selected.connect(emitted.append)
+
+        center = QPointF(420.0, 300.0)
+        canvas.mousePressEvent(
+            _mouse_ev(QMouseEvent.Type.MouseButtonPress, center, Qt.RightButton, Qt.RightButton)
+        )
+        nw_pt = QPointF(center.x() - 68.0, center.y() - 68.0)
+        canvas.mouseMoveEvent(
+            _mouse_ev(QMouseEvent.Type.MouseMove, nw_pt, Qt.NoButton, Qt.RightButton)
+        )
+        canvas.mouseReleaseEvent(
+            _mouse_ev(QMouseEvent.Type.MouseButtonRelease, nw_pt, Qt.RightButton, Qt.NoButton)
+        )
+        qapp.processEvents()
+
+        # Releasing directly on Slice 8 ("Cử Chỉ / AI") MUST NOT wipe ink/objects!
+        assert canvas.scene.get_by_id(obj.id) is not None
+        assert "OPEN_GESTURE_MAP" in emitted
+    finally:
+        _teardown(win, orig_start)
+
+
+def test_select_tool_pinch_grabs_object_and_never_draws_stray_ink(qapp):
+    win, orig_start = _make_studio_window(qapp)
+    try:
+        canvas = win.canvas
+        canvas.resize(1000, 640)
+        qapp.processEvents()
+        obj = canvas.add_text_object("Drag Me", 300.0, 240.0, select=False)
+        orig_x, orig_y = obj.x, obj.y
+        canvas.active_tool = "SELECT"
+
+        # 1. Pinching on EMPTY space while in SELECT mode must NEVER create a stray freehand stroke
+        for i in range(6):
+            canvas.apply_cv_fsm_packet({
+                "gesture": "PINCH",
+                "pose_tag": "PINCH",
+                "pinch_ratio": 0.20,
+                "cursor_norm": (0.08 + i * 0.01, 0.10 + i * 0.01),
+                "dual_hand": {"two_hand_mode": "SINGLE"},
+            })
+        assert len(canvas.strokes) == 0
+
+        # 2. Pinching directly over the object grabs & translates it cleanly
+        center_scr = canvas._board_to_screen(QPointF(obj.x + obj.w * 0.5, obj.y + obj.h * 0.5))
+        nx0 = center_scr.x() / max(1, canvas.width())
+        ny0 = center_scr.y() / max(1, canvas.height())
+        canvas.apply_cv_fsm_packet({
+            "gesture": "PINCH",
+            "pose_tag": "PINCH",
+            "pinch_ratio": 0.18,
+            "cursor_norm": (nx0, ny0),
+            "dual_hand": {"two_hand_mode": "SINGLE"},
+        })
+        canvas.apply_cv_fsm_packet({
+            "gesture": "PINCH",
+            "pose_tag": "PINCH",
+            "pinch_ratio": 0.18,
+            "cursor_norm": (nx0 + 0.08, ny0 + 0.06),
+            "dual_hand": {"two_hand_mode": "SINGLE"},
+        })
+        moved_obj = canvas.scene.get_by_id(obj.id)
+        assert moved_obj is not None
+        assert moved_obj.x > orig_x + 25.0
+        assert moved_obj.y > orig_y + 15.0
+        assert len(canvas.strokes) == 0
+    finally:
+        _teardown(win, orig_start)
+
+
+def test_header_zero_crush_1366_local_ai_hub_dark_scroll_and_ai_streaming(qapp):
+    from cv_engine.gguf_model_manager import LocalAiManagerDialog
+
+    win, orig_start = _make_studio_window(qapp)
+    try:
+        # Studio mode automatically switches cam_worker.auth_mode to False for max hand FPS
+        assert win.cam_worker.auth_mode is False
+        win.stack.setCurrentIndex(0)
+        qapp.processEvents()
+        assert win.cam_worker.auth_mode is True
+        win.stack.setCurrentIndex(1)
+        qapp.processEvents()
+        assert win.cam_worker.auth_mode is False
+
+        # Header buttons at 1366x768 must NEVER be crushed or overflow past 1366px
+        assert win.rec_btn.width() >= 28
+        assert win.theme_toggle_btn.width() >= 28
+        assert win.gear_btn.width() >= 28
+        assert win.gear_btn.geometry().right() <= win.header_bar.width()
+        assert win.gesture_map_btn.width() >= 70
+        assert win.guide_btn.width() >= 70
+
+        # All 3 quick AI buttons must enable full Markdown/LaTeX streaming (structured_json=False)
+        assert len(win._quick_ai_actions) == 3
+        assert all(sj is False for (_btn, sj) in win._quick_ai_actions)
+
+        # LocalAiManagerDialog must use dark ScrollArea viewport & disable horizontal overflow
+        dlg = LocalAiManagerDialog(parent=win)
+        dlg.show()
+        qapp.processEvents()
+        assert dlg._scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+        assert "#0F172A" in dlg._scroll_area.viewport().styleSheet().upper()
+        for btn in dlg.findChildren(QPushButton):
+            if btn.text().startswith("Tải ("):
+                mapped_right = btn.mapTo(dlg, btn.rect().topRight()).x()
+                assert mapped_right <= dlg.width(), f"Download button {btn.text()!r} overflows dialog width"
+        dlg.close()
+    finally:
+        _teardown(win, orig_start)

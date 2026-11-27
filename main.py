@@ -451,6 +451,7 @@ class VisionInferenceWorker(QThread):
         self.perf_mode: str = "AUTO"  # "AUTO" | "ULTRA_LIGHT" | "BALANCED" | "HIGH_QUALITY"
         self.primary_hand_pref: str = "auto"  # "auto" | "right" | "left"
         self.prefer_hd = bool(self.vision_cfg.camera.prefer_hd)
+        self.auth_mode: bool = True
         self.running = True
         self._camera_paused = False
         self._is_processing = False
@@ -492,6 +493,10 @@ class VisionInferenceWorker(QThread):
             self.prefer_hd = bool(hd)
             self._reopen_requested = True
 
+    def set_auth_mode(self, enabled: bool) -> None:
+        """True on Face-ID AuthGate (needs full-res face & liveness); False in Studio (max hand FPS)."""
+        self.auth_mode = bool(enabled)
+
     def select_camera(self, idx: int) -> None:
         self._camera_paused = False
         self._switch_requested = idx
@@ -524,6 +529,12 @@ class VisionInferenceWorker(QThread):
             cap = cv2.VideoCapture(idx, backend)
             if cap.isOpened():
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                if sys.platform == "win32" and backend == cv2.CAP_DSHOW:
+                    # Request MJPG before resolution/FPS so USB webcams unlock 30-60 FPS instead of YUY2 15fps
+                    try:
+                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                    except Exception:
+                        pass
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, req_w)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, req_h)
                 cap.set(cv2.CAP_PROP_FPS, self.vision_cfg.camera.target_fps)
@@ -808,14 +819,18 @@ class VisionInferenceWorker(QThread):
                         light_diag = None
                         light_metrics = {"lighting_mode": "NORMAL", "mean_luma": 128.0, "laplacian_variance": 50.0, "clahe_bypassed": True}
 
-                    # Strided liveness diff on 1/4 resolution to save CPU on i3
-                    gray_sub = cv2.cvtColor(bgr[::4, ::4], cv2.COLOR_BGR2GRAY)
-                    if prev_gray is not None and prev_gray.shape == gray_sub.shape:
-                        liveness_diff = float(np.mean(cv2.absdiff(gray_sub, prev_gray))) / 12.0
-                        liveness_diff = float(np.clip(liveness_diff, 0.0, 1.0))
+                    # Strided liveness diff only needed on Face-ID AuthGate (skip in Studio to boost hand FPS)
+                    if self.auth_mode:
+                        gray_sub = cv2.cvtColor(bgr[::4, ::4], cv2.COLOR_BGR2GRAY)
+                        if prev_gray is not None and prev_gray.shape == gray_sub.shape:
+                            liveness_diff = float(np.mean(cv2.absdiff(gray_sub, prev_gray))) / 12.0
+                            liveness_diff = float(np.clip(liveness_diff, 0.0, 1.0))
+                        else:
+                            liveness_diff = 0.0
+                        prev_gray = gray_sub
                     else:
                         liveness_diff = 0.0
-                    prev_gray = gray_sub
+                        prev_gray = None
 
                     rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), dtype=np.uint8)
                     has_locked = teacher_tracker.locked_track_id is not None
@@ -826,6 +841,10 @@ class VisionInferenceWorker(QThread):
                         has_locked_teacher=has_locked,
                         teacher_lost_sec=teacher_lost_sec,
                     )
+                    # In Studio mode with Teacher Lock disabled, skip Face & Pose nets to maximize hand FPS
+                    if not self.auth_mode and not self.teacher_lock_enabled:
+                        run_face = False
+                        run_pose = False
 
                     if run_face or run_pose:
                         sw, sh = preset.search_size
@@ -878,15 +897,24 @@ class VisionInferenceWorker(QThread):
                     cv_latency_ms = (time.perf_counter() - t_cv_start) * 1000.0
                     active_prof = profile_ctrl.record_inference_ms(cv_latency_ms)
 
+                    # Downscale Studio preview BEFORE drawing overlays & QImage copy (cuts 4x-16x pixel overhead)
                     needs_overlay = bool(self.debug_hud_enabled or self.skeleton_overlay_enabled or face_bbox is not None)
-                    display_bgr = bgr.copy() if needs_overlay else bgr
+                    if not self.auth_mode and w > 360:
+                        disp_w = 360
+                        disp_h = max(180, int(round(h * (disp_w / float(max(1, w))))))
+                        display_bgr = cv2.resize(bgr, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
+                    else:
+                        disp_w, disp_h = w, h
+                        display_bgr = bgr.copy() if needs_overlay else bgr
+                    font_scale_f = max(0.34, min(0.48, disp_w / 760.0))
+
                     if self.debug_hud_enabled:
                         if subj_snap.locked_torso_bbox and not subj_snap.bypass_active:
                             tx, ty, tw, th = subj_snap.locked_torso_bbox
                             cv2.rectangle(
                                 display_bgr,
-                                (int(tx * w), int(ty * h)),
-                                (int((tx + tw) * w), int((ty + th) * h)),
+                                (int(tx * disp_w), int(ty * disp_h)),
+                                (int((tx + tw) * disp_w), int((ty + th) * disp_h)),
                                 (34, 197, 94),
                                 2,
                                 cv2.LINE_AA,
@@ -895,9 +923,9 @@ class VisionInferenceWorker(QThread):
                             cv2.putText(
                                 display_bgr,
                                 tid_lbl,
-                                (int(tx * w) + 4, max(16, int(ty * h) + 16)),
+                                (int(tx * disp_w) + 4, max(14, int(ty * disp_h) + 14)),
                                 cv2.FONT_HERSHEY_SIMPLEX,
-                                0.45,
+                                font_scale_f,
                                 (34, 197, 94),
                                 1,
                                 cv2.LINE_AA,
@@ -906,8 +934,8 @@ class VisionInferenceWorker(QThread):
                             ix, iy, iw, ih = ig_box
                             cv2.rectangle(
                                 display_bgr,
-                                (int(ix * w), int(iy * h)),
-                                (int((ix + iw) * w), int((iy + ih) * h)),
+                                (int(ix * disp_w), int(iy * disp_h)),
+                                (int((ix + iw) * disp_w), int((iy + ih) * disp_h)),
                                 (68, 68, 239),
                                 2,
                                 cv2.LINE_AA,
@@ -915,21 +943,21 @@ class VisionInferenceWorker(QThread):
                             cv2.putText(
                                 display_bgr,
                                 "IGNORED",
-                                (int(ix * w) + 2, max(14, int(iy * h) - 4)),
+                                (int(ix * disp_w) + 2, max(12, int(iy * disp_h) - 4)),
                                 cv2.FONT_HERSHEY_SIMPLEX,
-                                0.42,
+                                font_scale_f,
                                 (68, 68, 239),
                                 1,
                                 cv2.LINE_AA,
                             )
                         for wx, wy in subj_snap.locked_wrist_anchors:
-                            cv2.circle(display_bgr, (int(wx * w), int(wy * h)), 5, (255, 220, 0), 2, cv2.LINE_AA)
+                            cv2.circle(display_bgr, (int(wx * disp_w), int(wy * disp_h)), 4, (255, 220, 0), 2, cv2.LINE_AA)
                     elif face_bbox is not None:
                         fx, fy, fw, fh = face_bbox
                         cv2.rectangle(
                             display_bgr,
-                            (int(fx * w), int(fy * h)),
-                            (int((fx + fw) * w), int((fy + fh) * h)),
+                            (int(fx * disp_w), int(fy * disp_h)),
+                            (int((fx + fw) * disp_w), int((fy + fh) * disp_h)),
                             (212, 245, 0),
                             1,
                             cv2.LINE_AA,
@@ -937,6 +965,9 @@ class VisionInferenceWorker(QThread):
 
                     # Raw & Accepted 21-point Skeleton Overlay for BOTH hands (proof of MediaPipe detection)
                     if self.skeleton_overlay_enabled or self.debug_hud_enabled:
+                        bone_thick = 1 if disp_w <= 380 else 2
+                        tip_r = 3 if disp_w <= 380 else 5
+                        joint_r = 2 if disp_w <= 380 else 3
                         for raw_h in hand_engine.last_raw_hands:
                             pts = raw_h.get("lm")
                             if not pts:
@@ -945,14 +976,14 @@ class VisionInferenceWorker(QThread):
                             bone_col = (212, 245, 0) if accepted else (0, 140, 255)
                             joint_col = (64, 228, 254) if accepted else (0, 90, 255)
                             for i, j in HAND_BONE_PAIRS:
-                                p1 = (int(pts[i][0] * w), int(pts[i][1] * h))
-                                p2 = (int(pts[j][0] * w), int(pts[j][1] * h))
-                                cv2.line(display_bgr, p1, p2, bone_col, 2, cv2.LINE_AA)
+                                p1 = (int(pts[i][0] * disp_w), int(pts[i][1] * disp_h))
+                                p2 = (int(pts[j][0] * disp_w), int(pts[j][1] * disp_h))
+                                cv2.line(display_bgr, p1, p2, bone_col, bone_thick, cv2.LINE_AA)
                             for idx, pt in enumerate(pts):
-                                r = 5 if idx in (4, 8, 12, 16, 20) else 3
+                                r = tip_r if idx in (4, 8, 12, 16, 20) else joint_r
                                 cv2.circle(
                                     display_bgr,
-                                    (int(pt[0] * w), int(pt[1] * h)),
+                                    (int(pt[0] * disp_w), int(pt[1] * disp_h)),
                                     r,
                                     joint_col,
                                     -1,
@@ -980,38 +1011,42 @@ class VisionInferenceWorker(QThread):
                                 tag_disp = "PAN"
                             elif h_num == 2 and dual_state.modifier_mode != "NONE":
                                 tag_disp = dual_state.modifier_mode
-                            elif raw_pose == "PINCH":
+                            elif raw_pose == "INDEX":
                                 tag_disp = "DRAW"
+                            elif raw_pose == "PINCH":
+                                tag_disp = "GRAB"
+                            elif raw_pose == "TWO_FINGERS":
+                                tag_disp = "POINT"
                             elif raw_pose == "OPEN_PALM":
                                 tag_disp = "ERASE"
                             else:
                                 tag_disp = raw_pose
-                            lbl = f"Hand {h_num}: {side_title} [{tag_disp}]"
+                            lbl = f"H{h_num} {side_title} {tag_disp}"
                             cv2.putText(
                                 display_bgr,
                                 lbl,
-                                (max(4, int(wpt[0] * w) - 34), max(18, int(wpt[1] * h) - 10)),
+                                (max(4, int(wpt[0] * disp_w) - 28), max(14, int(wpt[1] * disp_h) - 8)),
                                 cv2.FONT_HERSHEY_SIMPLEX,
-                                0.43,
+                                font_scale_f,
                                 col,
                                 1,
                                 cv2.LINE_AA,
                             )
 
                         # Draw Active Workspace Margin Guide (12%..88% -> 0%..100% screen corners)
-                        mx0, my0 = int(0.12 * w), int(0.12 * h)
-                        mx1, my1 = int(0.88 * w), int(0.88 * h)
+                        mx0, my0 = int(0.12 * disp_w), int(0.12 * disp_h)
+                        mx1, my1 = int(0.88 * disp_w), int(0.88 * disp_h)
                         cv2.rectangle(display_bgr, (mx0, my0), (mx1, my1), (79, 70, 229), 1, cv2.LINE_AA)
 
                         n_hands_active = int(left_hand is not None) + int(right_hand is not None)
-                        overlay_txt = f"FPS:{smoothed_fps:.0f} | Hands:{n_hands_active}/2 | {hand_engine.last_tracking_mode}"
-                        cv2.rectangle(display_bgr, (4, 4), (min(w - 4, 330), 24), (15, 23, 42), -1)
+                        overlay_txt = f"FPS:{smoothed_fps:.0f} | L:{cv_latency_ms:.0f}ms | H:{n_hands_active}/2"
+                        cv2.rectangle(display_bgr, (4, 4), (min(disp_w - 4, 240), 22), (15, 23, 42), -1)
                         cv2.putText(
                             display_bgr,
                             overlay_txt,
-                            (8, 18),
+                            (8, 16),
                             cv2.FONT_HERSHEY_SIMPLEX,
-                            0.44,
+                            font_scale_f,
                             (0, 245, 212),
                             1,
                             cv2.LINE_AA,
@@ -1046,12 +1081,13 @@ class VisionInferenceWorker(QThread):
                         self._last_swipe_until = now_mono + 0.65
 
                     if (self.skeleton_overlay_enabled or self.debug_hud_enabled) and now_mono <= self._last_swipe_until and self._last_swipe_dir:
-                        cx_a, cy_a = w // 2, h // 2
+                        cx_a, cy_a = disp_w // 2, disp_h // 2
+                        a_sc = max(0.5, disp_w / 640.0)
                         d_vec = {
-                            "LEFT": (-75, 0, "<<< NEXT"),
-                            "RIGHT": (75, 0, "PREV >>>"),
-                            "UP": (0, -65, "SCROLL DOWN"),
-                            "DOWN": (0, 65, "SCROLL UP"),
+                            "LEFT": (-int(75 * a_sc), 0, "<<< NEXT"),
+                            "RIGHT": (int(75 * a_sc), 0, "PREV >>>"),
+                            "UP": (0, -int(65 * a_sc), "SCROLL DOWN"),
+                            "DOWN": (0, int(65 * a_sc), "SCROLL UP"),
                         }.get(self._last_swipe_dir)
                         if d_vec is not None:
                             cv2.arrowedLine(
@@ -1059,16 +1095,16 @@ class VisionInferenceWorker(QThread):
                                 (cx_a - d_vec[0] // 2, cy_a - d_vec[1] // 2),
                                 (cx_a + d_vec[0], cy_a + d_vec[1]),
                                 (0, 245, 212),
-                                4,
+                                3,
                                 cv2.LINE_AA,
                                 tipLength=0.35,
                             )
                             cv2.putText(
                                 display_bgr,
                                 d_vec[2],
-                                (max(8, cx_a - 56), max(38, cy_a - 44)),
+                                (max(8, cx_a - int(56 * a_sc)), max(28, cy_a - int(36 * a_sc))),
                                 cv2.FONT_HERSHEY_SIMPLEX,
-                                0.58,
+                                max(0.44, 0.58 * a_sc),
                                 (250, 204, 21),
                                 2,
                                 cv2.LINE_AA,
@@ -1124,7 +1160,7 @@ class VisionInferenceWorker(QThread):
 
                     disp_rgb = cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB)
                     qimg = QImage(
-                        disp_rgb.data, w, h, disp_rgb.strides[0], QImage.Format_RGB888
+                        disp_rgb.data, disp_w, disp_h, disp_rgb.strides[0], QImage.Format_RGB888
                     ).copy()
 
                     primary_telemetry = {
@@ -1177,7 +1213,7 @@ class VisionInferenceWorker(QThread):
                         "fps": smoothed_fps,
                         "cam_fps": self._cam_fps_smoothed or smoothed_fps,
                         "qimage": qimg,
-                        "raw_bgr": bgr,
+                        "raw_bgr": bgr if self.auth_mode else None,
                         "lighting": light_metrics,
                         "face_bbox": face_bbox,
                         "face_5pt": cached_face_info.get("face_5pt"),
@@ -1941,9 +1977,9 @@ class MiniCameraHudOverlay(QFrame):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setFixedWidth(214)
+        self.setFixedWidth(224)
         self.setStyleSheet(
-            f"background: rgba(15, 23, 42, 224); border: 1.5px solid {SECONDARY_TEAL}; border-radius: 10px;"
+            f"background: rgba(15, 23, 42, 228); border: 1.5px solid {SECONDARY_TEAL}; border-radius: 10px;"
         )
         vbox = QVBoxLayout(self)
         vbox.setContentsMargins(7, 6, 7, 7)
@@ -1976,7 +2012,7 @@ class MiniCameraHudOverlay(QFrame):
         vbox.addLayout(hdr)
 
         self.cam_lbl = QLabel("Chế độ Chuột / Cảm ứng\n(Chưa có Webcam)")
-        self.cam_lbl.setFixedSize(198, 118)
+        self.cam_lbl.setFixedSize(208, 118)
         self.cam_lbl.setAlignment(Qt.AlignCenter)
         self.cam_lbl.setWordWrap(True)
         self.cam_lbl.setStyleSheet(
@@ -1986,21 +2022,21 @@ class MiniCameraHudOverlay(QFrame):
 
         act_row = QHBoxLayout()
         act_row.setSpacing(4)
-        self.calib_btn = QPushButton("Cân chỉnh Sáng && Cự ly")
+        self.calib_btn = QPushButton("Cân chỉnh Sáng")
         self.calib_btn.setFixedHeight(24)
         self.calib_btn.setToolTip("Tự động đo độ sáng và cự ly 1.5m–3.5m để tối ưu nhận diện bàn tay")
         self.calib_btn.setStyleSheet(
-            f"background: {SURFACE_DARK}; color: {BRIGHT_YELLOW}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; font-size: 9.5px; font-weight: 700; padding: 0 5px;"
+            f"background: {SURFACE_DARK}; color: {BRIGHT_YELLOW}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; font-size: 10px; font-weight: 700; padding: 0 5px;"
         )
         self.calib_btn.clicked.connect(self.calibrate_clicked.emit)
         act_row.addWidget(self.calib_btn, stretch=1)
         vbox.addLayout(act_row)
 
-        self.gesture_map_btn = QPushButton("Sơ đồ Cử chỉ (1 && 2 Tay)")
+        self.gesture_map_btn = QPushButton("Sơ đồ Cử chỉ")
         self.gesture_map_btn.setFixedHeight(24)
         self.gesture_map_btn.setToolTip("Mở Sơ đồ Cử chỉ trực quan 2 cột (1 Tay & 2 Tay) kèm thanh Test thử")
         self.gesture_map_btn.setStyleSheet(
-            f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border: 1px solid {NEON_CYAN}; border-radius: 6px; font-size: 9.5px; font-weight: 700; padding: 0 5px;"
+            f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border: 1px solid {NEON_CYAN}; border-radius: 6px; font-size: 10px; font-weight: 700; padding: 0 5px;"
         )
         self.gesture_map_btn.clicked.connect(self.gesture_map_clicked.emit)
         vbox.addWidget(self.gesture_map_btn)
@@ -2311,7 +2347,7 @@ class QuickTipBanner(QFrame):
         lay.setContentsMargins(10, 6, 8, 6)
         lay.setSpacing(8)
         lbl = QLabel(
-            "<b>Mẹo nhanh:</b> Chụm tay để vẽ · Giữ <b>Chuột phải</b> mở Bảng Tròn công cụ · Cuộn chuột để Zoom · Chuột giữa kéo bảng"
+            "<b>Mẹo nhanh:</b> Giơ <b>1 ngón trỏ</b> để vẽ · Chụm <b>Cái+Trỏ</b> kéo Object · Giữ <b>Chuột phải</b> mở Bảng Tròn · Cuộn chuột Zoom"
         )
         guide_btn = QPushButton("? Chi tiết")
         guide_btn.clicked.connect(self.guide_requested.emit)
@@ -2422,8 +2458,8 @@ class SmartboardCanvas(QWidget):
                 "title": "DNT - Victer Guide • Hướng dẫn nhanh AirTeach AI",
                 "subtitle": f"Bảng trắng không chạm & Trình chiếu Word / PDF / PPTX / Ảnh + {DEFAULT_GEMINI_MODEL}",
                 "bullets": [
-                    "• 1 tay: Trỏ di chuyển · Chụm (pinch) để vẽ · Xòe 5 ngón để tẩy · Vẫy trái/phải đổi Slide.",
-                    "• 2 tay: Chụm 2 tay phóng to/thu nhỏ 25–400% · Xòe 2 tay (hoặc nắm tay phụ + di tay chính) kéo bảng.",
+                    "• 1 tay: Giơ 1 ngón trỏ để vẽ · 2 ngón di con trỏ · Chụm Cái+Trỏ kéo Object · Xòe 5 ngón tẩy · Vẫy trái/phải đổi Slide.",
+                    "• 2 tay: Chụm 2 tay phóng to/thu nhỏ 25–400% · Xòe 2 tay (hoặc nắm 2 tay) kéo bảng / cuộn tài liệu.",
                     "• Chuột phải (Nhấn giữ → kéo → thả): Mở Bảng Tròn 8 công cụ · Cuộn chuột để Zoom · Ctrl+0: Về Giữa.",
                 ],
                 "formula": "Ctrl+Z: Hoàn tác  |  F1: Hướng dẫn chi tiết  |  Space+Kéo / Chuột giữa: Di chuyển bảng",
@@ -3839,13 +3875,10 @@ class SmartboardCanvas(QWidget):
             self.show_gesture_toast("↶ Hoàn Tác (Undo)", duration_ms=850.0)
             self.pie_tool_selected.emit("UNDO")
         elif action_id == "CLEAR_OR_NEW":
-            # Smart action: if current page has content -> clear slide ink (undoable); if empty -> add blank page!
-            if self.scene.objects or self.strokes or self.annotations or self.board_images:
-                self.clear_slide_ink()
-                self.show_gesture_toast("🗑 Đã xóa sạch trang hiện tại (Ctrl+Z để hoàn tác)", duration_ms=1100.0)
-            else:
-                self.add_blank_page()
-            self.pie_tool_selected.emit("CLEAR_OR_NEW")
+            # Slice 8 ("Cử Chỉ / AI"): opens the 2-column Gesture Cheat-Sheet safely without wiping ink!
+            # Destructive CLEAR_BOARD & NEW_PAGE remain explicit choices in the outer sub-ring.
+            self.show_gesture_toast("🖐 Mở Sơ Đồ Cử Chỉ & Trợ Lý AI", duration_ms=1100.0)
+            self.pie_tool_selected.emit("OPEN_GESTURE_MAP")
         elif action_id == "NEW_PAGE":
             self.add_blank_page()
             self.pie_tool_selected.emit("NEW_PAGE")
@@ -4427,6 +4460,7 @@ class SmartboardCanvas(QWidget):
             self._hold_snap_ready = (not self.hold_to_snap_350ms) or (still_ms >= 350.0)
             self._lasso_dwell_ready = still_ms >= 450.0
 
+        select_mode_block_draw = self.active_tool == "SELECT"
         upd = self.drawing_fsm.step(
             now_ms,
             hand_present=hand_present,
@@ -4434,7 +4468,7 @@ class SmartboardCanvas(QWidget):
             pinch_ratio=pinch_ratio,
             pose_tag=pose_tag,
             left_pan_active=left_pan,
-            suppress_drawing=(suppress_draw or grab_active),
+            suppress_drawing=(suppress_draw or grab_active or select_mode_block_draw),
         )
         self._apply_fsm_update(upd, now_ms)
 
@@ -4452,6 +4486,9 @@ class SmartboardCanvas(QWidget):
             self.live_gesture_hud_text = "🤏 1 Tay: Đang Cầm & Kéo Object"
             self.live_gesture_hud_accent = BRIGHT_YELLOW
             self.cursor_mode = "TWO_HAND_NAV"
+        elif select_mode_block_draw:
+            self.live_gesture_hud_text = "⬉ Chế độ Chọn: Chụm lên Object để kéo"
+            self.live_gesture_hud_accent = SECONDARY_TEAL
         elif upd.hud_mode == DrawingHudMode.DRAWING:
             tool_vi = "Bút Dạ Quang" if self.active_tool == "HIGHLIGHTER" else "Đang Vẽ"
             self.live_gesture_hud_text = f"☝️ 1 Tay: {tool_vi}"
@@ -6263,6 +6300,7 @@ class AirTeachMainWindow(QMainWindow):
         self.guide_shortcut = QShortcut(QKeySequence(Qt.Key_F1), self)
         self.guide_shortcut.activated.connect(self._on_show_user_guide)
 
+        self.stack.currentChanged.connect(lambda idx: self.cam_worker.set_auth_mode(idx == 0))
         self.stack.setCurrentIndex(0)
         self._cam_start_timer = QTimer(self)
         self._cam_start_timer.setSingleShot(True)
@@ -6387,16 +6425,16 @@ class AirTeachMainWindow(QMainWindow):
         header.setStyleSheet(
             f"QFrame {{ background: {BG_DARK}; border-bottom: 1px solid {BORDER_SLATE}; }}"
             f"QPushButton {{ background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; "
-            f"border-radius: 6px; padding: 2px 6px; min-width: 0px; font-size: 11px; font-weight: 700; }}"
+            f"border-radius: 6px; padding: 2px 5px; min-width: 0px; font-size: 11px; font-weight: 700; }}"
             f"QPushButton:hover {{ border-color: {PRIMARY_INDIGO}; }}"
         )
         h_layout = QHBoxLayout(header)
-        h_layout.setContentsMargins(8, 4, 8, 4)
-        h_layout.setSpacing(5)
+        h_layout.setContentsMargins(6, 4, 6, 4)
+        h_layout.setSpacing(4)
 
         h_layout.addWidget(make_brand_logo_widget(24))
         self.brand_lbl = QLabel("AirTeach AI")
-        self.brand_lbl.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 800; font-size: 13px; border: none;")
+        self.brand_lbl.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 800; font-size: 12.5px; border: none;")
         h_layout.addWidget(self.brand_lbl)
 
         self.teacher_name_lbl = QLabel("GV: Giáo viên")
@@ -6404,7 +6442,8 @@ class AirTeachMainWindow(QMainWindow):
 
         doc_menu_btn = QPushButton("📂 Tài Liệu ▾")
         self.doc_menu_btn = doc_menu_btn
-        doc_menu_btn.setFixedHeight(30)
+        doc_menu_btn.setFixedHeight(28)
+        doc_menu_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         doc_menu_btn.setToolTip("Mở PDF / PPTX / DOCX / Ảnh / Thư mục ảnh, chèn Object Ảnh hoặc xuất PDF/PNG")
         doc_menu = QMenu(doc_menu_btn)
         doc_menu.setStyleSheet(
@@ -6423,13 +6462,16 @@ class AirTeachMainWindow(QMainWindow):
         h_layout.addWidget(doc_menu_btn)
 
         prev_btn = QPushButton("◀")
-        prev_btn.setFixedSize(26, 30)
+        prev_btn.setFixedSize(24, 28)
+        prev_btn.setStyleSheet(
+            f"background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; padding: 0px; min-width: 24px; max-width: 24px; font-size: 11px; font-weight: 700;"
+        )
         prev_btn.setToolTip("Trang trước (← / PageUp)")
         prev_btn.clicked.connect(self._on_prev_slide)
         h_layout.addWidget(prev_btn)
 
         self.page_jump_edit = QLineEdit("1")
-        self.page_jump_edit.setFixedSize(36, 26)
+        self.page_jump_edit.setFixedSize(34, 26)
         self.page_jump_edit.setAlignment(Qt.AlignCenter)
         self.page_jump_edit.setValidator(QIntValidator(1, 9999, self.page_jump_edit))
         self.page_jump_edit.setToolTip("Nhập số trang rồi nhấn Enter để nhảy nhanh")
@@ -6444,13 +6486,17 @@ class AirTeachMainWindow(QMainWindow):
         h_layout.addWidget(self.slide_counter_lbl)
 
         next_btn = QPushButton("▶")
-        next_btn.setFixedSize(26, 30)
+        next_btn.setFixedSize(24, 28)
+        next_btn.setStyleSheet(
+            f"background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; padding: 0px; min-width: 24px; max-width: 24px; font-size: 11px; font-weight: 700;"
+        )
         next_btn.setToolTip("Trang tiếp theo (→ / PageDown)")
         next_btn.clicked.connect(self._on_next_slide)
         h_layout.addWidget(next_btn)
 
         self.cont_scroll_btn = QPushButton("Cuộn")
-        self.cont_scroll_btn.setFixedHeight(30)
+        self.cont_scroll_btn.setFixedHeight(28)
+        self.cont_scroll_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.cont_scroll_btn.setCheckable(True)
         self.cont_scroll_btn.setChecked(False)
         self.cont_scroll_btn.setToolTip("Bật/tắt chế độ cuộn dọc liên tục cho Word/PDF nhiều trang")
@@ -6458,7 +6504,8 @@ class AirTeachMainWindow(QMainWindow):
         h_layout.addWidget(self.cont_scroll_btn)
 
         self.thumb_toggle_btn = QPushButton("Slides")
-        self.thumb_toggle_btn.setFixedHeight(30)
+        self.thumb_toggle_btn.setFixedHeight(28)
+        self.thumb_toggle_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.thumb_toggle_btn.setCheckable(True)
         self.thumb_toggle_btn.setChecked(False)
         self.thumb_toggle_btn.setToolTip("Ẩn/hiện thanh thumbnail xem trước các trang")
@@ -6466,55 +6513,59 @@ class AirTeachMainWindow(QMainWindow):
         h_layout.addWidget(self.thumb_toggle_btn)
 
         explain_slide_hdr_btn = QPushButton("✨ Giải")
-        explain_slide_hdr_btn.setFixedHeight(30)
+        explain_slide_hdr_btn.setFixedHeight(28)
+        explain_slide_hdr_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         explain_slide_hdr_btn.setToolTip("Nhờ Trợ lý AI phân tích & giải chi tiết Slide đang trình chiếu")
         explain_slide_hdr_btn.setStyleSheet(
-            f"background: #0D9488; color: {TEXT_LIGHT}; border-radius: 7px; padding: 3px 8px; min-width: 0px; font-weight: 700; border: none;"
+            f"background: #0D9488; color: {TEXT_LIGHT}; border-radius: 7px; padding: 2px 7px; min-width: 0px; font-weight: 700; border: none;"
         )
         explain_slide_hdr_btn.clicked.connect(lambda: self._on_explain_active_slide())
         h_layout.addWidget(explain_slide_hdr_btn)
 
         self.ai_mode_quick_btn = QPushButton("⚡ Hybrid")
-        self.ai_mode_quick_btn.setFixedHeight(30)
+        self.ai_mode_quick_btn.setFixedHeight(28)
+        self.ai_mode_quick_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.ai_mode_quick_btn.setToolTip("Chuyển nhanh 1-click giữa Cloud Gemini ↔ Local AI Offline ↔ Hybrid")
         self.ai_mode_quick_btn.clicked.connect(self._on_quick_toggle_ai_mode)
         h_layout.addWidget(self.ai_mode_quick_btn)
 
         self.local_mgr_btn = QPushButton("🤖 Hub")
-        self.local_mgr_btn.setFixedHeight(30)
+        self.local_mgr_btn.setFixedHeight(28)
+        self.local_mgr_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.local_mgr_btn.setToolTip("Mở Kho Model AI Local Offline (GGUF từ HuggingFace / GitHub)")
         self.local_mgr_btn.clicked.connect(self._on_open_local_ai_manager)
         h_layout.addWidget(self.local_mgr_btn)
 
         self.gesture_map_btn = QPushButton("Sơ đồ Cử chỉ")
-        self.gesture_map_btn.setFixedHeight(30)
+        self.gesture_map_btn.setFixedHeight(28)
+        self.gesture_map_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.gesture_map_btn.setToolTip("Mở Sơ đồ Cử chỉ trực quan 2 cột (1 Tay & 2 Tay) kèm thanh test trực tiếp")
         self.gesture_map_btn.clicked.connect(self._on_show_gesture_cheat_sheet)
         h_layout.addWidget(self.gesture_map_btn)
 
-        h_layout.addStretch(1)
-
         self.status_pill_lbl = QLabel(self.perf_pipeline.telemetry.status_pill_text())
-        self.status_pill_lbl.setMinimumWidth(80)
-        self.status_pill_lbl.setMaximumWidth(185)
+        self.status_pill_lbl.setMinimumWidth(54)
+        self.status_pill_lbl.setMaximumWidth(165)
         self.status_pill_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.status_pill_lbl.setFixedHeight(26)
         self.status_pill_lbl.setStyleSheet(
-            f"background: {SURFACE_DARK}; color: {NEON_CYAN}; border: 1px solid {SECONDARY_TEAL}; border-radius: 10px; padding: 2px 8px; font-size: 10px; font-weight: 700;"
+            f"background: {SURFACE_DARK}; color: {NEON_CYAN}; border: 1px solid {SECONDARY_TEAL}; border-radius: 10px; padding: 2px 7px; font-size: 10px; font-weight: 700;"
         )
         h_layout.addWidget(self.status_pill_lbl, stretch=1)
 
         self.rec_btn = QPushButton("🎙")
-        self.rec_btn.setFixedSize(30, 30)
+        self.rec_btn.setFixedSize(28, 28)
+        self.rec_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.rec_btn.setToolTip("Ghi âm bài giảng cục bộ (.WAV)")
         self.rec_btn.setStyleSheet(
-            f"background: {ALERT_ROSE}; color: {TEXT_LIGHT}; border-radius: 7px; font-weight: 700; border: none;"
+            f"background: {ALERT_ROSE}; color: {TEXT_LIGHT}; border-radius: 7px; font-weight: 700; border: none; padding: 0px; min-width: 28px; max-width: 28px;"
         )
         self.rec_btn.clicked.connect(self._on_toggle_recording)
         h_layout.addWidget(self.rec_btn)
 
         self.toggle_cam_btn = QPushButton("Cam")
-        self.toggle_cam_btn.setFixedHeight(30)
+        self.toggle_cam_btn.setFixedHeight(28)
+        self.toggle_cam_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.toggle_cam_btn.setCheckable(True)
         self.toggle_cam_btn.setChecked(False)
         self.toggle_cam_btn.setToolTip("Ẩn/hiện bảng điều khiển Camera & CV")
@@ -6522,7 +6573,8 @@ class AirTeachMainWindow(QMainWindow):
         h_layout.addWidget(self.toggle_cam_btn)
 
         self.mini_hud_btn = QPushButton("HUD")
-        self.mini_hud_btn.setFixedHeight(30)
+        self.mini_hud_btn.setFixedHeight(28)
+        self.mini_hud_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.mini_hud_btn.setCheckable(True)
         self.mini_hud_btn.setChecked(True)
         self.mini_hud_btn.setToolTip("Bật/tắt Mini Camera HUD góc phải (Phím H)")
@@ -6530,31 +6582,41 @@ class AirTeachMainWindow(QMainWindow):
         h_layout.addWidget(self.mini_hud_btn)
 
         self.toggle_ai_btn = QPushButton("Trợ Lý AI")
-        self.toggle_ai_btn.setFixedHeight(30)
+        self.toggle_ai_btn.setFixedHeight(28)
+        self.toggle_ai_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.toggle_ai_btn.setCheckable(True)
         self.toggle_ai_btn.setChecked(False)
         self.toggle_ai_btn.setStyleSheet(
-            f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 7px; padding: 3px 8px; min-width: 0px; font-weight: 700; border: none;"
+            f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 7px; padding: 2px 7px; min-width: 0px; font-weight: 700; border: none;"
         )
         self.toggle_ai_btn.clicked.connect(self._on_toggle_ai_drawer)
         h_layout.addWidget(self.toggle_ai_btn)
 
         guide_btn = QPushButton("? Hướng dẫn")
         self.guide_btn = guide_btn
-        guide_btn.setFixedHeight(30)
+        guide_btn.setFixedHeight(28)
+        guide_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         guide_btn.setToolTip("Chạy Hướng Dẫn Tương Tác Spotlight 6 Bước (Phím F1: Mở Sổ Tay Đầy Đủ & Sandbox)")
         guide_btn.clicked.connect(self._on_show_onboarding_tour)
         h_layout.addWidget(guide_btn)
 
         self.theme_toggle_btn = QPushButton("☀")
-        self.theme_toggle_btn.setFixedSize(30, 30)
+        self.theme_toggle_btn.setFixedSize(28, 28)
+        self.theme_toggle_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.theme_toggle_btn.setStyleSheet(
+            f"background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; padding: 0px; min-width: 28px; max-width: 28px; font-size: 12px; font-weight: 700;"
+        )
         self.theme_toggle_btn.setToolTip("Chuyển nhanh Dark Mode ↔ Light Mode toàn ứng dụng")
         self.theme_toggle_btn.clicked.connect(self._on_toggle_theme)
         h_layout.addWidget(self.theme_toggle_btn)
 
         gear_btn = QPushButton("⚙")
         self.gear_btn = gear_btn
-        gear_btn.setFixedSize(30, 30)
+        gear_btn.setFixedSize(28, 28)
+        gear_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        gear_btn.setStyleSheet(
+            f"background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; padding: 0px; min-width: 28px; max-width: 28px; font-size: 12px; font-weight: 700;"
+        )
         gear_btn.setToolTip("Cài đặt lưới, giao diện, thử cử chỉ & tài khoản")
         gear_menu = QMenu(gear_btn)
         self.gear_menu = gear_menu
@@ -6577,23 +6639,31 @@ class AirTeachMainWindow(QMainWindow):
         root.addWidget(header)
 
         # =====================================================================
-        # CENTER WORKSPACE: LEFT DOCK (270px) | SMARTBOARD CANVAS | RIGHT DOCK (330px)
+        # CENTER WORKSPACE: LEFT DOCK (268px) | SMARTBOARD CANVAS | RIGHT DOCK (360px)
         # =====================================================================
         workspace = QHBoxLayout()
         workspace.setContentsMargins(0, 0, 0, 0)
         workspace.setSpacing(0)
 
         self.left_dock = QFrame()
-        self.left_dock.setFixedWidth(270)
+        self.left_dock.setObjectName("LeftDock")
+        self.left_dock.setFixedWidth(268)
         self.left_dock.setStyleSheet(
-            f"background: {SURFACE_DARK}; border-right: 1px solid {BORDER_SLATE};"
+            f"QFrame#LeftDock {{ background: {SURFACE_DARK}; border-right: 1px solid {BORDER_SLATE}; }}"
+            f"QFrame#LeftDock QLabel {{ color: {TEXT_LIGHT}; background: transparent; border: none; }}"
+            f"QFrame#LeftDock QCheckBox {{ color: {TEXT_LIGHT}; background: transparent; font-size: 11px; spacing: 5px; }}"
+            f"QFrame#LeftDock QPushButton {{ background: {BG_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; padding: 3px 6px; font-size: 11px; font-weight: 700; }}"
+            f"QFrame#LeftDock QPushButton:hover {{ border-color: {PRIMARY_INDIGO}; }}"
+            f"QFrame#LeftDock QComboBox {{ background: {BG_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; padding: 3px 6px; font-size: 11px; }}"
+            f"QFrame#LeftDock QProgressBar {{ background: {BG_DARK}; border: 1px solid {BORDER_SLATE}; border-radius: 5px; }}"
+            f"QFrame#LeftDock QProgressBar::chunk {{ background: {SECONDARY_TEAL}; border-radius: 4px; }}"
         )
         l_layout = QVBoxLayout(self.left_dock)
-        l_layout.setContentsMargins(10, 10, 10, 10)
-        l_layout.setSpacing(7)
+        l_layout.setContentsMargins(9, 8, 9, 8)
+        l_layout.setSpacing(5)
 
         self.pip_cam_lbl = QLabel()
-        self.pip_cam_lbl.setFixedSize(250, 188)
+        self.pip_cam_lbl.setFixedSize(248, 158)
         self.pip_cam_lbl.setAlignment(Qt.AlignCenter)
         self.pip_cam_lbl.setStyleSheet(
             f"background: {BG_DARK}; border: 1px solid {BORDER_SLATE}; border-radius: 8px; color: {TEXT_MUTED};"
@@ -6686,20 +6756,20 @@ class AirTeachMainWindow(QMainWindow):
         )
         l_layout.addWidget(self.vision_debug_lbl)
 
-        # 4 Compact 4-Tier HUD Mode & Gesture Badges (2x2 Grid)
+        # 4 Compact 4-Tier HUD Mode & Gesture Badges (2x2 Grid — synced with GestureCheatSheet)
         badge_grid = QGridLayout()
-        badge_grid.setSpacing(6)
+        badge_grid.setSpacing(5)
         self.gesture_badges: Dict[str, QLabel] = {}
         badge_specs = [
-            ("DRAWING", "Chụm <0.28: Vẽ", 0, 0),
-            ("HOVER", "Mở >0.40: Di", 0, 1),
-            ("LOCKED_COOLDOWN", "Xòe/Nắm: Hủy", 1, 0),
+            ("DRAWING", "1 Ngón: Vẽ", 0, 0),
+            ("HOVER", "2 Ngón: Trỏ", 0, 1),
+            ("LOCKED_COOLDOWN", "Chụm: Kéo Obj", 1, 0),
             ("PAN_ERASE", "5 Ngón: Tẩy", 1, 1),
         ]
         for key, text, r, c in badge_specs:
             lbl = QLabel(text)
             lbl.setAlignment(Qt.AlignCenter)
-            lbl.setFixedHeight(28)
+            lbl.setFixedHeight(26)
             lbl.setStyleSheet(
                 f"background: {BG_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; font-size: 11px; font-weight: 700;"
             )
@@ -6768,9 +6838,15 @@ class AirTeachMainWindow(QMainWindow):
 
         # Right Dock (Glassmorphic AI Assistant Drawer)
         self.right_dock = QFrame()
+        self.right_dock.setObjectName("RightDock")
         self.right_dock.setFixedWidth(360)
         self.right_dock.setStyleSheet(
-            f"background: rgba(15, 23, 42, 240); border-left: 1.5px solid {SECONDARY_TEAL};"
+            f"QFrame#RightDock {{ background: rgba(15, 23, 42, 244); border-left: 1.5px solid {SECONDARY_TEAL}; }}"
+            f"QFrame#RightDock QLabel {{ color: {TEXT_LIGHT}; background: transparent; border: none; }}"
+            f"QFrame#RightDock QCheckBox {{ color: {TEXT_LIGHT}; background: transparent; font-size: 11px; spacing: 5px; }}"
+            f"QFrame#RightDock QPushButton {{ background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; padding: 3px 7px; font-size: 11px; font-weight: 700; }}"
+            f"QFrame#RightDock QPushButton:hover {{ border-color: {PRIMARY_INDIGO}; }}"
+            f"QFrame#RightDock QComboBox, QFrame#RightDock QLineEdit {{ background: {BG_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; padding: 4px 7px; font-size: 11.5px; }}"
         )
         r_layout = QVBoxLayout(self.right_dock)
         r_layout.setContentsMargins(10, 10, 10, 10)
@@ -6779,14 +6855,8 @@ class AirTeachMainWindow(QMainWindow):
         ai_hdr = QHBoxLayout()
         ai_hdr.setSpacing(6)
         ai_title = QLabel("Trợ Lý Sư Phạm AI")
-        ai_title.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 800; font-size: 13px; border: none; background: transparent;")
+        ai_title.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 800; font-size: 13.5px; border: none; background: transparent;")
         ai_hdr.addWidget(ai_title)
-
-        self.api_status_badge = QLabel("Chưa cấu hình")
-        self.api_status_badge.setStyleSheet(
-            f"background: {BORDER_SLATE}; color: {TEXT_LIGHT}; border-radius: 9px; padding: 2px 8px; font-size: 10px; font-weight: 700;"
-        )
-        ai_hdr.addWidget(self.api_status_badge)
         ai_hdr.addStretch(1)
 
         self.change_key_btn = QPushButton("API Key")
@@ -6796,6 +6866,17 @@ class AirTeachMainWindow(QMainWindow):
         )
         ai_hdr.addWidget(self.change_key_btn)
         r_layout.addLayout(ai_hdr)
+
+        ai_status_row = QHBoxLayout()
+        ai_status_row.setSpacing(6)
+        self.api_status_badge = QLabel("Chưa cấu hình")
+        self.api_status_badge.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.api_status_badge.setStyleSheet(
+            f"background: {BORDER_SLATE}; color: {TEXT_LIGHT}; border-radius: 9px; padding: 2px 8px; font-size: 10px; font-weight: 700;"
+        )
+        ai_status_row.addWidget(self.api_status_badge)
+        ai_status_row.addStretch(1)
+        r_layout.addLayout(ai_status_row)
 
         self.api_key_frame = QFrame()
         self.api_key_frame.setStyleSheet(
@@ -6938,20 +7019,21 @@ class AirTeachMainWindow(QMainWindow):
         slide_ai_row.addWidget(self.expand_ai_btn)
         r_layout.addLayout(slide_ai_row)
 
+        self._quick_ai_actions: List[Tuple[QPushButton, bool]] = []
         for label, prompt_prefix, struct_json in [
             (
-                "1. Giải && Chữa Bài Trên Bảng (JSON)",
-                "Hãy phân tích nội dung tài liệu/slide đang trình chiếu cùng chữ viết tay/công thức của giáo viên, kiểm tra lỗi sai nếu có, giải chi tiết từng bước và trả về JSON hành động viết/vẽ lời giải lên bảng.",
+                "1. Giải && Chữa Bài Trên Bảng",
+                "Hãy phân tích nội dung tài liệu/slide đang trình chiếu cùng chữ viết tay/công thức của giáo viên, kiểm tra lỗi sai nếu có, giải chi tiết từng bước bằng Markdown + LaTeX rõ ràng và trả về hành động viết/vẽ lời giải lên bảng khi phù hợp.",
                 False,
             ),
             (
                 "2. Tóm Tắt && Tạo Trắc Nghiệm",
-                "Hãy tóm tắt trọng tâm trang tài liệu/slide đang hiển thị và tạo 3 câu hỏi trắc nghiệm 4 lựa chọn có đáp án giải thích.",
-                True,
+                "Hãy tóm tắt trọng tâm trang tài liệu/slide đang hiển thị bằng Markdown + LaTeX rõ ràng, sau đó tạo 3 câu hỏi trắc nghiệm 4 lựa chọn (A/B/C/D) kèm đáp án và giải thích chi tiết từng câu.",
+                False,
             ),
             (
                 "3. Gợi Ý Sư Phạm && Tương Tác",
-                "Hãy gợi ý phương pháp giảng dạy trực quan và ví dụ thực tế cho nội dung trên trang tài liệu đang trình chiếu.",
+                "Hãy gợi ý phương pháp giảng dạy trực quan, câu hỏi thảo luận và ví dụ thực tế sinh động cho nội dung trên trang tài liệu đang trình chiếu.",
                 False,
             ),
         ]:
@@ -6964,6 +7046,7 @@ class AirTeachMainWindow(QMainWindow):
                 lambda _=False, p=prompt_prefix, sj=struct_json: self._analyze_full_board(p, sj)
             )
             r_layout.addWidget(btn)
+            self._quick_ai_actions.append((btn, struct_json))
 
         self.crop_preview_lbl = QLabel()
         self.crop_preview_lbl.setFixedHeight(90)
@@ -7256,6 +7339,9 @@ class AirTeachMainWindow(QMainWindow):
             self.toggle_cam_btn.blockSignals(True)
             self.toggle_cam_btn.setChecked(vis)
             self.toggle_cam_btn.blockSignals(False)
+        if vis:
+            # Avoid duplicate camera previews covering the canvas when left_dock opens
+            self._set_mini_hud_visible(False)
 
     def _on_toggle_camera_hardware(self) -> None:
         if self.cam_worker._camera_paused:
@@ -7318,7 +7404,7 @@ class AirTeachMainWindow(QMainWindow):
             self.pip_cam_lbl.setPixmap(QPixmap())
             self.pip_cam_lbl.setText("Camera đã giải phóng an toàn")
         elif qimg is not None:
-            scaled = qimg.scaled(250, 188, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled = qimg.scaled(248, 158, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.pip_cam_lbl.setPixmap(QPixmap.fromImage(scaled))
         else:
             self.pip_cam_lbl.setPixmap(QPixmap())
@@ -7901,14 +7987,14 @@ class AirTeachMainWindow(QMainWindow):
             self.rec_btn.setText("⏹")
             self.rec_btn.setToolTip("Đang ghi âm... Nhấn để dừng và lưu (.WAV)")
             self.rec_btn.setStyleSheet(
-                f"background: #DC2626; color: {TEXT_LIGHT}; border: 2px solid {BRIGHT_YELLOW}; border-radius: 7px; font-weight: 800;"
+                f"background: #DC2626; color: {TEXT_LIGHT}; border: 2px solid {BRIGHT_YELLOW}; border-radius: 7px; font-weight: 800; padding: 0px; min-width: 28px; max-width: 28px;"
             )
         else:
             self.is_recording_audio = False
             self.rec_btn.setText("🎙")
             self.rec_btn.setToolTip("Ghi âm bài giảng cục bộ (.WAV)")
             self.rec_btn.setStyleSheet(
-                f"background: {ALERT_ROSE}; color: {TEXT_LIGHT}; border-radius: 7px; font-weight: 700; border: none;"
+                f"background: {ALERT_ROSE}; color: {TEXT_LIGHT}; border-radius: 7px; font-weight: 700; border: none; padding: 0px; min-width: 28px; max-width: 28px;"
             )
             if self.audio_frames:
                 RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -8218,11 +8304,11 @@ class AirTeachMainWindow(QMainWindow):
             self.header_bar.setStyleSheet(
                 f"QFrame {{ background: {bg}; border-bottom: 1px solid {bd}; }}"
                 f"QPushButton {{ background: {surf_alt}; color: {fg}; border: 1px solid {bd}; "
-                f"border-radius: 6px; padding: 2px 6px; min-width: 0px; font-size: 11px; font-weight: 700; }}"
+                f"border-radius: 6px; padding: 2px 5px; min-width: 0px; font-size: 11px; font-weight: 700; }}"
                 f"QPushButton:hover {{ border-color: {PRIMARY_INDIGO}; }}"
             )
         if hasattr(self, "brand_lbl"):
-            self.brand_lbl.setStyleSheet(f"color: {fg}; font-weight: 800; font-size: 13px; border: none; background: transparent;")
+            self.brand_lbl.setStyleSheet(f"color: {fg}; font-weight: 800; font-size: 12.5px; border: none; background: transparent;")
         if hasattr(self, "page_jump_edit"):
             self.page_jump_edit.setStyleSheet(
                 f"background: {surf_alt}; color: {accent_txt}; border: 1px solid {bd}; border-radius: 5px; padding: 1px 2px; font-size: 11px; font-weight: 800;"
@@ -8231,7 +8317,7 @@ class AirTeachMainWindow(QMainWindow):
             self.slide_counter_lbl.setStyleSheet(f"color: {fg}; font-weight: 700; font-size: 11px; border: none; background: transparent; padding: 0 2px;")
         if hasattr(self, "status_pill_lbl"):
             self.status_pill_lbl.setStyleSheet(
-                f"background: {surf_alt}; color: {accent_txt}; border: 1px solid {SECONDARY_TEAL if dark else PRIMARY_INDIGO}; border-radius: 10px; padding: 2px 8px; font-size: 10px; font-weight: 700;"
+                f"background: {surf_alt}; color: {accent_txt}; border: 1px solid {SECONDARY_TEAL if dark else PRIMARY_INDIGO}; border-radius: 10px; padding: 2px 7px; font-size: 10px; font-weight: 700;"
             )
         if hasattr(self, "bottom_bar"):
             self.bottom_bar.setStyleSheet(f"background: {bg}; border-top: 1px solid {bd};")
@@ -8240,11 +8326,21 @@ class AirTeachMainWindow(QMainWindow):
                 f"QFrame {{ background: {surf}; border: 1px solid {bd}; border-radius: 14px; }}"
             )
         if hasattr(self, "left_dock"):
-            self.left_dock.setStyleSheet(f"background: {surf}; border-right: 1px solid {bd};")
+            self.left_dock.setStyleSheet(
+                f"QFrame#LeftDock {{ background: {surf}; border-right: 1px solid {bd}; }}"
+                f"QFrame#LeftDock QLabel {{ color: {fg}; background: transparent; border: none; }}"
+                f"QFrame#LeftDock QCheckBox {{ color: {fg}; background: transparent; font-size: 11px; spacing: 5px; }}"
+                f"QFrame#LeftDock QPushButton {{ background: {surf_alt}; color: {fg}; border: 1px solid {bd}; border-radius: 6px; padding: 3px 6px; font-size: 11px; font-weight: 700; }}"
+                f"QFrame#LeftDock QComboBox {{ background: {bg}; color: {fg}; border: 1px solid {bd}; border-radius: 6px; padding: 3px 6px; font-size: 11px; }}"
+            )
         if hasattr(self, "right_dock"):
             rd_bg = "rgba(15, 23, 42, 244)" if dark else "rgba(255, 255, 255, 248)"
             self.right_dock.setStyleSheet(
-                f"background: {rd_bg}; border-left: 1.5px solid {SECONDARY_TEAL if dark else PRIMARY_INDIGO};"
+                f"QFrame#RightDock {{ background: {rd_bg}; border-left: 1.5px solid {SECONDARY_TEAL if dark else PRIMARY_INDIGO}; }}"
+                f"QFrame#RightDock QLabel {{ color: {fg}; background: transparent; border: none; }}"
+                f"QFrame#RightDock QCheckBox {{ color: {fg}; background: transparent; font-size: 11px; spacing: 5px; }}"
+                f"QFrame#RightDock QPushButton {{ background: {surf_alt}; color: {fg}; border: 1px solid {bd}; border-radius: 6px; padding: 3px 7px; font-size: 11px; font-weight: 700; }}"
+                f"QFrame#RightDock QComboBox, QFrame#RightDock QLineEdit {{ background: {bg}; color: {fg}; border: 1px solid {bd}; border-radius: 6px; padding: 4px 7px; font-size: 11.5px; }}"
             )
         if hasattr(self, "attached_file_frame"):
             self.attached_file_frame.setStyleSheet(
@@ -8669,7 +8765,7 @@ class AirTeachMainWindow(QMainWindow):
         self._active_lasso_action = None
         self._active_lasso_region = None
         self.chat_history.append({"role": "assistant", "content": clean_reply})
-        badge_hdr = f"*[{res.engine_used} · {res.model_used} · {res.tokens_per_sec:.1f} tok/s]*"
+        badge_hdr = f"*{res.engine_used} · {res.model_used} · {res.tokens_per_sec:.1f} tok/s*"
         self._set_sanitized_ai_html(f"{badge_hdr}\n\n{clean_reply}")
 
     def _start_gemini_worker(

@@ -814,7 +814,26 @@ class LocalAiManagerDialog(QDialog):
             }
             QScrollArea {
                 border: none;
-                background-color: transparent;
+                background-color: #0F172A;
+            }
+            QWidget#ScrollInner {
+                background-color: #0F172A;
+            }
+            QScrollBar:vertical {
+                background: #0B1220;
+                width: 9px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #334155;
+                border-radius: 4px;
+                min-height: 28px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #475569;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
             }
             """
         )
@@ -833,7 +852,9 @@ class LocalAiManagerDialog(QDialog):
         title_box = QVBoxLayout()
         title_lbl = QLabel("Quản Lý AI Local Offline & Kho Model GGUF")
         title_lbl.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        title_lbl.setWordWrap(True)
         sub_lbl = QLabel(f"Thư mục lưu trữ: {get_models_storage_dir()}")
+        sub_lbl.setWordWrap(True)
         sub_lbl.setStyleSheet("color: #94A3B8; font-size: 11px;")
         title_box.addWidget(title_lbl)
         title_box.addWidget(sub_lbl)
@@ -895,6 +916,7 @@ class LocalAiManagerDialog(QDialog):
 
         dl_top = QHBoxLayout()
         self._dl_status_lbl = QLabel("Sẵn sàng tải model GGUF chính thức từ HuggingFace / GitHub (hỗ trợ tải tiếp khi gián đoạn).")
+        self._dl_status_lbl.setWordWrap(True)
         self._dl_status_lbl.setStyleSheet("color: #CBD5E1; font-size: 12px;")
         self._pause_dl_btn = QPushButton("Tạm Dừng")
         self._pause_dl_btn.setEnabled(False)
@@ -918,15 +940,21 @@ class LocalAiManagerDialog(QDialog):
 
         # Scrollable Area for Downloaded Models + Catalog + Custom URL
         scroll = QScrollArea()
+        self._scroll_area = scroll
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.viewport().setStyleSheet("background-color: #0F172A;")
         scroll_inner = QWidget()
+        scroll_inner.setObjectName("ScrollInner")
+        scroll_inner.setStyleSheet("background-color: #0F172A;")
         scroll_lay = QVBoxLayout(scroll_inner)
-        scroll_lay.setContentsMargins(0, 0, 6, 0)
+        scroll_lay.setContentsMargins(0, 2, 8, 2)
         scroll_lay.setSpacing(12)
 
         # Section 2: Downloaded Models on Disk
         own_hdr = QLabel("2. Model Đã Tải Về Máy")
         own_hdr.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        own_hdr.setStyleSheet("color: #F8FAFC; background: transparent;")
         scroll_lay.addWidget(own_hdr)
 
         self._downloaded_container = QVBoxLayout()
@@ -941,6 +969,7 @@ class LocalAiManagerDialog(QDialog):
         custom_lay.setSpacing(8)
         custom_title = QLabel("3. Tải Model Từ Link GitHub / HuggingFace Bất Kỳ (.gguf)")
         custom_title.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        custom_title.setWordWrap(True)
         custom_lay.addWidget(custom_title)
 
         url_row = QHBoxLayout()
@@ -948,7 +977,7 @@ class LocalAiManagerDialog(QDialog):
         self._custom_url_edit.setPlaceholderText("Dán link HuggingFace hoặc GitHub Release (.gguf), ví dụ: https://huggingface.co/.../model.gguf")
         self._custom_sha_edit = QLineEdit()
         self._custom_sha_edit.setPlaceholderText("SHA-256 (tùy chọn)")
-        self._custom_sha_edit.setFixedWidth(185)
+        self._custom_sha_edit.setFixedWidth(165)
         self._custom_dl_btn = QPushButton("Tải Link")
         self._custom_dl_btn.setObjectName("PrimaryBtn")
         self._custom_dl_btn.clicked.connect(self._on_download_custom_url)
@@ -961,6 +990,7 @@ class LocalAiManagerDialog(QDialog):
         # Section 4: Curated 1-Click Catalog
         cat_hdr = QLabel("4. Kho Model GGUF Khuyên Dùng (1-Click Tải Về)")
         cat_hdr.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        cat_hdr.setStyleSheet("color: #F8FAFC; background: transparent;")
         scroll_lay.addWidget(cat_hdr)
 
         for spec in CURATED_GGUF_CATALOG:
@@ -987,10 +1017,13 @@ class LocalAiManagerDialog(QDialog):
         lay.setSpacing(12)
 
         info = QVBoxLayout()
+        info.setSpacing(3)
         badge = " • Khuyên dùng" if spec.recommended else ""
         title = QLabel(f"{spec.name}{badge}")
         title.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        title.setWordWrap(True)
         meta = QLabel(f"{spec.provider}  |  {spec.size_label}  |  {spec.ram_requirement}  |  {spec.languages}")
+        meta.setWordWrap(True)
         meta.setStyleSheet("color: #38BDF8; font-size: 11px;")
         desc = QLabel(spec.description)
         desc.setWordWrap(True)
@@ -1002,7 +1035,7 @@ class LocalAiManagerDialog(QDialog):
 
         dl_btn = QPushButton(f"Tải ({spec.size_label})")
         dl_btn.setObjectName("PrimaryBtn")
-        dl_btn.setMinimumWidth(130)
+        dl_btn.setFixedWidth(128)
         dl_btn.clicked.connect(lambda _=False, s=spec: self._start_download(s.download_url, s.filename, s.sha256))
         lay.addWidget(dl_btn)
         return card
@@ -1033,6 +1066,7 @@ class LocalAiManagerDialog(QDialog):
             lay = QHBoxLayout(empty_card)
             lay.setContentsMargins(14, 10, 14, 10)
             lbl = QLabel("Chưa có file .gguf nào trong thư mục models. Chọn một model bên dưới để tải về dùng Offline.")
+            lbl.setWordWrap(True)
             lbl.setStyleSheet("color: #94A3B8; font-size: 12px;")
             lay.addWidget(lbl)
             self._downloaded_container.addWidget(empty_card)
@@ -1048,13 +1082,15 @@ class LocalAiManagerDialog(QDialog):
             info = QVBoxLayout()
             is_active = str(m.path) == str(self._active_gguf_path) and not m.is_partial
             status_txt = "Đang kích hoạt" if is_active else ("Tải dở (.part)" if m.is_partial else ("GGUF hợp lệ" if m.valid_gguf else "Lỗi header"))
-            title = QLabel(f"{m.filename}  [{m.size_label}]  —  {status_txt}")
+            title = QLabel(f"{m.filename}  ({m.size_label})  —  {status_txt}")
             title.setFont(QFont("Segoe UI", 11, QFont.Bold))
+            title.setWordWrap(True)
             if is_active:
                 title.setStyleSheet("color: #00F5D4;")
             sub = QLabel(
                 f"SHA-256: {m.sha256[:24]}..." if m.sha256 else "Nhấn 'Tải Tiếp' từ kho hoặc link nếu là file .part"
             )
+            sub.setWordWrap(True)
             sub.setStyleSheet("color: #94A3B8; font-size: 11px;")
             info.addWidget(title)
             info.addWidget(sub)

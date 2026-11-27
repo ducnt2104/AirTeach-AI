@@ -660,7 +660,7 @@ class LocalAIManager:
                 hint = (
                     f" Đã tìm thấy file GGUF '{gguf_file.name}' nhưng chưa cài `llama-cpp-python`."
                     if gguf_file and gguf_file.exists()
-                    else " Mở [Quản Lý AI Local] để tải model GGUF hoặc bật Ollama / LM Studio."
+                    else " Mở Kho Model Local (Hub) để tải model GGUF hoặc bật Ollama / LM Studio."
                 )
                 return LocalAiRunResult(
                     ok=False,

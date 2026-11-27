@@ -144,7 +144,7 @@ Nhấn giữ **Chuột phải** tại bất kỳ vị trí nào trên bảng đ�
 | **S (Nam — 6h)** | **T Thêm Chữ (`TEXT`)** | — |
 | **SW (Tây Nam)** | ◇ **Hình Khối (`SHAPES`)** `▸` | Hình Chữ Nhật · Hình Tròn · Hình Tam Giác · Mũi Tên Vector · Giấy Ghi Chú (`STICKY`) |
 | **W (Tây — 9h)** | ↶ **Hoàn Tác (`UNDO`)** | — |
-| **NW (Tây Bắc)** | ✦ **Cử Chỉ / AI (`CLEAR_OR_NEW`)** `▸` | Trang Mới (`NEW_PAGE`) · Xóa Bảng (`CLEAR_BOARD`) · Khoanh Vùng Hỏi AI (`ASK_AI_REGION`) · **Sơ Đồ Cử Chỉ (`OPEN_GESTURE_MAP`)** · **Mở AI Chat (`OPEN_AI_CHAT`)** |
+| **NW (Tây Bắc)** | ✦ **Cử Chỉ / AI** *(mở Sơ Đồ Cử Chỉ an toàn, không xóa mực)* `▸` | Trang Mới (`NEW_PAGE`) · Xóa Bảng (`CLEAR_BOARD`) · Khoanh Vùng Hỏi AI (`ASK_AI_REGION`) · **Sơ Đồ Cử Chỉ (`OPEN_GESTURE_MAP`)** · **Mở AI Chat (`OPEN_AI_CHAT`)** |
 
 ---
 
@@ -174,7 +174,7 @@ Nhấn giữ **Chuột phải** tại bất kỳ vị trí nào trên bảng đ�
 
 ### AI Cloud — Full Model Catalog (Google Gemini)
 
-Cấu hình trực tiếp trong ngăn Trợ lý AI (nút `[API Key]`, hỗ trợ nhập 1 hoặc nhiều `GEMINI_API_KEY` cách nhau bằng dấu phẩy để tự xoay vòng khi hết quota) hoặc sao chép `.env.example` thành `.env`:
+Cấu hình trực tiếp trong ngăn Trợ lý AI (nút **API Key**, hỗ trợ nhập 1 hoặc nhiều `GEMINI_API_KEY` cách nhau bằng dấu phẩy để tự xoay vòng khi hết quota) hoặc sao chép `.env.example` thành `.env`:
 
 | Mã Model | Nhãn hiển thị | Phù hợp cho |
 |---|---|---|
