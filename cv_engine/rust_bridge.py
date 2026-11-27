@@ -174,9 +174,12 @@ def snap_geometric_shape_fast(
     if not (HAS_RUST_CORE and hasattr(_rs, "snap_geometric_shape_rs")):
         return None
     in_pts = [(float(p[0]), float(p[1])) for p in pts]
-    shape_type, conf, is_closed, out_pts = _rs.snap_geometric_shape_rs(
+    res = _rs.snap_geometric_shape_rs(
         in_pts, float(closed_gap_ratio), float(confidence_gate)
     )
+    if res is None:
+        return None
+    shape_type, conf, is_closed, out_pts = res
     return str(shape_type), float(conf), bool(is_closed), list(out_pts)
 
 
