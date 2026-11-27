@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "airteach_core_rs"
+version = "2.0.0"
+edition = "2021"
+authors = ["AirTeach AI Engineering Team"]
+description = "Optional Rust PyO3 acceleration kernel for AirTeach AI with Python fallback"
+
+[lib]
+name = "airteach_core_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py311", "generate-import-lib"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

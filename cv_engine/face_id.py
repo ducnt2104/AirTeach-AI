@@ -30,9 +30,28 @@ _FACE_LOGGER = logging.getLogger("airteach.face_id")
 
 import cv2
 import numpy as np
-import mediapipe as mp
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision as mp_vision
+
+mp = None  # type: ignore
+mp_python = None  # type: ignore
+mp_vision = None  # type: ignore
+
+
+def _ensure_mediapipe_face() -> bool:
+    global mp, mp_python, mp_vision
+    if mp_vision is not None:
+        return True
+    try:
+        import mediapipe as _mp  # type: ignore
+        from mediapipe.tasks import python as _mp_python  # type: ignore
+        from mediapipe.tasks.python import vision as _mp_vision  # type: ignore
+
+        mp = _mp
+        mp_python = _mp_python
+        mp_vision = _mp_vision
+        return True
+    except Exception as exc:
+        _FACE_LOGGER.warning("MediaPipe face import unavailable: %s", exc)
+        return False
 
 from cv_engine.app_paths import get_app_logger
 from cv_engine.preprocessing import compute_laplacian_sharpness
@@ -158,7 +177,7 @@ class ArcFace512Extractor:
         self.ort_session = None
 
         face_model_path = models_dir / "blaze_face_short_range.tflite"
-        if ensure_face_detector_model(face_model_path, FACE_MODEL_URL):
+        if ensure_face_detector_model(face_model_path, FACE_MODEL_URL) and _ensure_mediapipe_face():
             try:
                 from cv_engine.app_paths import ensure_concurrent_futures_eager
 

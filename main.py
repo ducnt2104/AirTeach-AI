@@ -77,7 +77,10 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QScrollArea,
+    QMenu,
 )
+
+import importlib.util
 
 try:
     from PySide6.QtSvgWidgets import QSvgWidget
@@ -87,12 +90,7 @@ except Exception as exc:
     _LOGGER.debug("QtSvg optional module unavailable: %s", exc) if "_LOGGER" in globals() else None
     HAS_QTSVG = False
 
-try:
-    import mediapipe as mp
-    HAS_MEDIAPIPE = True
-except Exception as exc:
-    sys.stderr.write(f"[AirTeachAI] MediaPipe import warning: {exc}\n")
-    HAS_MEDIAPIPE = False
+HAS_MEDIAPIPE = importlib.util.find_spec("mediapipe") is not None
 
 try:
     import sounddevice as sd
@@ -101,13 +99,7 @@ except Exception as exc:
     sys.stderr.write(f"[AirTeachAI] sounddevice unavailable: {exc}\n")
     HAS_SOUNDDEVICE = False
 
-try:
-    from google import genai
-    from google.genai import types as genai_types
-    HAS_GENAI_SDK = True
-except Exception as exc:
-    sys.stderr.write(f"[AirTeachAI] google-genai SDK unavailable: {exc}\n")
-    HAS_GENAI_SDK = False
+HAS_GENAI_SDK = importlib.util.find_spec("google.genai") is not None
 
 from cv_engine.drawing_fsm import (
     DrawingHudMode,
@@ -156,7 +148,14 @@ from cv_engine.document_presenter import (
     SUPPORTED_IMAGE_EXTENSIONS,
     compute_slide_rect_on_canvas,
     export_annotated_lecture_pdf,
+    list_folder_images,
+    load_image_file_qimage,
+    warmup_document_engines,
 )
+from cv_engine.gguf_model_manager import LocalAiManagerDialog, get_models_storage_dir, list_downloaded_models
+from cv_engine.radial_pie_menu import RadialPieMenuOverlay
+from cv_engine.rust_bridge import HAS_RUST_CORE, RUST_CORE_VERSION
+from cv_engine.user_guide_dialog import UserGuideDialog
 from cv_engine.subject_tracker import PoseTorsoEstimator, PrimaryTeacherLockTracker
 from cv_engine.vision_config import load_vision_config
 from cv_engine.lasso_ai_service import (
@@ -212,21 +211,26 @@ _LOGGER = get_app_logger("main")
 
 
 def _load_dotenv_if_present(env_path: Optional[Path] = None) -> None:
-    path = env_path or (Path(__file__).resolve().parent / ".env")
-    if not path.exists():
-        return
-    try:
-        for raw_line in path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            key = k.strip()
-            val = v.strip().strip('"').strip("'")
-            if key and val and key not in os.environ:
-                os.environ[key] = val
-    except OSError as exc:
-        _LOGGER.warning("Unable to read .env at %s: %s", path, exc)
+    if env_path is not None:
+        candidates = [env_path]
+    else:
+        exe_env = Path(sys.executable).resolve().parent / ".env" if getattr(sys, "frozen", False) else Path(__file__).resolve().parent / ".env"
+        candidates = [exe_env, get_user_data_dir() / ".env"]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            for raw_line in path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                key = k.strip()
+                val = v.strip().strip('"').strip("'")
+                if key and val and key not in os.environ:
+                    os.environ[key] = val
+        except OSError as exc:
+            _LOGGER.warning("Unable to read .env at %s: %s", path, exc)
 
 
 _load_dotenv_if_present()
@@ -251,9 +255,16 @@ FACE_EMB_DIR = DATA_DIR / "face_embeddings"
 USERS_DB_PATH = DATA_DIR / "users_db.json"
 AI_CACHE_PATH = DATA_DIR / "ai_cache.json"
 MODELS_DIR = resource_path("models")
+_ASSETS_HAND_MODEL = resource_path("assets/models/hand_landmarker.task")
+HAND_LANDMARKER_MODEL_PATH = (
+    _ASSETS_HAND_MODEL
+    if _ASSETS_HAND_MODEL.exists() and _ASSETS_HAND_MODEL.stat().st_size > 500_000
+    else (MODELS_DIR / "hand_landmarker.task")
+)
 RECORDINGS_DIR = DATA_DIR / "recordings"
 BRAND_LOGO_SVG = resource_path("assets/branding/airteach_logo.svg")
-APP_LOGO_ICO = resource_path("assets/logo.ico")
+_ICON_PRIMARY = resource_path("assets/icons/airteach.ico")
+APP_LOGO_ICO = _ICON_PRIMARY if _ICON_PRIMARY.exists() else resource_path("assets/logo.ico")
 
 for d in (DATA_DIR, FACE_EMB_DIR, RECORDINGS_DIR):
     d.mkdir(parents=True, exist_ok=True)
@@ -623,7 +634,7 @@ class VisionInferenceWorker(QThread):
         dyn_complexity = 0 if bench_ms > 2.5 else 1
 
         hand_engine = HandGestureEngine(
-            model_path=MODELS_DIR / "hand_landmarker.task",
+            model_path=HAND_LANDMARKER_MODEL_PATH,
             num_hands=max(2, int(vcfg.hand_tracking.num_hands)),
             min_detection_confidence=vcfg.hand_tracking.min_detection_confidence,
             min_presence_confidence=vcfg.hand_tracking.min_presence_confidence,
@@ -2081,12 +2092,128 @@ class SlideThumbnailStrip(QFrame):
         self.hbox.addStretch(1)
 
 
+class EngineWarmupWorker(QThread):
+    """Non-blocking startup warmer loading PyMuPDF, GenAI SDK & Matplotlib after UI paints."""
+
+    warmup_done = Signal(dict)
+
+    def run(self) -> None:
+        info: Dict[str, bool] = {}
+        try:
+            info.update(warmup_document_engines())
+        except Exception:
+            info["pymupdf"] = False
+        try:
+            from cv_engine.gemini_client import _ensure_genai_sdk
+
+            info["genai"] = bool(_ensure_genai_sdk())
+        except Exception:
+            info["genai"] = False
+        try:
+            from cv_engine.output_sanitizer import _ensure_matplotlib
+
+            info["matplotlib"] = bool(_ensure_matplotlib())
+        except Exception:
+            info["matplotlib"] = False
+        self.warmup_done.emit(info)
+
+
+class BoardNavMiniHud(QFrame):
+    """Compact corner Mini-HUD showing live Zoom %, Page X/Y, and 1-click Fit/Reset controls."""
+
+    fit_width_clicked = Signal()
+    fit_page_clicked = Signal()
+    reset_view_clicked = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet(
+            f"QFrame {{ background: rgba(15, 23, 42, 228); border: 1px solid {BORDER_SLATE}; border-radius: 10px; }}"
+            f"QLabel {{ color: {TEXT_LIGHT}; background: transparent; border: none; font-size: 11px; font-weight: 700; }}"
+            f"QPushButton {{ background: {SURFACE_DARK}; color: {SECONDARY_TEAL}; border: 1px solid {BORDER_SLATE}; "
+            f"border-radius: 6px; padding: 3px 7px; font-size: 10.5px; font-weight: 700; }}"
+            f"QPushButton:hover {{ border-color: {NEON_CYAN}; color: {TEXT_LIGHT}; }}"
+        )
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 5, 8, 5)
+        lay.setSpacing(5)
+
+        self.zoom_lbl = QLabel("100%")
+        self.zoom_lbl.setStyleSheet(f"color: {NEON_CYAN}; font-weight: 800; font-size: 11px;")
+        self.page_lbl = QLabel("Trang 1/1")
+        self.page_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-weight: 700; font-size: 11px;")
+
+        btn_w = QPushButton("Vừa Ngang")
+        btn_w.setToolTip("Thu phóng khớp chiều ngang tài liệu")
+        btn_w.clicked.connect(self.fit_width_clicked.emit)
+
+        btn_p = QPushButton("Vừa Trang")
+        btn_p.setToolTip("Thu phóng vừa khít toàn trang hiện tại")
+        btn_p.clicked.connect(self.fit_page_clicked.emit)
+
+        btn_r = QPushButton("Về Giữa")
+        btn_r.setToolTip("Đặt lại thu phóng 100% và căn giữa bảng (Ctrl+0)")
+        btn_r.clicked.connect(self.reset_view_clicked.emit)
+
+        lay.addWidget(self.zoom_lbl)
+        lay.addWidget(self.page_lbl)
+        lay.addWidget(btn_w)
+        lay.addWidget(btn_p)
+        lay.addWidget(btn_r)
+        self.adjustSize()
+
+    def update_state(self, zoom_scale: float, page_idx: int, page_count: int) -> None:
+        pct = int(round(float(zoom_scale) * 100.0))
+        self.zoom_lbl.setText(f"{pct}%")
+        total = max(1, int(page_count))
+        cur = max(1, min(total, int(page_idx) + 1))
+        self.page_lbl.setText(f"Trang {cur}/{total}")
+        self.adjustSize()
+
+
+class QuickTipBanner(QFrame):
+    """Compact dismissible first-launch quick tips pill on canvas."""
+
+    guide_requested = Signal()
+    dismissed = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet(
+            f"QFrame {{ background: rgba(15, 23, 42, 232); border: 1px solid {PRIMARY_INDIGO}; border-radius: 10px; }}"
+            f"QLabel {{ color: {TEXT_LIGHT}; background: transparent; border: none; font-size: 11px; }}"
+            f"QPushButton {{ background: {SURFACE_DARK}; color: {NEON_CYAN}; border: 1px solid {BORDER_SLATE}; "
+            f"border-radius: 6px; padding: 3px 8px; font-size: 10.5px; font-weight: 700; }}"
+            f"QPushButton:hover {{ border-color: {NEON_CYAN}; }}"
+        )
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 6, 8, 6)
+        lay.setSpacing(8)
+        lbl = QLabel(
+            "<b>Mẹo nhanh:</b> Chụm tay để vẽ · Giữ <b>Chuột phải</b> mở Bảng Tròn công cụ · Cuộn chuột để Zoom · Chuột giữa kéo bảng"
+        )
+        guide_btn = QPushButton("? Chi tiết")
+        guide_btn.clicked.connect(self.guide_requested.emit)
+        close_btn = QPushButton("Đã hiểu ✕")
+        close_btn.clicked.connect(self._on_dismiss)
+        lay.addWidget(lbl)
+        lay.addWidget(guide_btn)
+        lay.addWidget(close_btn)
+        self.adjustSize()
+
+    def _on_dismiss(self) -> None:
+        self.hide()
+        self.dismissed.emit()
+
+
 class SmartboardCanvas(QWidget):
     region_cropped_for_ai = Signal(bytes, QPixmap)
     lasso_action_requested = Signal(str, object)
     hud_status_changed = Signal(str, float, str)
     slides_changed = Signal()
     file_dropped = Signal(str)
+    pie_tool_selected = Signal(str)
+    guide_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -2116,7 +2243,7 @@ class SmartboardCanvas(QWidget):
         self.cancel_hold_progress: float = 0.0
         self.dynamic_eraser_radius: float = 45.0
 
-        # Pan, Zoom (50%-300%) & Continuous Vertical Document Scroll State
+        # Pan, Zoom (25%-400%) & Continuous Vertical Document Scroll State
         self.zoom_scale: float = 1.0
         self.pan_x: float = 0.0
         self.pan_y: float = 0.0
@@ -2127,6 +2254,8 @@ class SmartboardCanvas(QWidget):
         self._lasso_dwell_ready: bool = False
         self._space_panning: bool = False
         self._mouse_pan_last: Optional[QPointF] = None
+        self._img_drag_state: Optional[Dict[str, Any]] = None
+        self._selected_board_image_idx: Optional[int] = None
 
         self.lecture_doc: Optional[LectureDocument] = None
         self.slide_annotations: Dict[int, Dict[str, List[Any]]] = {}
@@ -2152,6 +2281,7 @@ class SmartboardCanvas(QWidget):
 
         self._dirty_tracker = DirtyCanvasBackingTracker()
         self._backing_pixmap: Optional[QPixmap] = None
+        self._grid_tile_cache: Dict[Tuple[bool, float], QPixmap] = {}
         self._scaled_page_pixmap_cache: OrderedDict[Tuple[int, int, int, int], QPixmap] = OrderedDict()
         self._scene_rev: int = 0
 
@@ -2159,13 +2289,13 @@ class SmartboardCanvas(QWidget):
         self.slides: List[Dict[str, Any]] = [
             {
                 "title": "DNT - Victer Guide • Hướng dẫn nhanh AirTeach AI",
-                "subtitle": f"Bảng trắng không chạm & Trình chiếu Word / PDF / PPTX + {DEFAULT_GEMINI_MODEL}",
+                "subtitle": f"Bảng trắng không chạm & Trình chiếu Word / PDF / PPTX / Ảnh + {DEFAULT_GEMINI_MODEL}",
                 "bullets": [
-                    "• 1 ngón trỏ: Di chuyển con trỏ vòng đôi 60Hz • Chụm ngón (pinch < 0.32): Vẽ • Xòe tay: Tẩy.",
-                    "• Vuốt ngang: Chuyển Slide • Vuốt dọc / 2 ngón kéo: Cuộn tài liệu Word/PDF • 2 tay chụm: Thu/Phóng 50–300%.",
-                    "• Kéo thả file .DOCX / .PDF / .PPTX vào đây hoặc bấm [Mở Tài Liệu: Word / PDF / PPTX] để bắt đầu.",
+                    "• 1 tay: Trỏ di chuyển · Chụm (pinch) để vẽ · Xòe 5 ngón để tẩy · Vẫy trái/phải đổi Slide.",
+                    "• 2 tay: Chụm 2 tay phóng to/thu nhỏ 25–400% · Xòe 2 tay (hoặc nắm tay phụ + di tay chính) kéo bảng.",
+                    "• Chuột phải (Nhấn giữ → kéo → thả): Mở Bảng Tròn 8 công cụ · Cuộn chuột để Zoom · Ctrl+0: Về Giữa.",
                 ],
-                "formula": "Ctrl+Z: Hoàn tác  |  Tay trái nắm khi vẽ: Khóa nét thẳng  |  H: Bật/tắt Mini HUD",
+                "formula": "Ctrl+Z: Hoàn tác  |  F1: Hướng dẫn chi tiết  |  Space+Kéo / Chuột giữa: Di chuyển bảng",
                 "pixmap": None,
                 "is_tutorial": True,
             }
@@ -2174,23 +2304,46 @@ class SmartboardCanvas(QWidget):
         self._ensure_slide_layer(0)
 
         # Top-Left buttons: Toggle visibility + Remove clean guide card
-        self.toggle_slide_btn = QPushButton("[Ẩn Slide -> Bảng trống]", self)
-        self.toggle_slide_btn.setGeometry(14, 10, 178, 28)
+        self.toggle_slide_btn = QPushButton("Ẩn Slide -> Bảng trống", self)
+        self.toggle_slide_btn.setGeometry(14, 10, 168, 28)
         self.toggle_slide_btn.setStyleSheet(
-            f"background: {SURFACE_DARK}; color: {SECONDARY_TEAL}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; font-weight: 700; font-size: 11px;"
+            f"background: {SURFACE_DARK}; color: {SECONDARY_TEAL}; border: 1px solid {BORDER_SLATE}; border-radius: 7px; font-weight: 700; font-size: 11px;"
         )
         self.toggle_slide_btn.clicked.connect(self.toggle_slide_visibility)
 
-        self.clear_tutorial_btn = QPushButton("[Xóa hướng dẫn]", self)
-        self.clear_tutorial_btn.setGeometry(198, 10, 122, 28)
+        self.clear_tutorial_btn = QPushButton("Xóa hướng dẫn", self)
+        self.clear_tutorial_btn.setGeometry(188, 10, 114, 28)
         self.clear_tutorial_btn.setStyleSheet(
-            f"background: {SURFACE_DARK}; color: {TEXT_MUTED}; border: 1px solid {BORDER_SLATE}; border-radius: 6px; font-weight: 600; font-size: 11px;"
+            f"background: {SURFACE_DARK}; color: {TEXT_MUTED}; border: 1px solid {BORDER_SLATE}; border-radius: 7px; font-weight: 600; font-size: 11px;"
         )
         self.clear_tutorial_btn.clicked.connect(self.dismiss_tutorial_slides)
 
         # Toggleable Top-Right Corner Mini Camera HUD & Auto-Calibration
         self.mini_hud = MiniCameraHudOverlay(self)
         self.mini_hud.setVisible(True)
+
+        # Bottom-Right Board Navigation Mini-HUD (Zoom %, Page X/Y, Fit Width, Fit Page, Reset View)
+        self.nav_hud = BoardNavMiniHud(self)
+        self.nav_hud.fit_width_clicked.connect(self.fit_to_width)
+        self.nav_hud.fit_page_clicked.connect(self.fit_to_page)
+        self.nav_hud.reset_view_clicked.connect(self.reset_viewport)
+        self.nav_hud.update_state(self.zoom_scale, self.current_slide_idx, len(self.slides))
+
+        # Bottom-Left Quick Tip Banner (dismissible on first launch)
+        self.quick_tip_banner = QuickTipBanner(self)
+        self.quick_tip_banner.guide_requested.connect(self.guide_requested.emit)
+        try:
+            _cfg_tip = load_ui_api_settings()
+            if str(_cfg_tip.get("quick_tip_dismissed", "")).lower() in ("true", "1"):
+                self.quick_tip_banner.setVisible(False)
+        except Exception:
+            pass
+        self.quick_tip_banner.dismissed.connect(self._persist_quick_tip_dismissed)
+
+        # Right-Click Blender/Maya-style Radial Pie Menu (8 ergonomic directional slices)
+        self.pie_menu = RadialPieMenuOverlay(self)
+        self.pie_menu.action_triggered.connect(self._on_pie_menu_action)
+
         self._reposition_overlays()
 
         # Smart Lasso Floating Action Bar (hidden until user completes a Lasso/Region select)
@@ -2232,9 +2385,12 @@ class SmartboardCanvas(QWidget):
                 "strokes": [],
                 "redo_strokes": [],
                 "annotations": [],
+                "images": [],
                 "ai_action_undo_stack": [],
             }
             self.slide_annotations[idx] = layer
+        elif "images" not in layer:
+            layer["images"] = []
         return layer
 
     @property
@@ -2262,6 +2418,14 @@ class SmartboardCanvas(QWidget):
         self._ensure_slide_layer(self.current_slide_idx)["annotations"] = list(value)
 
     @property
+    def board_images(self) -> List[Dict[str, Any]]:
+        return self._ensure_slide_layer(self.current_slide_idx)["images"]
+
+    @board_images.setter
+    def board_images(self, value: List[Dict[str, Any]]) -> None:
+        self._ensure_slide_layer(self.current_slide_idx)["images"] = list(value)
+
+    @property
     def ai_action_undo_stack(self) -> List[Dict[str, Any]]:
         return self._ensure_slide_layer(self.current_slide_idx)["ai_action_undo_stack"]
 
@@ -2269,12 +2433,37 @@ class SmartboardCanvas(QWidget):
     def ai_action_undo_stack(self, value: List[Dict[str, Any]]) -> None:
         self._ensure_slide_layer(self.current_slide_idx)["ai_action_undo_stack"] = list(value)
 
+    def _persist_quick_tip_dismissed(self) -> None:
+        try:
+            cfg = load_ui_api_settings()
+            cfg["quick_tip_dismissed"] = "true"
+            save_ui_api_settings(cfg)
+        except Exception:
+            pass
+
+    def _refresh_nav_hud(self) -> None:
+        if hasattr(self, "nav_hud") and self.nav_hud is not None:
+            self.nav_hud.update_state(self.zoom_scale, self.current_slide_idx, len(self.slides))
+            self.nav_hud.adjustSize()
+            nx = max(12, self.width() - self.nav_hud.width() - 14)
+            ny = max(50, self.height() - self.nav_hud.height() - 12)
+            self.nav_hud.move(nx, ny)
+            self.nav_hud.raise_()
+
     def _reposition_overlays(self) -> None:
         if hasattr(self, "mini_hud") and self.mini_hud is not None:
             self.mini_hud.adjustSize()
             mx = max(12, self.width() - self.mini_hud.width() - 14)
             self.mini_hud.move(mx, 10)
             self.mini_hud.raise_()
+        if hasattr(self, "quick_tip_banner") and self.quick_tip_banner is not None:
+            self.quick_tip_banner.adjustSize()
+            qy = max(50, self.height() - self.quick_tip_banner.height() - 12)
+            self.quick_tip_banner.move(14, qy)
+            self.quick_tip_banner.raise_()
+        self._refresh_nav_hud()
+        if hasattr(self, "pie_menu") and self.pie_menu is not None and self.pie_menu.isVisible():
+            self.pie_menu.raise_()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -2298,7 +2487,11 @@ class SmartboardCanvas(QWidget):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
-                    ext = Path(url.toLocalFile()).suffix.lower()
+                    lp = Path(url.toLocalFile())
+                    if lp.is_dir() and list_folder_images(lp):
+                        event.acceptProposedAction()
+                        return
+                    ext = lp.suffix.lower()
                     if ext in SUPPORTED_DOC_EXTENSIONS or ext in SUPPORTED_IMAGE_EXTENSIONS:
                         event.acceptProposedAction()
                         return
@@ -2308,10 +2501,14 @@ class SmartboardCanvas(QWidget):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
-                    local_path = url.toLocalFile()
-                    ext = Path(local_path).suffix.lower()
+                    lp = Path(url.toLocalFile())
+                    if lp.is_dir() and list_folder_images(lp):
+                        self.load_image_folder(lp)
+                        event.acceptProposedAction()
+                        return
+                    ext = lp.suffix.lower()
                     if ext in SUPPORTED_DOC_EXTENSIONS or ext in SUPPORTED_IMAGE_EXTENSIONS:
-                        self.file_dropped.emit(local_path)
+                        self.file_dropped.emit(str(lp))
                         event.acceptProposedAction()
                         return
         event.ignore()
@@ -2365,13 +2562,16 @@ class SmartboardCanvas(QWidget):
 
     def load_document_file(self, file_path: Path | str) -> bool:
         p = Path(file_path)
+        if p.is_dir():
+            return self.load_image_folder(p)
         ext = p.suffix.lower()
         if ext in SUPPORTED_DOC_EXTENSIONS:
             doc = LectureDocument.open(p)
             self.attach_lecture_document(doc)
             return True
         if ext in SUPPORTED_IMAGE_EXTENSIONS:
-            pm = QPixmap(str(p))
+            qimg = load_image_file_qimage(p, target_max_dim=2048)
+            pm = QPixmap.fromImage(qimg) if not qimg.isNull() else QPixmap(str(p))
             if not pm.isNull():
                 if self.lecture_doc is not None:
                     self.lecture_doc.close()
@@ -2393,9 +2593,99 @@ class SmartboardCanvas(QWidget):
                 self.clear_tutorial_btn.setVisible(False)
                 self.slide_visible = True
                 self.slides_changed.emit()
+                self._refresh_nav_hud()
                 self._bump_scene()
                 self.update()
                 return True
+        return False
+
+    def load_image_folder(self, folder_path: Path | str) -> bool:
+        """Open a folder of images (`.png`, `.jpg`, `.webp`, `.bmp`, `.svg`) as a slide deck."""
+        imgs = list_folder_images(folder_path)
+        if not imgs:
+            return False
+        new_slides: List[Dict[str, Any]] = []
+        for img_p in imgs:
+            qimg = load_image_file_qimage(img_p, target_max_dim=1920)
+            pm = QPixmap.fromImage(qimg) if not qimg.isNull() else QPixmap(str(img_p))
+            if pm.isNull():
+                continue
+            new_slides.append({
+                "title": img_p.name,
+                "subtitle": "",
+                "bullets": [],
+                "formula": "",
+                "pixmap": pm,
+                "aspect_ratio": float(pm.width()) / max(1.0, float(pm.height())),
+                "is_tutorial": False,
+            })
+        if not new_slides:
+            return False
+        if self.lecture_doc is not None:
+            self.lecture_doc.close()
+            self.lecture_doc = None
+        self.slide_annotations.clear()
+        self.slides = new_slides
+        self.current_slide_idx = 0
+        for idx in range(len(self.slides)):
+            self._ensure_slide_layer(idx)
+        self.clear_tutorial_btn.setVisible(False)
+        self.slide_visible = True
+        self.reset_viewport()
+        self.slides_changed.emit()
+        self.show_gesture_toast(f"🖼 Đã mở thư mục {len(new_slides)} ảnh thành Slide", duration_ms=1400.0)
+        return True
+
+    def insert_image_on_board(self, file_path: Path | str) -> bool:
+        """Insert a movable/resizable image object onto the active whiteboard slide."""
+        p = Path(file_path)
+        if not p.exists():
+            return False
+        qimg = load_image_file_qimage(p, target_max_dim=1600)
+        pm = QPixmap.fromImage(qimg) if not qimg.isNull() else QPixmap(str(p))
+        if pm.isNull():
+            return False
+        cw = max(640.0, float(self.width() or 1000.0))
+        ch = max(420.0, float(self.height() or 640.0))
+        ar = float(pm.width()) / max(1.0, float(pm.height()))
+        target_w = min(460.0, max(200.0, cw * 0.36))
+        target_h = target_w / max(0.25, ar)
+        if target_h > ch * 0.52:
+            target_h = ch * 0.52
+            target_w = target_h * max(0.25, ar)
+        n_existing = len(self.board_images)
+        offset = float((n_existing % 5) * 28)
+        cx_b, cy_b = self._screen_to_board(QPointF(cw * 0.5, ch * 0.5)).x(), self._screen_to_board(QPointF(cw * 0.5, ch * 0.5)).y()
+        self.board_images.append({
+            "x": cx_b - target_w * 0.5 + offset,
+            "y": cy_b - target_h * 0.5 + offset,
+            "w": target_w,
+            "h": target_h,
+            "pixmap": pm,
+            "name": p.name,
+        })
+        self._selected_board_image_idx = len(self.board_images) - 1
+        self._bump_scene()
+        self.show_gesture_toast(f"🖼 Đã chèn '{p.name}' (Kéo thanh trên để di chuyển, góc phải dưới để co giãn)", duration_ms=1800.0)
+        self.update()
+        return True
+
+    def move_board_image(self, idx: int, x: float, y: float) -> bool:
+        if 0 <= idx < len(self.board_images):
+            self.board_images[idx]["x"] = float(x)
+            self.board_images[idx]["y"] = float(y)
+            self._bump_scene()
+            self.update()
+            return True
+        return False
+
+    def resize_board_image(self, idx: int, w: float, h: float) -> bool:
+        if 0 <= idx < len(self.board_images):
+            self.board_images[idx]["w"] = max(48.0, float(w))
+            self.board_images[idx]["h"] = max(48.0, float(h))
+            self._bump_scene()
+            self.update()
+            return True
         return False
 
     def set_current_slide(self, idx: int) -> bool:
@@ -2407,6 +2697,7 @@ class SmartboardCanvas(QWidget):
         self.current_stroke.clear()
         self.shape_toast = None
         self.toast_revert_rect = None
+        self._selected_board_image_idx = None
         self.hide_lasso_bar()
         self.current_slide_idx = clamped
         self._ensure_slide_layer(clamped)
@@ -2418,6 +2709,7 @@ class SmartboardCanvas(QWidget):
         if self.lecture_doc is not None and clamped < self.lecture_doc.page_count:
             self.lecture_doc.prewarm_around(clamped, radius=2, scale=2.25)
         self.slides_changed.emit()
+        self._refresh_nav_hud()
         self._bump_scene()
         self.update()
         return True
@@ -2434,20 +2726,27 @@ class SmartboardCanvas(QWidget):
             return None
         tw = max(64, int(round(target_w)))
         th = max(64, int(round(target_h)))
+        # Discrete LOD bucket so panning NEVER triggers page re-rasterization
+        max_dim = max(tw, th)
+        lod_dim = max(640, min(3200, ((max_dim + 511) // 512) * 512))
+        ar_bucket = int(round((tw / max(1, th)) * 100.0))
         doc_rev = id(self.lecture_doc)
-        key = (doc_rev, page_idx, tw, th)
+        key = (doc_rev, page_idx, lod_dim, ar_bucket)
         cached = self._scaled_page_pixmap_cache.get(key)
         if cached is not None and not cached.isNull():
             self._scaled_page_pixmap_cache.move_to_end(key)
             return cached
-        qimg = self.lecture_doc.render_page_qimage(page_idx, scale=2.25)
+        render_scale = max(1.5, min(3.5, float(lod_dim) / 720.0))
+        qimg = self.lecture_doc.render_page_qimage(page_idx, scale=render_scale)
         if qimg.isNull():
             return None
-        scaled_img = qimg.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        lod_w = lod_dim if tw >= th else max(64, int(round(lod_dim * (tw / max(1, th)))))
+        lod_h = lod_dim if th > tw else max(64, int(round(lod_dim * (th / max(1, tw)))))
+        scaled_img = qimg.scaled(lod_w, lod_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         pm = QPixmap.fromImage(scaled_img)
         self._scaled_page_pixmap_cache[key] = pm
         self._scaled_page_pixmap_cache.move_to_end(key)
-        while len(self._scaled_page_pixmap_cache) > 24:
+        while len(self._scaled_page_pixmap_cache) > 36:
             self._scaled_page_pixmap_cache.popitem(last=False)
         return pm
 
@@ -2624,6 +2923,8 @@ class SmartboardCanvas(QWidget):
         self.strokes.clear()
         self.redo_strokes.clear()
         self.annotations.clear()
+        self.board_images.clear()
+        self._selected_board_image_idx = None
         self.current_stroke.clear()
         self.shape_toast = None
         self.toast_revert_rect = None
@@ -2679,9 +2980,10 @@ class SmartboardCanvas(QWidget):
     def _bump_scene(self) -> None:
         self._scene_rev += 1
         self._dirty_tracker.mark_dirty()
+        self._refresh_nav_hud()
 
     def _screen_to_board(self, pt: QPointF) -> QPointF:
-        z = max(0.35, float(self.zoom_scale))
+        z = max(0.20, float(self.zoom_scale))
         return QPointF((pt.x() - self.pan_x) / z, (pt.y() - self.pan_y) / z)
 
     def _board_to_screen(self, pt: QPointF) -> QPointF:
@@ -2690,7 +2992,7 @@ class SmartboardCanvas(QWidget):
     def apply_zoom_factor(self, factor: float, center_norm: Optional[Tuple[float, float]] = None) -> None:
         if abs(factor - 1.0) < 0.002:
             return
-        new_z = max(0.50, min(3.0, self.zoom_scale * float(factor)))
+        new_z = max(0.25, min(4.0, self.zoom_scale * float(factor)))
         if abs(new_z - self.zoom_scale) < 1e-4:
             return
         cx = (center_norm[0] * max(1, self.width())) if center_norm else (self.width() * 0.5)
@@ -2722,14 +3024,84 @@ class SmartboardCanvas(QWidget):
         self._bump_scene()
         self.update()
 
+    def fit_to_width(self) -> None:
+        sr = self._compute_active_slide_rect()
+        if sr.width() < 20.0:
+            self.reset_viewport()
+            return
+        avail_w = max(200.0, float(self.width()) - 40.0)
+        new_z = max(0.25, min(4.0, avail_w / sr.width()))
+        self.zoom_scale = new_z
+        self.pan_x = (self.width() - sr.width() * new_z) * 0.5 - sr.left() * new_z
+        self.pan_y = 20.0 - sr.top() * new_z
+        self.show_gesture_toast(f"↔ Vừa Ngang ({int(round(new_z * 100))}%)", duration_ms=900.0)
+        self._bump_scene()
+        self.update()
+
+    def fit_to_page(self) -> None:
+        sr = self._compute_active_slide_rect()
+        if sr.width() < 20.0 or sr.height() < 20.0:
+            self.reset_viewport()
+            return
+        avail_w = max(200.0, float(self.width()) - 48.0)
+        avail_h = max(180.0, float(self.height()) - 84.0)
+        new_z = max(0.25, min(4.0, min(avail_w / sr.width(), avail_h / sr.height())))
+        self.zoom_scale = new_z
+        self.pan_x = (self.width() - sr.width() * new_z) * 0.5 - sr.left() * new_z
+        self.pan_y = (self.height() - sr.height() * new_z) * 0.5 - sr.top() * new_z
+        self.show_gesture_toast(f"⛶ Vừa Trang ({int(round(new_z * 100))}%)", duration_ms=900.0)
+        self._bump_scene()
+        self.update()
+
+    def _on_pie_menu_action(self, action_id: str) -> None:
+        if action_id in ("PEN", "HIGHLIGHTER", "PAN", "ERASER", "LASER"):
+            self.active_tool = action_id
+            names = {
+                "PEN": "✎ Bút Vẽ (Pen)",
+                "HIGHLIGHTER": "🖍 Bút Nhớ (Highlighter)",
+                "PAN": "✥ Di Chuyển Bảng (Pan)",
+                "ERASER": "⌫ Tẩy (Eraser)",
+                "LASER": "◉ Con Trỏ Laser",
+            }
+            self.show_gesture_toast(names.get(action_id, action_id), duration_ms=950.0)
+            self.pie_tool_selected.emit(action_id)
+        elif action_id == "ASK_AI_REGION":
+            self.active_tool = "SELECT_REGION"
+            self.show_gesture_toast("✦ Kéo chuột khoanh vùng để Hỏi Trợ Lý AI", duration_ms=1300.0)
+            self.pie_tool_selected.emit("SELECT_REGION")
+        elif action_id == "UNDO":
+            if self.request_undo():
+                self.undo()
+            self.show_gesture_toast("↶ Hoàn Tác (Undo)", duration_ms=850.0)
+            self.pie_tool_selected.emit("UNDO")
+        elif action_id == "TOGGLE_SMART_SHAPE":
+            self.smart_shape_enabled = not self.smart_shape_enabled
+            state_txt = "BẬT" if self.smart_shape_enabled else "TẮT"
+            self.show_gesture_toast(f"◇ Nắn Hình Thông Minh: {state_txt}", duration_ms=1000.0)
+            self.pie_tool_selected.emit("TOGGLE_SMART_SHAPE")
+
     def wheelEvent(self, event) -> None:
-        delta = event.angleDelta().y()
-        if delta != 0:
+        delta_y = event.angleDelta().y()
+        delta_x = event.angleDelta().x()
+        if (event.modifiers() & Qt.ShiftModifier) and (delta_y != 0 or delta_x != 0):
+            horiz = delta_x if delta_x != 0 else delta_y
+            self.pan_x += float(horiz) * 0.65
+            self._bump_scene()
+            self.update()
+            event.accept()
+            return
+        if delta_x != 0 and delta_y == 0:
+            self.pan_x += float(delta_x) * 0.65
+            self._bump_scene()
+            self.update()
+            event.accept()
+            return
+        if delta_y != 0:
             if self.continuous_scroll_mode and not (event.modifiers() & Qt.ControlModifier):
-                self.scroll_document(-float(delta) * 0.75)
+                self.scroll_document(-float(delta_y) * 0.75)
                 event.accept()
                 return
-            factor = 1.08 if delta > 0 else (1.0 / 1.08)
+            factor = 1.08 if delta_y > 0 else (1.0 / 1.08)
             pos = event.position()
             c_norm = (pos.x() / max(1, self.width()), pos.y() / max(1, self.height()))
             self.apply_zoom_factor(factor, c_norm)
@@ -3161,7 +3533,7 @@ class SmartboardCanvas(QWidget):
         self.two_hand_status_text = str(dual_info.get("status_label_vi") or "")
         hand_span = float(pkt.get("hand_span") or 0.20)
         base_dim = float(min(max(360, self.width()), max(360, self.height())))
-        self.dynamic_eraser_radius = max(26.0, min(105.0, hand_span * base_dim * 0.42)) / max(0.50, self.zoom_scale)
+        self.dynamic_eraser_radius = max(26.0, min(105.0, hand_span * base_dim * 0.42)) / max(0.25, self.zoom_scale)
         hand_present = cursor_norm is not None and gesture != "IDLE"
 
         old_cursor = self.cursor_pos
@@ -3325,21 +3697,32 @@ class SmartboardCanvas(QWidget):
         if self.drawing_fsm.hud_mode == DrawingHudMode.LOCKED_COOLDOWN:
             return
 
+        if event.button() == Qt.RightButton:
+            self.pie_menu.open_at(pt_screen, smart_shape_enabled=self.smart_shape_enabled)
+            self.update()
+            return
+
         if event.button() == Qt.MiddleButton or (
             event.button() == Qt.LeftButton and (self._space_panning or self.active_tool == "PAN")
         ):
+            # In PAN mode, allow clicking inserted board image move/resize handles first
+            if event.button() == Qt.LeftButton and self.active_tool == "PAN" and not self._space_panning:
+                hit_img = self._try_begin_board_image_drag(pt)
+                if hit_img:
+                    self.update()
+                    return
             self._mouse_pan_last = pt_screen
             self.cursor_mode = "PAN_ERASE"
             self.setCursor(Qt.ClosedHandCursor)
             return
 
-        if event.button() == Qt.RightButton:
-            self.cursor_mode = "PAN_ERASE"
-            self._erase_at(pt, self.dynamic_eraser_radius)
-            self.update()
-            return
-
         if event.button() == Qt.LeftButton:
+            if self._try_begin_board_image_drag(pt):
+                self.update()
+                return
+            if self._selected_board_image_idx is not None:
+                self._selected_board_image_idx = None
+                self._bump_scene()
             if self.active_tool in ("SELECT_REGION", "LASSO"):
                 self.lasso_action_bar.setVisible(False)
                 self.lasso_region = None
@@ -3368,12 +3751,66 @@ class SmartboardCanvas(QWidget):
                 self.current_stroke = [pt]
             self.update()
 
+    def _try_begin_board_image_drag(self, pt: QPointF) -> bool:
+        imgs = self.board_images
+        for idx in range(len(imgs) - 1, -1, -1):
+            item = imgs[idx]
+            ix = float(item.get("x", 0.0))
+            iy = float(item.get("y", 0.0))
+            iw = max(48.0, float(item.get("w", 240.0)))
+            ih = max(48.0, float(item.get("h", 180.0)))
+            resize_grip = QRectF(ix + iw - 20.0, iy + ih - 20.0, 24.0, 24.0)
+            move_header = QRectF(ix, iy, iw, min(28.0, ih))
+            full_rect = QRectF(ix, iy, iw, ih)
+            if resize_grip.contains(pt):
+                self._selected_board_image_idx = idx
+                self._img_drag_state = {
+                    "mode": "resize",
+                    "idx": idx,
+                    "start_pt": QPointF(pt),
+                    "orig": (ix, iy, iw, ih),
+                }
+                self._bump_scene()
+                return True
+            if move_header.contains(pt) or (self.active_tool == "PAN" and full_rect.contains(pt)):
+                self._selected_board_image_idx = idx
+                self._img_drag_state = {
+                    "mode": "move",
+                    "idx": idx,
+                    "start_pt": QPointF(pt),
+                    "orig": (ix, iy, iw, ih),
+                }
+                self._bump_scene()
+                return True
+        return False
+
     def mouseMoveEvent(self, event) -> None:
         pt_screen = QPointF(event.position())
         prev_scr = self.cursor_pos
         self.cursor_pos = pt_screen
         pt_raw = self._screen_to_board(pt_screen)
         pt = self._map_board_to_page_canon(pt_raw, pick_page=False)
+
+        if not self.pie_menu.isHidden() and (event.buttons() & Qt.RightButton):
+            self.pie_menu.update_pointer(pt_screen)
+            return
+
+        if self._img_drag_state is not None and (event.buttons() & Qt.LeftButton):
+            idx = int(self._img_drag_state["idx"])
+            if 0 <= idx < len(self.board_images):
+                ox, oy, ow, oh = self._img_drag_state["orig"]
+                sp = self._img_drag_state["start_pt"]
+                dx = pt.x() - sp.x()
+                dy = pt.y() - sp.y()
+                if self._img_drag_state["mode"] == "resize":
+                    self.board_images[idx]["w"] = max(48.0, ow + dx)
+                    self.board_images[idx]["h"] = max(48.0, oh + dy)
+                else:
+                    self.board_images[idx]["x"] = ox + dx
+                    self.board_images[idx]["y"] = oy + dy
+                self._bump_scene()
+                self.update()
+            return
 
         if self._mouse_pan_last is not None and (
             (event.buttons() & Qt.MiddleButton)
@@ -3388,12 +3825,6 @@ class SmartboardCanvas(QWidget):
             return
 
         if self.drawing_fsm.hud_mode == DrawingHudMode.LOCKED_COOLDOWN:
-            self.update()
-            return
-
-        if event.buttons() & Qt.RightButton:
-            self.cursor_mode = "PAN_ERASE"
-            self._erase_at(pt, self.dynamic_eraser_radius)
             self.update()
             return
 
@@ -3457,6 +3888,14 @@ class SmartboardCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.RightButton and not self.pie_menu.isHidden():
+            self.pie_menu.release_and_dismiss(QPointF(event.position()))
+            self.update()
+            return
+        if self._img_drag_state is not None:
+            self._img_drag_state = None
+            self.update()
+            return
         if self._mouse_pan_last is not None:
             self._mouse_pan_last = None
             if self._space_panning:
@@ -3687,6 +4126,8 @@ class SmartboardCanvas(QWidget):
         self.strokes.clear()
         self.redo_strokes.clear()
         self.annotations.clear()
+        self.board_images.clear()
+        self._selected_board_image_idx = None
         self.current_stroke.clear()
         self.shape_toast = None
         self.toast_revert_rect = None
@@ -3731,34 +4172,52 @@ class SmartboardCanvas(QWidget):
         else:
             self.region_cropped_for_ai.emit(png_bytes, cropped_pm)
 
+    def _get_grid_tile_pixmap(self, zoom: float) -> QPixmap:
+        """Cached 120x120 tileable grid QPixmap so panning never redraws hundreds of lines."""
+        step = 24
+        tile_sz = step * 5
+        key = (bool(self.dark_mode), round(float(zoom), 2))
+        cached = self._grid_tile_cache.get(key)
+        if cached is not None and not cached.isNull():
+            return cached
+        tile = QPixmap(tile_sz, tile_sz)
+        tile.fill(Qt.transparent)
+        tp = QPainter(tile)
+        minor_w = max(0.5, 1.0 / max(0.20, float(zoom)))
+        minor_pen = QPen(QColor(79, 70, 229, 32 if self.dark_mode else 26), minor_w)
+        major_pen = QPen(QColor(6, 182, 212, 62 if self.dark_mode else 46), minor_w)
+        for i in range(5):
+            tp.setPen(major_pen if i == 0 else minor_pen)
+            pos = i * step
+            tp.drawLine(pos, 0, pos, tile_sz)
+            tp.drawLine(0, pos, tile_sz, pos)
+        tp.end()
+        if len(self._grid_tile_cache) > 24:
+            self._grid_tile_cache.clear()
+        self._grid_tile_cache[key] = tile
+        return tile
+
     def _paint_static_scene(self, painter: QPainter) -> bool:
         """Render background, grid, slide, committed strokes & math annotations cleanly."""
         has_active_reveal = False
         bg_col = QColor(BG_DARK if self.dark_mode else "#F8FAFC")
         painter.fillRect(self.rect(), bg_col)
 
-        z = max(0.35, float(self.zoom_scale))
+        z = max(0.20, float(self.zoom_scale))
         painter.save()
         painter.translate(self.pan_x, self.pan_y)
         painter.scale(z, z)
 
-        # 1. Single Caro Grid (mapped into Pan/Zoom board viewport)
+        # 1. Single Cached Tileable Caro Grid (mapped into Pan/Zoom board viewport)
         if self.grid_enabled:
             step = 24
-            minor_pen = QPen(QColor(79, 70, 229, 32 if self.dark_mode else 26), 1.0 / z)
-            major_pen = QPen(QColor(6, 182, 212, 62 if self.dark_mode else 46), 1.0 / z)
-            bx0 = int(math.floor((-self.pan_x / z) / step)) * step - step
-            bx1 = int(math.ceil((self.width() - self.pan_x) / z)) + step * 2
-            by0 = int(math.floor((-self.pan_y / z) / step)) * step - step
-            by1 = int(math.ceil((self.height() - self.pan_y) / z)) + step * 2
-            for x in range(bx0, bx1, step):
-                idx = x // step
-                painter.setPen(major_pen if idx % 5 == 0 else minor_pen)
-                painter.drawLine(x, by0, x, by1)
-            for y in range(by0, by1, step):
-                idx = y // step
-                painter.setPen(major_pen if idx % 5 == 0 else minor_pen)
-                painter.drawLine(bx0, y, bx1, y)
+            tile_sz = step * 5
+            bx0 = int(math.floor((-self.pan_x / z) / tile_sz)) * tile_sz - tile_sz
+            bx1 = int(math.ceil((self.width() - self.pan_x) / z)) + tile_sz * 2
+            by0 = int(math.floor((-self.pan_y / z) / tile_sz)) * tile_sz - tile_sz
+            by1 = int(math.ceil((self.height() - self.pan_y) / z)) + tile_sz * 2
+            tile_pm = self._get_grid_tile_pixmap(z)
+            painter.drawTiledPixmap(QRectF(bx0, by0, bx1 - bx0, by1 - by0), tile_pm)
 
         # 2 & 3. Slide / Document Rendering & Committed Strokes (Continuous Scroll vs Single-Page)
         now_ms = self._now_ms()
@@ -3900,6 +4359,28 @@ class SmartboardCanvas(QWidget):
                 painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
                 painter.drawText(f_rect, Qt.AlignCenter, OutputSanitizer.sanitize_plain_text(slide["formula"]))
 
+        # 2B. Movable / Resizable Inserted Images on Board (rendered beneath ink so teacher can draw over them)
+        if not rendered_continuous and self.board_images:
+            for idx_img, img_item in enumerate(self.board_images):
+                img_pm: Optional[QPixmap] = img_item.get("pixmap")
+                if img_pm is None or img_pm.isNull():
+                    continue
+                ix = float(img_item.get("x", 80.0))
+                iy = float(img_item.get("y", 80.0))
+                iw = max(48.0, float(img_item.get("w", 240.0)))
+                ih = max(48.0, float(img_item.get("h", 180.0)))
+                img_rect = QRectF(ix, iy, iw, ih)
+                is_sel = idx_img == self._selected_board_image_idx
+                painter.save()
+                painter.drawPixmap(img_rect.toRect(), img_pm)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(NEON_CYAN if is_sel else BORDER_SLATE), 2.0 if is_sel else 1.0))
+                painter.drawRoundedRect(img_rect, 4.0, 4.0)
+                if is_sel or self.active_tool == "PAN":
+                    # Top subtle move grip & bottom-right resize handle
+                    painter.fillRect(QRectF(ix + iw - 14.0, iy + ih - 14.0, 14.0, 14.0), QColor(NEON_CYAN))
+                painter.restore()
+
         # 3. Committed Vector Ink & Highlighter Strokes (Single-Page / Blank Board Mode)
         if not rendered_continuous:
             for s in self.strokes:
@@ -3958,7 +4439,7 @@ class SmartboardCanvas(QWidget):
         return has_active_reveal
 
     def paintEvent(self, _event) -> None:
-        z = max(0.35, float(self.zoom_scale))
+        z = max(0.20, float(self.zoom_scale))
         scene_key = (
             self.width(),
             self.height(),
@@ -4317,6 +4798,8 @@ class AirTeachMainWindow(QMainWindow):
         self.health_worker: Optional[GeminiHealthCheckWorker] = None
         self.doc_import_worker: Optional[DocumentImportWorker] = None
         self.voice_worker: Optional[VoiceQuestionWorker] = None
+        self.warmup_worker: Optional[EngineWarmupWorker] = None
+        self.active_gguf_path: str = ""
         self.dark_mode: bool = True
         self.chat_history: List[Dict[str, str]] = []
         self.last_ai_raw_text: str = ""
@@ -4369,9 +4852,18 @@ class AirTeachMainWindow(QMainWindow):
         self.pgup_shortcut.activated.connect(self._on_prev_slide)
         self.pgdn_shortcut = QShortcut(QKeySequence(Qt.Key_PageDown), self)
         self.pgdn_shortcut.activated.connect(self._on_next_slide)
+        self.reset_zoom_shortcut = QShortcut(QKeySequence("Ctrl+0"), self)
+        self.reset_zoom_shortcut.activated.connect(self._on_reset_zoom)
+        self.guide_shortcut = QShortcut(QKeySequence(Qt.Key_F1), self)
+        self.guide_shortcut.activated.connect(self._on_show_user_guide)
 
         self.stack.setCurrentIndex(0)
         self.cam_worker.start()
+        self._warmup_timer = QTimer(self)
+        self._warmup_timer.setSingleShot(True)
+        self._warmup_timer.timeout.connect(self._start_engine_warmup)
+        self._warmup_timer.start(80)
+
         self._discovery_timer = QTimer(self)
         self._discovery_timer.setSingleShot(True)
         self._discovery_timer.timeout.connect(self._on_discover_local_ai)
@@ -4432,7 +4924,7 @@ class AirTeachMainWindow(QMainWindow):
         root.setSpacing(0)
 
         # =====================================================================
-        # MODULE 2.1: SINGLE COMPACT HEADER BAR (Height: 46px, Brand Logo + Controls)
+        # MODULE 2.1: CLEAN STUDIO HEADER BAR (Height: 46px, Uncluttered)
         # =====================================================================
         header = QFrame()
         header.setFixedHeight(46)
@@ -4443,34 +4935,34 @@ class AirTeachMainWindow(QMainWindow):
         h_layout.setContentsMargins(10, 6, 10, 6)
         h_layout.setSpacing(6)
 
-        h_layout.addWidget(make_brand_logo_widget(28))
+        h_layout.addWidget(make_brand_logo_widget(26))
         brand_lbl = QLabel("AirTeach AI")
         brand_lbl.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 800; font-size: 13px;")
         h_layout.addWidget(brand_lbl)
 
-        about_btn = QPushButton("[Giới thiệu]")
-        about_btn.clicked.connect(self._on_show_about)
-        h_layout.addWidget(about_btn)
-
-        logout_btn = QPushButton("[Đăng xuất]")
-        logout_btn.setStyleSheet(
-            f"background: {SURFACE_DARK}; color: {ALERT_ROSE}; border: 1px solid {ALERT_ROSE}; border-radius: 6px; padding: 4px 10px; font-weight: 700;"
-        )
-        logout_btn.clicked.connect(self._on_logout)
-        h_layout.addWidget(logout_btn)
-
         self.teacher_name_lbl = QLabel("GV: Giáo viên")
         self.teacher_name_lbl.setStyleSheet(
-            f"color: {SECONDARY_TEAL}; font-weight: 700; font-size: 13px;"
+            f"color: {SECONDARY_TEAL}; font-weight: 700; font-size: 12px; padding-right: 4px;"
         )
         h_layout.addWidget(self.teacher_name_lbl)
 
-        open_slide_btn = QPushButton("[📂 Mở Tài Liệu: Word / PDF / PPTX]")
-        open_slide_btn.setToolTip("Mở bài giảng Word (.docx/.doc), PDF, PowerPoint (.pptx/.ppt) hoặc Ảnh (kéo thả trực tiếp)")
-        open_slide_btn.clicked.connect(self._on_open_slide_file)
-        h_layout.addWidget(open_slide_btn)
+        doc_menu_btn = QPushButton("📂 Tài Liệu ▾")
+        doc_menu_btn.setToolTip("Mở Word/PDF/PPTX/Ảnh/SVG, mở thư mục ảnh, chèn ảnh lên bảng hoặc xuất PDF")
+        doc_menu = QMenu(doc_menu_btn)
+        doc_menu.setStyleSheet(
+            f"QMenu {{ background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; padding: 4px; }}"
+            f"QMenu::item {{ padding: 6px 14px; border-radius: 5px; }}"
+            f"QMenu::item:selected {{ background: {PRIMARY_INDIGO}; }}"
+        )
+        doc_menu.addAction("📄 Mở Tài Liệu (Word / PDF / PPTX / Ảnh / SVG)", self._on_open_slide_file)
+        doc_menu.addAction("🖼 Mở Thư Mục Ảnh Thành Slide", self._on_open_image_folder)
+        doc_menu.addAction("📌 Chèn Ảnh Lên Bảng (Di chuyển / Co giãn)", self._on_insert_board_image)
+        doc_menu.addSeparator()
+        doc_menu.addAction("💾 Xuất Bài Giảng Đã Chú Thích (.PDF)", self._on_export_annotated_pdf)
+        doc_menu_btn.setMenu(doc_menu)
+        h_layout.addWidget(doc_menu_btn)
 
-        prev_btn = QPushButton("<")
+        prev_btn = QPushButton("◀")
         prev_btn.setFixedWidth(26)
         prev_btn.clicked.connect(self._on_prev_slide)
         h_layout.addWidget(prev_btn)
@@ -4479,79 +4971,94 @@ class AirTeachMainWindow(QMainWindow):
         self.slide_counter_lbl.setStyleSheet(f"color: {TEXT_LIGHT}; font-weight: 700; font-size: 11px;")
         h_layout.addWidget(self.slide_counter_lbl)
 
-        next_btn = QPushButton(">")
+        next_btn = QPushButton("▶")
         next_btn.setFixedWidth(26)
         next_btn.clicked.connect(self._on_next_slide)
         h_layout.addWidget(next_btn)
 
-        self.cont_scroll_btn = QPushButton("[📄 Cuộn Dọc]")
+        self.cont_scroll_btn = QPushButton("Cuộn Dọc")
         self.cont_scroll_btn.setCheckable(True)
         self.cont_scroll_btn.setChecked(False)
         self.cont_scroll_btn.setToolTip("Bật/tắt chế độ cuộn liên tục cho tài liệu Word/PDF nhiều trang")
         self.cont_scroll_btn.clicked.connect(self._on_toggle_continuous_scroll)
         h_layout.addWidget(self.cont_scroll_btn)
 
-        self.thumb_toggle_btn = QPushButton("[📑 Thu nhỏ]")
+        self.thumb_toggle_btn = QPushButton("Slides")
         self.thumb_toggle_btn.setCheckable(True)
-        self.thumb_toggle_btn.setChecked(True)
+        self.thumb_toggle_btn.setChecked(False)
         self.thumb_toggle_btn.setToolTip("Ẩn/hiện thanh xem trước các Slide")
         self.thumb_toggle_btn.clicked.connect(self._on_toggle_thumb_strip)
         h_layout.addWidget(self.thumb_toggle_btn)
 
-        export_pdf_btn = QPushButton("[💾 Xuất Bài Giảng (.PDF)]")
-        export_pdf_btn.setToolTip("Xuất Bài Giảng Đã Ghi Chú (.PDF) kèm toàn bộ nét vẽ cho học sinh")
-        export_pdf_btn.clicked.connect(self._on_export_annotated_pdf)
-        h_layout.addWidget(export_pdf_btn)
-
-        explain_slide_hdr_btn = QPushButton("[✨ Giải Slide AI]")
+        explain_slide_hdr_btn = QPushButton("✨ Giải Slide")
         explain_slide_hdr_btn.setStyleSheet(
-            f"background: #0D9488; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 8px; font-weight: 700;"
+            f"background: #0D9488; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 9px; font-weight: 700; border: none;"
         )
         explain_slide_hdr_btn.clicked.connect(lambda: self._on_explain_active_slide())
         h_layout.addWidget(explain_slide_hdr_btn)
 
-        grid_btn = QPushButton("[Lưới]")
-        grid_btn.clicked.connect(self._on_toggle_grid)
-        h_layout.addWidget(grid_btn)
-
-        self.theme_btn = QPushButton("[Sáng/Tối]")
-        self.theme_btn.clicked.connect(self._on_toggle_theme)
-        h_layout.addWidget(self.theme_btn)
-
-        self.status_pill_lbl = QLabel(self.perf_pipeline.telemetry.status_pill_text())
-        self.status_pill_lbl.setStyleSheet(
-            f"background: {SURFACE_DARK}; color: {NEON_CYAN}; border: 1px solid {SECONDARY_TEAL}; border-radius: 10px; padding: 3px 8px; font-size: 10.5px; font-weight: 700;"
-        )
-        h_layout.addWidget(self.status_pill_lbl)
+        self.local_mgr_btn = QPushButton("🤖 AI Local")
+        self.local_mgr_btn.setToolTip("Mở Quản lý AI Local Offline & Kho Model GGUF (HuggingFace / GitHub)")
+        self.local_mgr_btn.clicked.connect(self._on_open_local_ai_manager)
+        h_layout.addWidget(self.local_mgr_btn)
 
         h_layout.addStretch(1)
 
-        self.rec_btn = QPushButton("[Ghi Âm]")
+        self.status_pill_lbl = QLabel(self.perf_pipeline.telemetry.status_pill_text())
+        self.status_pill_lbl.setStyleSheet(
+            f"background: {SURFACE_DARK}; color: {NEON_CYAN}; border: 1px solid {SECONDARY_TEAL}; border-radius: 10px; padding: 3px 9px; font-size: 10.5px; font-weight: 700;"
+        )
+        h_layout.addWidget(self.status_pill_lbl)
+
+        self.rec_btn = QPushButton("🎙 Ghi Âm")
         self.rec_btn.setStyleSheet(
-            f"background: {ALERT_ROSE}; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 8px; font-weight: 700;"
+            f"background: {ALERT_ROSE}; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 8px; font-weight: 700; border: none;"
         )
         self.rec_btn.clicked.connect(self._on_toggle_recording)
         h_layout.addWidget(self.rec_btn)
 
-        self.toggle_cam_btn = QPushButton("[Cam]")
+        self.toggle_cam_btn = QPushButton("Cam")
+        self.toggle_cam_btn.setToolTip("Ẩn/hiện khung điều khiển Camera & CV")
         self.toggle_cam_btn.clicked.connect(self._on_toggle_studio_camera)
         h_layout.addWidget(self.toggle_cam_btn)
 
-        self.mini_hud_btn = QPushButton("[🎥 Mini HUD]")
+        self.mini_hud_btn = QPushButton("Mini HUD")
         self.mini_hud_btn.setCheckable(True)
         self.mini_hud_btn.setChecked(True)
         self.mini_hud_btn.setToolTip("Bật/tắt Mini Camera HUD góc phải (Phím H)")
         self.mini_hud_btn.clicked.connect(self._on_toggle_mini_hud)
         h_layout.addWidget(self.mini_hud_btn)
 
-        toggle_ai_btn = QPushButton("[Trợ Lý AI]")
-        toggle_ai_btn.setStyleSheet(
-            f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 8px; font-weight: 700;"
+        self.toggle_ai_btn = QPushButton("Trợ Lý AI")
+        self.toggle_ai_btn.setCheckable(True)
+        self.toggle_ai_btn.setChecked(False)
+        self.toggle_ai_btn.setStyleSheet(
+            f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 9px; font-weight: 700; border: none;"
         )
-        toggle_ai_btn.clicked.connect(
-            lambda: self.right_dock.setVisible(not self.right_dock.isVisible())
+        self.toggle_ai_btn.clicked.connect(self._on_toggle_ai_drawer)
+        h_layout.addWidget(self.toggle_ai_btn)
+
+        guide_btn = QPushButton("? Hướng Dẫn")
+        guide_btn.setToolTip("Mở Hướng Dẫn Sử Dụng Trực Quan (Cử chỉ 1/2 tay, Chuột phải Pie Menu, AI Local - Phím F1)")
+        guide_btn.clicked.connect(self._on_show_user_guide)
+        h_layout.addWidget(guide_btn)
+
+        gear_btn = QPushButton("⚙")
+        gear_btn.setFixedWidth(30)
+        gear_btn.setToolTip("Cài đặt hiển thị, lưới, giao diện & tài khoản")
+        gear_menu = QMenu(gear_btn)
+        gear_menu.setStyleSheet(
+            f"QMenu {{ background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; padding: 4px; }}"
+            f"QMenu::item {{ padding: 6px 14px; border-radius: 5px; }}"
+            f"QMenu::item:selected {{ background: {PRIMARY_INDIGO}; }}"
         )
-        h_layout.addWidget(toggle_ai_btn)
+        gear_menu.addAction("Bật/Tắt Lưới Caro", self._on_toggle_grid)
+        gear_menu.addAction("Đổi Giao Diện Sáng / Tối", self._on_toggle_theme)
+        gear_menu.addAction("Giới Thiệu AirTeach AI", self._on_show_about)
+        gear_menu.addSeparator()
+        gear_menu.addAction("Đăng Xuất", self._on_logout)
+        gear_btn.setMenu(gear_menu)
+        h_layout.addWidget(gear_btn)
 
         root.addWidget(header)
 
@@ -4696,6 +5203,7 @@ class AirTeachMainWindow(QMainWindow):
         l_layout.addWidget(self.vu_bar)
 
         workspace.addWidget(self.left_dock)
+        self.left_dock.setVisible(False)
 
         # Center Smartboard Canvas + Collapsible Slide Thumbnail Strip
         center_panel = QWidget()
@@ -4708,6 +5216,8 @@ class AirTeachMainWindow(QMainWindow):
         self.canvas.lasso_action_requested.connect(self._on_lasso_quick_action)
         self.canvas.slides_changed.connect(self._update_slide_counter)
         self.canvas.file_dropped.connect(self._import_document_async)
+        self.canvas.pie_tool_selected.connect(self._on_canvas_pie_tool_selected)
+        self.canvas.guide_requested.connect(self._on_show_user_guide)
         self.canvas.mini_hud.calibrate_clicked.connect(self._on_auto_calibrate)
         self.canvas.mini_hud.close_clicked.connect(lambda: self._set_mini_hud_visible(False))
         center_vbox.addWidget(self.canvas, stretch=1)
@@ -4721,6 +5231,7 @@ class AirTeachMainWindow(QMainWindow):
             self.canvas.slide_annotations,
             self.canvas.lecture_doc,
         )
+        self.thumb_strip.setVisible(False)
 
         workspace.addWidget(center_panel, stretch=1)
 
@@ -4825,12 +5336,16 @@ class AirTeachMainWindow(QMainWindow):
         self.local_model_combo = QComboBox()
         self.local_model_combo.addItem("Auto (Local chưa bật)")
         self.local_model_combo.currentIndexChanged.connect(self._on_local_model_selected)
-        scan_local_btn = QPushButton("Quét Local")
-        scan_local_btn.setFixedWidth(74)
+        scan_local_btn = QPushButton("Quét")
+        scan_local_btn.setFixedWidth(48)
         scan_local_btn.clicked.connect(self._on_discover_local_ai)
+        local_mgr_dock_btn = QPushButton("Quản Lý GGUF")
+        local_mgr_dock_btn.setToolTip("Tải model GGUF từ HuggingFace / GitHub & chuyển chế độ AI")
+        local_mgr_dock_btn.clicked.connect(self._on_open_local_ai_manager)
         local_row.addWidget(self.routing_combo, stretch=1)
         local_row.addWidget(self.local_model_combo, stretch=2)
         local_row.addWidget(scan_local_btn)
+        local_row.addWidget(local_mgr_dock_btn)
         r_layout.addLayout(local_row)
 
         slide_ai_row = QHBoxLayout()
@@ -4918,6 +5433,11 @@ class AirTeachMainWindow(QMainWindow):
         push_board_btn.clicked.connect(self._on_push_last_ai_to_board)
         r_layout.addWidget(push_board_btn)
 
+        self.chat_attach_board_chk = QCheckBox("Đính kèm ngữ cảnh Slide & Bảng vẽ hiện tại")
+        self.chat_attach_board_chk.setChecked(True)
+        self.chat_attach_board_chk.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        r_layout.addWidget(self.chat_attach_board_chk)
+
         chat_in_row = QHBoxLayout()
         chat_in_row.setSpacing(4)
         self.chat_input_edit = QLineEdit()
@@ -4934,35 +5454,40 @@ class AirTeachMainWindow(QMainWindow):
         r_layout.addLayout(chat_in_row)
 
         workspace.addWidget(self.right_dock)
+        self.right_dock.setVisible(False)
         root.addLayout(workspace, stretch=1)
 
         # =====================================================================
-        # BOTTOM DRAWING DOCK (Height: 54px)
+        # CLEAN CENTERED BOTTOM DRAWING DOCK (Height: 50px)
         # =====================================================================
         bottom = QFrame()
-        bottom.setFixedHeight(54)
+        bottom.setFixedHeight(50)
         bottom.setStyleSheet(
             f"background: {BG_DARK}; border-top: 1px solid {BORDER_SLATE};"
         )
         b_layout = QHBoxLayout(bottom)
-        b_layout.setContentsMargins(10, 8, 10, 8)
+        b_layout.setContentsMargins(10, 6, 10, 6)
         b_layout.setSpacing(6)
 
+        b_layout.addStretch(1)
+        self._tool_buttons: Dict[str, QPushButton] = {}
         for tool_id, label in [
-            ("LASSO", "[Khoanh AI]"),
-            ("SELECT_REGION", "[Chọn Vùng]"),
-            ("PEN", "[Bút vẽ]"),
-            ("HIGHLIGHTER", "[Dạ quang]"),
-            ("ERASER", "[Tẩy]"),
-            ("LASER", "[Laser]"),
-            ("PAN", "[Trượt]"),
+            ("PEN", "✎ Bút Vẽ"),
+            ("HIGHLIGHTER", "🖍 Dạ Quang"),
+            ("ERASER", "⌫ Tẩy"),
+            ("LASER", "◉ Laser"),
+            ("PAN", "✥ Trượt Bảng"),
+            ("SELECT_REGION", "⬚ Chọn Vùng"),
+            ("LASSO", "✦ Khoanh AI"),
         ]:
             btn = QPushButton(label)
             btn.setFixedHeight(32)
             btn.clicked.connect(lambda _=False, t=tool_id: self._set_tool(t))
             b_layout.addWidget(btn)
+            self._tool_buttons[tool_id] = btn
+        self._sync_tool_buttons_ui()
 
-        self.smart_shape_btn = QPushButton("[Nắn hình: BẬT]")
+        self.smart_shape_btn = QPushButton("◇ Nắn Hình: BẬT")
         self.smart_shape_btn.setFixedHeight(32)
         self.smart_shape_btn.setStyleSheet(
             f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 8px; font-weight: 700;"
@@ -4970,28 +5495,28 @@ class AirTeachMainWindow(QMainWindow):
         self.smart_shape_btn.clicked.connect(self._on_toggle_smart_shape)
         b_layout.addWidget(self.smart_shape_btn)
 
-        self.hold_snap_btn = QPushButton("[Giữ 350ms: TẮT]")
+        self.hold_snap_btn = QPushButton("Giữ 350ms: TẮT")
         self.hold_snap_btn.setFixedHeight(32)
         self.hold_snap_btn.clicked.connect(self._on_toggle_hold_snap)
         b_layout.addWidget(self.hold_snap_btn)
 
-        self.draw_mode_btn = QPushButton("[Vẽ: Chỉ Chụm]")
+        self.draw_mode_btn = QPushButton("Vẽ: Chỉ Chụm")
         self.draw_mode_btn.setFixedHeight(32)
         self.draw_mode_btn.setToolTip("Bật/tắt chế độ vẽ bằng 1 ngón trỏ (bên cạnh cử chỉ chụm)")
         self.draw_mode_btn.clicked.connect(self._on_toggle_draw_mode)
         b_layout.addWidget(self.draw_mode_btn)
 
-        reset_zoom_btn = QPushButton("[100%]")
+        reset_zoom_btn = QPushButton("100%")
         reset_zoom_btn.setFixedHeight(32)
-        reset_zoom_btn.setToolTip("Đặt lại thu phóng (Zoom) và trượt (Pan) bảng trắng về 100%")
+        reset_zoom_btn.setToolTip("Đặt lại thu phóng (Zoom) và trượt (Pan) bảng trắng về 100% (Ctrl+0)")
         reset_zoom_btn.clicked.connect(self._on_reset_zoom)
         b_layout.addWidget(reset_zoom_btn)
 
         for hex_col in self._ink_palette:
             c_btn = QPushButton("")
-            c_btn.setFixedSize(22, 22)
+            c_btn.setFixedSize(20, 20)
             c_btn.setStyleSheet(
-                f"background: {hex_col}; border: 1px solid {TEXT_LIGHT}; border-radius: 11px;"
+                f"background: {hex_col}; border: 1px solid {TEXT_LIGHT}; border-radius: 10px;"
             )
             c_btn.clicked.connect(lambda _=False, hc=hex_col: self._set_ink_color(hc))
             b_layout.addWidget(c_btn)
@@ -5003,31 +5528,34 @@ class AirTeachMainWindow(QMainWindow):
         thick_slider = QSlider(Qt.Horizontal)
         thick_slider.setRange(2, 14)
         thick_slider.setValue(4)
-        thick_slider.setFixedWidth(74)
+        thick_slider.setFixedWidth(70)
         thick_slider.valueChanged.connect(self._on_thickness_changed)
         b_layout.addWidget(thick_slider)
 
-        b_layout.addStretch(1)
-
-        undo_btn = QPushButton("[Hoàn tác]")
+        undo_btn = QPushButton("↶ Hoàn tác")
+        undo_btn.setFixedHeight(32)
         undo_btn.clicked.connect(self._on_hotkey_undo)
         b_layout.addWidget(undo_btn)
 
-        redo_btn = QPushButton("[Làm lại]")
+        redo_btn = QPushButton("↷ Làm lại")
+        redo_btn.setFixedHeight(32)
         redo_btn.clicked.connect(self.canvas.redo)
         b_layout.addWidget(redo_btn)
 
-        clear_ink_btn = QPushButton("[Xóa mực Slide]")
+        clear_ink_btn = QPushButton("Xóa mực")
+        clear_ink_btn.setFixedHeight(32)
         clear_ink_btn.setToolTip("Chỉ xóa nét mực và chú thích trên Slide hiện tại")
         clear_ink_btn.clicked.connect(self.canvas.clear_slide_ink)
         b_layout.addWidget(clear_ink_btn)
 
-        clear_btn = QPushButton("[Xóa Bảng]")
+        clear_btn = QPushButton("Xóa Bảng")
+        clear_btn.setFixedHeight(32)
         clear_btn.setStyleSheet(
             f"background: {SURFACE_DARK}; color: {ALERT_ROSE}; border: 1px solid {ALERT_ROSE}; border-radius: 6px; padding: 4px 10px; font-weight: 700;"
         )
         clear_btn.clicked.connect(self.canvas.clear_board)
         b_layout.addWidget(clear_btn)
+        b_layout.addStretch(1)
 
         root.addWidget(bottom)
 
@@ -5387,13 +5915,91 @@ class AirTeachMainWindow(QMainWindow):
     def _on_open_slide_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Mở Tài Liệu Giảng Dạy (Word / PDF / PowerPoint / Ảnh)",
+            "Mở Tài Liệu Giảng Dạy (Word / PDF / PowerPoint / Ảnh / SVG)",
             "",
-            "Tất cả Tài liệu (*.docx *.doc *.pdf *.pptx *.ppt *.ppsx *.potx *.png *.jpg *.jpeg *.webp *.bmp);;"
-            "Word (*.docx *.doc);;PDF (*.pdf);;PowerPoint (*.pptx *.ppt *.ppsx *.potx);;Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+            "Tất cả Tài liệu (*.docx *.doc *.pdf *.pptx *.ppt *.ppsx *.potx *.png *.jpg *.jpeg *.webp *.bmp *.svg);;"
+            "Word (*.docx *.doc);;PDF (*.pdf);;PowerPoint (*.pptx *.ppt *.ppsx *.potx);;Images (*.png *.jpg *.jpeg *.webp *.bmp *.svg)",
         )
         if path:
             self._import_document_async(path)
+
+    def _on_open_image_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Chọn Thư Mục Ảnh Để Trình Chiếu Slide")
+        if folder:
+            ok = self.canvas.load_image_folder(folder)
+            if not ok:
+                self.right_dock.setVisible(True)
+                self._set_sanitized_ai_html("⚠ Thư mục đã chọn không chứa file ảnh hợp lệ (`.png`, `.jpg`, `.webp`, `.bmp`, `.svg`).")
+
+    def _on_insert_board_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Chèn Hình Ảnh Lên Trang Bảng Hiện Tại",
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp *.svg)",
+        )
+        if path:
+            self.canvas.insert_image_on_board(path)
+
+    def _on_show_user_guide(self) -> None:
+        UserGuideDialog(self).exec()
+
+    def _on_toggle_ai_drawer(self) -> None:
+        vis = not self.right_dock.isVisible()
+        self.right_dock.setVisible(vis)
+        if hasattr(self, "toggle_ai_btn"):
+            self.toggle_ai_btn.setChecked(vis)
+
+    def _on_open_local_ai_manager(self) -> None:
+        mode_map = {
+            AiRoutingMode.LOCAL: "local_only",
+            AiRoutingMode.CLOUD: "cloud_only",
+            AiRoutingMode.HYBRID: "hybrid",
+        }
+        dlg = LocalAiManagerDialog(
+            current_routing_mode=mode_map.get(self.local_ai_manager.routing_mode, "hybrid"),
+            active_gguf_path=self.active_gguf_path,
+            local_provider=self.local_ai_manager.active_provider or "Ollama",
+            local_model=self.local_ai_manager.active_model or "",
+            parent=self,
+        )
+        dlg.settings_applied.connect(self._on_local_ai_settings_applied)
+        dlg.exec()
+
+    def _on_local_ai_settings_applied(self, data: Dict[str, Any]) -> None:
+        rm = str(data.get("routing_mode") or "hybrid")
+        if rm == "local_only":
+            self.local_ai_manager.routing_mode = AiRoutingMode.LOCAL
+            if hasattr(self, "routing_combo"):
+                self.routing_combo.setCurrentText("Local")
+        elif rm == "cloud_only":
+            self.local_ai_manager.routing_mode = AiRoutingMode.CLOUD
+            if hasattr(self, "routing_combo"):
+                self.routing_combo.setCurrentText("Cloud")
+        else:
+            self.local_ai_manager.routing_mode = AiRoutingMode.HYBRID
+            if hasattr(self, "routing_combo"):
+                self.routing_combo.setCurrentText("Hybrid")
+
+        gguf_path = str(data.get("active_gguf_path") or "").strip()
+        self.active_gguf_path = gguf_path
+        self.local_ai_manager.set_gguf_model(gguf_path)
+        self._refresh_status_pill()
+
+    def _start_engine_warmup(self) -> None:
+        if self._shutting_down:
+            return
+        if self.warmup_worker is not None and self.warmup_worker.isRunning():
+            return
+        if hasattr(self, "status_pill_lbl"):
+            core_tag = "⚡ Rust Core" if HAS_RUST_CORE else "Python Core"
+            self.status_pill_lbl.setText(f"{core_tag} · Đang nạp tài liệu & AI...")
+        self.warmup_worker = EngineWarmupWorker(self)
+        self.warmup_worker.warmup_done.connect(self._on_engine_warmup_done)
+        self.warmup_worker.start()
+
+    def _on_engine_warmup_done(self, _info: Dict[str, bool]) -> None:
+        self._refresh_status_pill()
 
     def _on_export_annotated_pdf(self) -> None:
         default_name = "AirTeach_Annotated_Lecture.pdf"
@@ -5483,8 +6089,35 @@ class AirTeachMainWindow(QMainWindow):
                     wf.setframerate(44100)
                     wf.writeframes(pcm16.tobytes())
 
+    def _sync_tool_buttons_ui(self) -> None:
+        if not hasattr(self, "_tool_buttons"):
+            return
+        cur = self.canvas.active_tool
+        for tid, btn in self._tool_buttons.items():
+            if tid == cur:
+                btn.setStyleSheet(
+                    f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border: 1px solid {NEON_CYAN}; border-radius: 7px; padding: 4px 9px; font-weight: 800;"
+                )
+            else:
+                btn.setStyleSheet(
+                    f"background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1px solid {BORDER_SLATE}; border-radius: 7px; padding: 4px 8px; font-weight: 600;"
+                )
+
+    def _on_canvas_pie_tool_selected(self, action_id: str) -> None:
+        if action_id == "TOGGLE_SMART_SHAPE":
+            if self.canvas.smart_shape_enabled:
+                self.smart_shape_btn.setText("◇ Nắn Hình: BẬT")
+                self.smart_shape_btn.setStyleSheet(
+                    f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 8px; font-weight: 700;"
+                )
+            else:
+                self.smart_shape_btn.setText("◇ Nắn Hình: TẮT")
+                self.smart_shape_btn.setStyleSheet("")
+        self._sync_tool_buttons_ui()
+
     def _set_tool(self, tool_id: str) -> None:
         self.canvas.active_tool = tool_id
+        self._sync_tool_buttons_ui()
 
     def _set_ink_color(self, hex_col: str) -> None:
         self.canvas.ink_color = QColor(hex_col)
@@ -5494,6 +6127,7 @@ class AirTeachMainWindow(QMainWindow):
             self.canvas.highlighter_color = hi
         elif self.canvas.active_tool == "ERASER":
             self.canvas.active_tool = "PEN"
+        self._sync_tool_buttons_ui()
 
     def _on_thickness_changed(self, val: int) -> None:
         self.canvas.pen_thickness = val
@@ -5502,18 +6136,18 @@ class AirTeachMainWindow(QMainWindow):
     def _on_toggle_smart_shape(self) -> None:
         self.canvas.smart_shape_enabled = not self.canvas.smart_shape_enabled
         if self.canvas.smart_shape_enabled:
-            self.smart_shape_btn.setText("[Nắn hình: BẬT]")
+            self.smart_shape_btn.setText("◇ Nắn Hình: BẬT")
             self.smart_shape_btn.setStyleSheet(
                 f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 6px; padding: 4px 8px; font-weight: 700;"
             )
         else:
-            self.smart_shape_btn.setText("[Nắn hình: TẮT]")
+            self.smart_shape_btn.setText("◇ Nắn Hình: TẮT")
             self.smart_shape_btn.setStyleSheet("")
 
     def _on_toggle_hold_snap(self) -> None:
         self.canvas.hold_to_snap_350ms = not self.canvas.hold_to_snap_350ms
         self.hold_snap_btn.setText(
-            "[Giữ 350ms: BẬT]" if self.canvas.hold_to_snap_350ms else "[Giữ 350ms: TẮT]"
+            "Giữ 350ms: BẬT" if self.canvas.hold_to_snap_350ms else "Giữ 350ms: TẮT"
         )
 
     def _on_toggle_draw_mode(self) -> None:
@@ -5521,7 +6155,7 @@ class AirTeachMainWindow(QMainWindow):
         nxt = not cur
         self.canvas.drawing_fsm.allow_index_point_draw = nxt
         if hasattr(self, "draw_mode_btn"):
-            self.draw_mode_btn.setText("[Vẽ: Chụm+1Ngón]" if nxt else "[Vẽ: Chỉ Chụm]")
+            self.draw_mode_btn.setText("Vẽ: Chụm+1Ngón" if nxt else "Vẽ: Chỉ Chụm")
 
     def _on_reset_zoom(self) -> None:
         self.canvas.reset_viewport()
@@ -5647,9 +6281,15 @@ class AirTeachMainWindow(QMainWindow):
         if isinstance(status_obj, ApiConnectionStatus):
             self._refresh_api_key_ui(status=status_obj)
 
-    def _set_sanitized_ai_html(self, raw_text: str) -> None:
+    def _set_sanitized_ai_html(self, raw_text: str, render_math_images: bool = True) -> None:
         self.last_ai_raw_text = raw_text
-        self.ai_output.setHtml(OutputSanitizer.to_rich_html(raw_text, dark_mode=self.dark_mode))
+        self.ai_output.setHtml(
+            OutputSanitizer.to_rich_html(
+                raw_text,
+                dark_mode=self.dark_mode,
+                render_math_images=render_math_images,
+            )
+        )
 
     def _refresh_status_pill(self) -> None:
         mode = self.local_ai_manager.routing_mode.label_vi
@@ -5663,7 +6303,9 @@ class AirTeachMainWindow(QMainWindow):
             tokens_per_sec=self.local_ai_manager.last_tokens_per_sec,
         )
         if hasattr(self, "status_pill_lbl"):
-            self.status_pill_lbl.setText(self.perf_pipeline.telemetry.status_pill_text())
+            base_txt = self.perf_pipeline.telemetry.status_pill_text()
+            prefix = "⚡ Rust · " if HAS_RUST_CORE else ""
+            self.status_pill_lbl.setText(f"{prefix}{base_txt}")
 
     def _on_toggle_theme(self) -> None:
         self.dark_mode = not self.dark_mode
@@ -5735,8 +6377,25 @@ class AirTeachMainWindow(QMainWindow):
             return
 
         self.chat_history.append({"role": "user", "content": user_msg})
-        self._set_sanitized_ai_html(f"Đang xử lý yêu cầu: **{user_msg}**...")
-        self._start_hybrid_worker(user_msg, png_bytes=None, structured_json=False)
+        self._set_sanitized_ai_html(f"Đang xử lý yêu cầu: **{user_msg}**...", render_math_images=False)
+
+        ctx_png: Optional[bytes] = None
+        worker_prompt = user_msg
+        if hasattr(self, "chat_attach_board_chk") and self.chat_attach_board_chk.isChecked():
+            has_doc = self.canvas.lecture_doc is not None
+            has_ink = bool(self.canvas.strokes or self.canvas.annotations or self.canvas.board_images)
+            cur_sl = self.canvas.slides[self.canvas.current_slide_idx] if self.canvas.slides else {}
+            if has_doc or has_ink or not bool(cur_sl.get("is_tutorial", False)):
+                ctx = self.canvas.capture_active_slide_context()
+                ctx_png = ctx.get("png_bytes")
+                sl_txt = str(ctx.get("slide_text") or "").strip()[:2800]
+                if sl_txt:
+                    worker_prompt = (
+                        f"{user_msg}\n\nNgữ cảnh Slide/Bảng hiện tại "
+                        f"(Trang {int(ctx.get('slide_index', 0)) + 1}/{int(ctx.get('slide_count', 1))}):\n"
+                        f"\"\"\"\n{sl_txt}\n\"\"\""
+                    )
+        self._start_hybrid_worker(worker_prompt, png_bytes=ctx_png, structured_json=False)
 
     def _on_push_last_ai_to_board(self) -> None:
         if not self.last_ai_raw_text.strip():
@@ -5841,7 +6500,7 @@ class AirTeachMainWindow(QMainWindow):
 
     def _on_hybrid_token(self, chunk: str) -> None:
         self._stream_raw_accum += chunk
-        self._set_sanitized_ai_html(self._stream_raw_accum)
+        self._set_sanitized_ai_html(self._stream_raw_accum, render_math_images=False)
 
     def _on_hybrid_finished(self, res: LocalAiRunResult) -> None:
         if not res.ok:
@@ -5909,7 +6568,12 @@ class AirTeachMainWindow(QMainWindow):
         self.gemini_worker.start()
 
     def _maybe_show_first_run_onboarding(self) -> None:
-        if self.api_key or self._shutting_down:
+        if (
+            self.api_key
+            or self._shutting_down
+            or os.environ.get("QT_QPA_PLATFORM") == "offscreen"
+            or os.environ.get("AIRTEACH_NO_MODAL")
+        ):
             return
         cfg = load_ui_api_settings()
         if str(cfg.get("onboarding_skipped", "")).lower() in ("true", "1"):
@@ -5926,7 +6590,7 @@ class AirTeachMainWindow(QMainWindow):
         if self._shutting_down:
             return
         self._shutting_down = True
-        for timer_attr in ("ui_timer", "cursor_60hz_timer", "_discovery_timer", "_onboarding_timer"):
+        for timer_attr in ("ui_timer", "cursor_60hz_timer", "_warmup_timer", "_discovery_timer", "_onboarding_timer"):
             tmr = getattr(self, timer_attr, None)
             if tmr is not None:
                 try:
@@ -5939,7 +6603,7 @@ class AirTeachMainWindow(QMainWindow):
             self.cam_worker.stop()
         except Exception as exc:
             _LOGGER.warning("cam_worker stop error: %s", exc)
-        for attr in ("gemini_worker", "hybrid_worker", "discovery_worker", "health_worker", "doc_import_worker", "voice_worker"):
+        for attr in ("warmup_worker", "gemini_worker", "hybrid_worker", "discovery_worker", "health_worker", "doc_import_worker", "voice_worker"):
             worker = getattr(self, attr, None)
             if worker is not None:
                 try:
@@ -5971,8 +6635,15 @@ def main() -> None:
     app = QApplication(sys.argv)
     if APP_LOGO_ICO.exists():
         app.setWindowIcon(QIcon(str(APP_LOGO_ICO)))
-    for fam in ("Segoe UI", "Arial", "Tahoma"):
-        if fam in QFontDatabase.families():
+    fonts_dir = resource_path("assets/fonts")
+    for font_file in ("NotoSans-Regular.ttf", "NotoSans-Bold.ttf"):
+        fp = fonts_dir / font_file
+        if fp.exists():
+            QFontDatabase.addApplicationFont(str(fp))
+    QFont.insertSubstitutions("Segoe UI", ["Noto Sans", "Arial", "Tahoma"])
+    available_families = set(QFontDatabase.families())
+    for fam in ("Segoe UI", "Noto Sans", "Arial", "Tahoma"):
+        if fam in available_families:
             app.setFont(QFont(fam, 10))
             break
     app.setStyleSheet(

@@ -20,6 +20,7 @@ Upgrades implemented:
 
 from __future__ import annotations
 
+import importlib.util
 import math
 import threading
 import time
@@ -35,21 +36,46 @@ import numpy as np
 
 from cv_engine.app_paths import get_app_logger
 from cv_engine.preprocessing import sharpen_and_contrast_roi
+from cv_engine.rust_bridge import (
+    HAS_RUST_CORE,
+    catmull_rom_spline_fast,
+    classify_hand_3d_fast,
+    compute_dual_hand_kinematics_fast,
+    compute_roi_crop_box_fast,
+    make_kinematic_60hz_extrapolator,
+    make_one_euro_1d,
+    make_swipe_detector,
+)
 
 _LOGGER = get_app_logger("hand_gesture")
 
-try:
-    import mediapipe as mp  # type: ignore
-    from mediapipe.tasks import python as mp_python  # type: ignore
-    from mediapipe.tasks.python import vision as mp_vision  # type: ignore
+mp = None  # type: ignore
+mp_python = None  # type: ignore
+mp_vision = None  # type: ignore
+HAS_MEDIAPIPE = importlib.util.find_spec("mediapipe") is not None
 
-    HAS_MEDIAPIPE = True
-except Exception as exc:
-    _LOGGER.error("MediaPipe import failed: %s", exc)
-    mp = None  # type: ignore
-    mp_python = None  # type: ignore
-    mp_vision = None  # type: ignore
-    HAS_MEDIAPIPE = False
+
+def _ensure_mediapipe() -> bool:
+    global mp, mp_python, mp_vision, HAS_MEDIAPIPE
+    if mp is not None:
+        return True
+    try:
+        import mediapipe as _mp  # type: ignore
+        from mediapipe.tasks import python as _mp_python  # type: ignore
+        from mediapipe.tasks.python import vision as _mp_vision  # type: ignore
+
+        mp = _mp
+        mp_python = _mp_python
+        mp_vision = _mp_vision
+        HAS_MEDIAPIPE = True
+        return True
+    except Exception as exc:
+        _LOGGER.error("MediaPipe import failed: %s", exc)
+        mp = None  # type: ignore
+        mp_python = None  # type: ignore
+        mp_vision = None  # type: ignore
+        HAS_MEDIAPIPE = False
+        return False
 
 
 HAND_MODEL_URL = (
@@ -109,11 +135,12 @@ def ensure_hand_model(path: Path, url: str = HAND_MODEL_URL) -> bool:
     if _is_valid_hand_model_file(path):
         return True
     try:
-        from cv_engine.app_paths import get_user_data_dir, resource_path
+        from cv_engine.app_paths import get_user_models_dir, resource_path
 
         for cand in (
+            resource_path("assets/models/hand_landmarker.task"),
             resource_path("models/hand_landmarker.task"),
-            get_user_data_dir() / "models" / "hand_landmarker.task",
+            get_user_models_dir() / "hand_landmarker.task",
         ):
             if cand != path and _is_valid_hand_model_file(cand):
                 try:
@@ -125,13 +152,21 @@ def ensure_hand_model(path: Path, url: str = HAND_MODEL_URL) -> bool:
     except Exception:
         pass
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
         req = urllib.request.Request(url, headers={"User-Agent": "AirTeachAI/1.0"})
         with urllib.request.urlopen(req, timeout=20) as resp:
             data = resp.read()
         if len(data) > 500_000 and (b"PK" in data[:32] or b"TFL3" in data[:32]):
-            path.write_bytes(data)
-            return True
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                return True
+            except OSError:
+                from cv_engine.app_paths import get_user_models_dir
+
+                user_path = get_user_models_dir() / "hand_landmarker.task"
+                user_path.parent.mkdir(parents=True, exist_ok=True)
+                user_path.write_bytes(data)
+                return True
     except Exception as exc:
         _LOGGER.warning("Failed to download hand model to %s: %s", path, exc)
         return False
@@ -410,6 +445,18 @@ def classify_hand_3d_vectors(
             "palm_orientation": "SIDE",
         }
 
+    rust_res = classify_hand_3d_fast(
+        lm,
+        prev_fingers=prev_fingers,
+        was_pinched=was_pinched,
+        pinch_enter_ratio=pinch_enter_ratio,
+        pinch_exit_ratio=pinch_exit_ratio,
+        handedness=handedness,
+        palm_facing_min_z=palm_facing_min_z,
+    )
+    if rust_res is not None:
+        return rust_res
+
     state = list(prev_fingers) if (prev_fingers is not None and len(prev_fingers) == 5) else [False] * 5
     thumb_up = is_thumb_extended_3d(lm, state[0])
     idx_up = is_finger_extended_3d(lm, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP, state[1])
@@ -546,22 +593,57 @@ def _exponential_smoothing(a: float, x: float, x_prev: float) -> float:
 
 
 class OneEuroFilter1D:
-    """Adaptive One-Euro Filter suppressing static tremor while maintaining 60 FPS velocity tracking."""
+    """Adaptive One-Euro Filter (Rust PyO3 accelerated with Python fallback)."""
 
     def __init__(self, min_cutoff: float = 1.35, beta: float = 0.015, d_cutoff: float = 1.0) -> None:
-        self.min_cutoff = float(min_cutoff)
-        self.beta = float(beta)
-        self.d_cutoff = float(d_cutoff)
+        self._min_cutoff = float(min_cutoff)
+        self._beta = float(beta)
+        self._d_cutoff = float(d_cutoff)
+        self._rs = make_one_euro_1d(self._min_cutoff, self._beta, self._d_cutoff)
         self.x_prev: Optional[float] = None
         self.dx_prev: float = 0.0
         self.t_prev: Optional[float] = None
 
+    @property
+    def min_cutoff(self) -> float:
+        return self._rs.min_cutoff if self._rs is not None else self._min_cutoff
+
+    @min_cutoff.setter
+    def min_cutoff(self, val: float) -> None:
+        self._min_cutoff = float(val)
+        if self._rs is not None:
+            self._rs.min_cutoff = self._min_cutoff
+
+    @property
+    def beta(self) -> float:
+        return self._rs.beta if self._rs is not None else self._beta
+
+    @beta.setter
+    def beta(self, val: float) -> None:
+        self._beta = float(val)
+        if self._rs is not None:
+            self._rs.beta = self._beta
+
+    @property
+    def d_cutoff(self) -> float:
+        return self._rs.d_cutoff if self._rs is not None else self._d_cutoff
+
+    @d_cutoff.setter
+    def d_cutoff(self, val: float) -> None:
+        self._d_cutoff = float(val)
+        if self._rs is not None:
+            self._rs.d_cutoff = self._d_cutoff
+
     def reset(self) -> None:
+        if self._rs is not None:
+            self._rs.reset()
         self.x_prev = None
         self.dx_prev = 0.0
         self.t_prev = None
 
     def filter(self, x: float, t_sec: float) -> float:
+        if self._rs is not None:
+            return float(self._rs.filter(float(x), float(t_sec)))
         if self.x_prev is None or self.t_prev is None:
             self.x_prev = float(x)
             self.t_prev = float(t_sec)
@@ -570,10 +652,10 @@ class OneEuroFilter1D:
 
         t_e = max(1e-4, float(t_sec) - self.t_prev)
         self.t_prev = float(t_sec)
-        a_d = _smoothing_factor(t_e, self.d_cutoff)
+        a_d = _smoothing_factor(t_e, self._d_cutoff)
         dx = (float(x) - self.x_prev) / t_e
         dx_hat = _exponential_smoothing(a_d, dx, self.dx_prev)
-        cutoff = self.min_cutoff + self.beta * abs(dx_hat)
+        cutoff = self._min_cutoff + self._beta * abs(dx_hat)
         a = _smoothing_factor(t_e, cutoff)
         x_hat = _exponential_smoothing(a, float(x), self.x_prev)
         self.x_prev = x_hat
@@ -656,8 +738,8 @@ class HandTelemetryPacket:
 class Kinematic60HzExtrapolator:
     """
     Decoupled 60Hz Kinematic Velocity Extrapolator + Adaptive One-Euro Filter.
-    Bridges 25-30 FPS MediaPipe inference frames to silky 60 FPS cursor updates on UI
-    with exponential velocity damping so extrapolation never overshoots when stopping.
+    Uses `airteach_core_rs.RustKinematic60HzExtrapolator` for sub-millisecond updates,
+    with seamless pure-Python fallback.
     """
 
     def __init__(
@@ -669,12 +751,20 @@ class Kinematic60HzExtrapolator:
     ) -> None:
         self.filter = OneEuroFilter2D(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
         self.max_stale_sec = max(0.05, float(max_stale_sec))
+        self._rs_extrap = make_kinematic_60hz_extrapolator(
+            min_cutoff=min_cutoff,
+            beta=beta,
+            d_cutoff=d_cutoff,
+            max_stale_sec=self.max_stale_sec,
+        )
         self.anchor_xy: Optional[Tuple[float, float]] = None
         self.anchor_t: float = 0.0
         self.velocity: Tuple[float, float] = (0.0, 0.0)
         self.last_output: Optional[Tuple[float, float]] = None
 
     def reset(self) -> None:
+        if self._rs_extrap is not None:
+            self._rs_extrap.reset()
         self.filter.reset()
         self.anchor_xy = None
         self.anchor_t = 0.0
@@ -687,6 +777,19 @@ class Kinematic60HzExtrapolator:
         t_sec: Optional[float] = None,
     ) -> Optional[Tuple[float, float]]:
         now = time.perf_counter() if t_sec is None else float(t_sec)
+        if self._rs_extrap is not None:
+            pt = (float(cursor_norm[0]), float(cursor_norm[1])) if cursor_norm is not None else None
+            out = self._rs_extrap.ingest_vision(pt, now)
+            self.last_output = tuple(out) if out is not None else None
+            self.velocity = tuple(self._rs_extrap.velocity)
+            if cursor_norm is None:
+                self.anchor_xy = None
+                self.anchor_t = 0.0
+            else:
+                self.anchor_xy = (max(0.0, min(1.0, pt[0])), max(0.0, min(1.0, pt[1])))  # type: ignore[index]
+                self.anchor_t = now
+            return self.last_output
+
         if cursor_norm is None:
             self.reset()
             return None
@@ -718,9 +821,15 @@ class Kinematic60HzExtrapolator:
         self,
         t_sec: Optional[float] = None,
     ) -> Tuple[Optional[Tuple[float, float]], bool]:
+        now = time.perf_counter() if t_sec is None else float(t_sec)
+        if self._rs_extrap is not None:
+            pt, is_ext = self._rs_extrap.sample_60hz(now)
+            out = tuple(pt) if pt is not None else None
+            self.last_output = out
+            return out, bool(is_ext)
+
         if self.anchor_xy is None:
             return None, False
-        now = time.perf_counter() if t_sec is None else float(t_sec)
         elapsed = now - self.anchor_t
         if elapsed > self.max_stale_sec:
             return None, False
@@ -1171,7 +1280,7 @@ class HandGestureEngine:
         self.last_raw_hands: List[Dict[str, object]] = []
         self.last_rejected_by_teacher_lock: int = 0
 
-        if not HAS_MEDIAPIPE:
+        if not _ensure_mediapipe() or not HAS_MEDIAPIPE:
             self.init_error = "MediaPipe library is not installed"
             _LOGGER.error(self.init_error)
             return
@@ -1664,20 +1773,18 @@ class HandGestureEngine:
                         pred_dy = max(-0.08, min(0.08, (cy - prev_info[1])))
                 self._prev_hand_centers[side_key] = (cx, cy, now_mono)
 
-                # Generous >= 45% padded velocity-predicted square ROI around detected hand
-                expand = max(self.roi_expand_factor, 1.0 + 2.0 * max(0.45, self.ROI_PADDING_RATIO))
-                side = max(bw, bh) * expand
-                pred_cx = max(0.0, min(1.0, cx + pred_dx * 0.5))
-                pred_cy = max(0.0, min(1.0, cy + pred_dy * 0.5))
-                rx0 = max(0.0, pred_cx - 0.5 * side)
-                ry0 = max(0.0, pred_cy - 0.5 * side)
+                # Generous >= 45% padded velocity-predicted square ROI around detected hand (Rust fast math)
                 new_roi_cache.append(
-                    [
-                        rx0,
-                        ry0,
-                        min(1.0 - rx0, side),
-                        min(1.0 - ry0, side),
-                    ]
+                    compute_roi_crop_box_fast(
+                        min(xs),
+                        min(ys),
+                        max(xs),
+                        max(ys),
+                        pred_dx=pred_dx,
+                        pred_dy=pred_dy,
+                        expand_factor=self.roi_expand_factor,
+                        padding_ratio=self.ROI_PADDING_RATIO,
+                    )
                 )
 
                 vec_info = classify_hand_3d_vectors(
@@ -1880,6 +1987,8 @@ class DualHandGestureCoordinator:
         self._sticky_primary: Optional[str] = None
         self._prev_pinch_dist: Optional[float] = None
         self._prev_pan_center: Optional[Tuple[float, float]] = None
+        self._prev_fist_pan_xy: Optional[Tuple[float, float]] = None
+        self._fist_pan_until: float = 0.0
         self._offhand_cand: str = ""
         self._offhand_cand_count: int = 0
         self._last_offhand_cmd_ts: float = -1e9
@@ -1893,6 +2002,8 @@ class DualHandGestureCoordinator:
         self._sticky_primary = None
         self._prev_pinch_dist = None
         self._prev_pan_center = None
+        self._prev_fist_pan_xy = None
+        self._fist_pan_until = 0.0
         self._offhand_cand = ""
         self._offhand_cand_count = 0
 
@@ -1973,18 +2084,16 @@ class DualHandGestureCoordinator:
         p_xy = self._hand_xy(primary)
         s_xy = self._hand_xy(secondary)
 
-        # 1. Dual Pinch Zoom (both hands pinching)
+        # 1. Dual Pinch Zoom (both hands pinching — Rust accelerated kinematics)
         both_pinch = (p_pose == "PINCH" or p_pr < 0.33) and (s_pose == "PINCH" or s_pr < 0.33)
         if both_pinch:
             self._prev_pan_center = None
+            self._prev_fist_pan_xy = None
             self._offhand_cand = ""
             self._offhand_cand_count = 0
-            dist = max(0.03, math.hypot(p_xy[0] - s_xy[0], p_xy[1] - s_xy[1]))
-            mid = (0.5 * (p_xy[0] + s_xy[0]), 0.5 * (p_xy[1] + s_xy[1]))
-            zoom_factor = 1.0
-            if self._prev_pinch_dist is not None and abs(dist - self._prev_pinch_dist) > 0.005:
-                raw_ratio = dist / max(0.03, self._prev_pinch_dist)
-                zoom_factor = max(0.85, min(1.15, raw_ratio))
+            zoom_factor, mid, dist, _, _ = compute_dual_hand_kinematics_fast(
+                p_xy, s_xy, prev_pinch_dist=self._prev_pinch_dist, prev_pan_center=None
+            )
             self._prev_pinch_dist = dist
             return DualHandActionState(
                 primary_side=p_side,
@@ -1998,32 +2107,58 @@ class DualHandGestureCoordinator:
             )
         self._prev_pinch_dist = None
 
-        # 2. Dual Open Palm Pan (both hands open palm)
+        # 2. Dual Open Palm Pan (both hands open palm — Rust accelerated kinematics)
         if p_pose == "OPEN_PALM" and s_pose == "OPEN_PALM":
+            self._prev_fist_pan_xy = None
             self._offhand_cand = ""
             self._offhand_cand_count = 0
-            mid = (0.5 * (p_xy[0] + s_xy[0]), 0.5 * (p_xy[1] + s_xy[1]))
-            dx, dy = 0.0, 0.0
-            if self._prev_pan_center is not None:
-                raw_dx = mid[0] - self._prev_pan_center[0]
-                raw_dy = mid[1] - self._prev_pan_center[1]
-                if math.hypot(raw_dx, raw_dy) > 0.003:
-                    dx, dy = max(-0.15, min(0.15, raw_dx)), max(-0.15, min(0.15, raw_dy))
+            _, _, _, pan_delta, mid = compute_dual_hand_kinematics_fast(
+                p_xy, s_xy, prev_pinch_dist=None, prev_pan_center=self._prev_pan_center
+            )
             self._prev_pan_center = mid
             return DualHandActionState(
                 primary_side=p_side,
                 primary_hand=primary,
                 secondary_hand=secondary,
                 two_hand_mode="DUAL_PALM_PAN",
-                pan_delta_norm=(round(dx, 5), round(dy, 5)),
+                pan_delta_norm=(round(pan_delta[0], 5), round(pan_delta[1], 5)),
                 suppress_primary_drawing=True,
                 status_label_vi="2 Tay: Kéo trượt bảng (Dual Pan)",
             )
         self._prev_pan_center = None
 
+        # 2A. Hold Off-Hand Fist + Move Primary Hand (non-pinching) -> Dual Pan
+        p_is_drawing = (p_pose == "PINCH") or (p_pr < 0.34)
+        if s_pose == "FIST" and not p_is_drawing:
+            if self._prev_fist_pan_xy is not None:
+                fdx = p_xy[0] - self._prev_fist_pan_xy[0]
+                fdy = p_xy[1] - self._prev_fist_pan_xy[1]
+                fstep = math.hypot(fdx, fdy)
+                is_moving = fstep > 0.010 or (now <= self._fist_pan_until and fstep > 0.002)
+                if is_moving:
+                    self._prev_fist_pan_xy = p_xy
+                    self._fist_pan_until = now + 0.28
+                    self._offhand_cand = ""
+                    self._offhand_cand_count = 0
+                    return DualHandActionState(
+                        primary_side=p_side,
+                        primary_hand=primary,
+                        secondary_hand=secondary,
+                        two_hand_mode="DUAL_PALM_PAN",
+                        pan_delta_norm=(
+                            round(max(-0.15, min(0.15, fdx)), 5),
+                            round(max(-0.15, min(0.15, fdy)), 5),
+                        ),
+                        suppress_primary_drawing=True,
+                        status_label_vi="2 Tay: Kéo trượt bảng (Tay phụ Nắm + Kéo)",
+                    )
+            self._prev_fist_pan_xy = p_xy
+        else:
+            self._prev_fist_pan_xy = None
+            self._fist_pan_until = 0.0
+
         # 2B. Left-Hand Modifier Lock while Primary Hand is Pinching/Drawing:
         # Holding Secondary Fist -> lock straight line; Secondary Two-Fingers -> lock geometric shape snap.
-        p_is_drawing = (p_pose == "PINCH") or (p_pr < 0.34)
         if p_is_drawing and s_pose in ("FIST", "TWO_FINGERS"):
             self._offhand_cand = ""
             self._offhand_cand_count = 0
@@ -2084,13 +2219,15 @@ def catmull_rom_spline(
     alpha: float = 0.5,
 ) -> List[Tuple[float, float]]:
     """
-    Centripetal Catmull-Rom Spline interpolation for 60 FPS smooth stroke rendering
-    even when AI Hand Tracking runs at 15-20 FPS on older Intel Core i3 CPUs.
+    Centripetal Catmull-Rom Spline interpolation (Rust accelerated with Python fallback).
     """
     pts = [(float(p[0]), float(p[1])) for p in points]
     n = len(pts)
     if n <= 2 or samples_per_segment <= 1:
         return pts
+    fast = catmull_rom_spline_fast(pts, max(2, int(samples_per_segment)), float(alpha))
+    if fast is not None:
+        return fast
 
     out: List[Tuple[float, float]] = [pts[0]]
     ext = [pts[0]] + pts + [pts[-1]]
@@ -2165,6 +2302,15 @@ class SlideNavigationGestureDetector:
         self._trail: Deque[Tuple[float, float, float]] = deque(maxlen=24)
         self._last_trigger_ts: float = -1e9
         self._last_vert_trigger_ts: float = -1e9
+        self._rs_swipe = make_swipe_detector(
+            swipe_cooldown_sec=self.swipe_cooldown_sec,
+            swipe_min_dx=self.swipe_min_dx,
+            swipe_min_vel=self.swipe_min_vel,
+            swipe_window_sec=self.swipe_window_sec,
+            vertical_cooldown_sec=self.vertical_cooldown_sec,
+            vertical_min_dy=self.vertical_min_dy,
+            vertical_min_vel=self.vertical_min_vel,
+        )
         self._prev_two_finger_y: Optional[float] = None
         self._peace_since_ts: Optional[float] = None
         self._peace_anchor: Optional[Tuple[float, float]] = None
@@ -2175,6 +2321,8 @@ class SlideNavigationGestureDetector:
 
     def reset(self) -> None:
         self._trail.clear()
+        if self._rs_swipe is not None:
+            self._rs_swipe.reset()
         self._prev_two_finger_y = None
         self._peace_since_ts = None
         self._peace_anchor = None
@@ -2305,31 +2453,14 @@ class SlideNavigationGestureDetector:
             self._question_anchor = None
             self._question_fired = False
 
-        # 3. Horizontal Air-Swipe (Next/Prev) + Vertical Air-Swipe (Scroll Up/Down)
+        # 3. Horizontal Air-Swipe (Next/Prev) + Vertical Air-Swipe (Scroll Up/Down) — Rust accelerated
         if pose_tag in ("OPEN_PALM", "HOVER", "TWO_FINGERS", "INDEX"):
-            self._trail.append((xy[0], xy[1], now))
-            while self._trail and (now - self._trail[0][2]) > self.swipe_window_sec:
-                self._trail.popleft()
-            if len(self._trail) >= 3:
-                for ox, oy, ot in self._trail:
-                    dt = now - ot
-                    if dt < 0.04 or dt > self.swipe_window_sec:
-                        continue
-                    dx = xy[0] - ox
-                    dy = xy[1] - oy
-                    vel_x = abs(dx) / dt
-                    vel_y = abs(dy) / dt
-                    if (
-                        cooldown_rem_ms <= 0.0
-                        and abs(dx) >= self.swipe_min_dx
-                        and vel_x >= self.swipe_min_vel
-                        and abs(dx) >= 1.8 * abs(dy)
-                    ):
-                        ev = "SLIDE_NEXT" if dx < 0.0 else "SLIDE_PREV"
-                        sdir = "LEFT" if dx < 0.0 else "RIGHT"
+            if self._rs_swipe is not None:
+                ev, sdir, sdelta = self._rs_swipe.push_and_check(float(xy[0]), float(xy[1]), now, pose_tag)
+                if ev is not None:
+                    self._peace_since_ts = None
+                    if ev in ("SLIDE_NEXT", "SLIDE_PREV"):
                         self._last_trigger_ts = now
-                        self._trail.clear()
-                        self._peace_since_ts = None
                         return {
                             "nav_event": ev,
                             "swipe_direction": sdir,
@@ -2338,29 +2469,72 @@ class SlideNavigationGestureDetector:
                             "question_hold_progress": round(question_prog, 3),
                             "cooldown_remaining_ms": round(self.swipe_cooldown_sec * 1000.0, 1),
                         }
-                    if (
-                        pose_tag in ("OPEN_PALM", "TWO_FINGERS", "HOVER")
-                        and vert_cooldown_rem_ms <= 0.0
-                        and abs(dy) >= self.vertical_min_dy
-                        and vel_y >= self.vertical_min_vel
-                        and abs(dy) >= 1.8 * abs(dx)
-                    ):
-                        ev = "SCROLL_DOWN" if dy < 0.0 else "SCROLL_UP"
-                        sdir = "UP" if dy < 0.0 else "DOWN"
-                        delta = 0.38 if dy < 0.0 else -0.38
-                        self._last_vert_trigger_ts = now
-                        self._trail.clear()
-                        self._peace_since_ts = None
-                        return {
-                            "nav_event": ev,
-                            "swipe_direction": sdir,
-                            "scroll_delta_norm": delta,
-                            "peace_hold_progress": 0.0,
-                            "question_hold_progress": round(question_prog, 3),
-                            "cooldown_remaining_ms": round(cooldown_rem_ms, 1),
-                        }
+                    self._last_vert_trigger_ts = now
+                    return {
+                        "nav_event": ev,
+                        "swipe_direction": sdir,
+                        "scroll_delta_norm": float(sdelta),
+                        "peace_hold_progress": 0.0,
+                        "question_hold_progress": round(question_prog, 3),
+                        "cooldown_remaining_ms": round(cooldown_rem_ms, 1),
+                    }
+            else:
+                self._trail.append((xy[0], xy[1], now))
+                while self._trail and (now - self._trail[0][2]) > self.swipe_window_sec:
+                    self._trail.popleft()
+                if len(self._trail) >= 3:
+                    for ox, oy, ot in self._trail:
+                        dt = now - ot
+                        if dt < 0.04 or dt > self.swipe_window_sec:
+                            continue
+                        dx = xy[0] - ox
+                        dy = xy[1] - oy
+                        vel_x = abs(dx) / dt
+                        vel_y = abs(dy) / dt
+                        if (
+                            cooldown_rem_ms <= 0.0
+                            and abs(dx) >= self.swipe_min_dx
+                            and vel_x >= self.swipe_min_vel
+                            and abs(dx) >= 1.8 * abs(dy)
+                        ):
+                            ev = "SLIDE_NEXT" if dx < 0.0 else "SLIDE_PREV"
+                            sdir = "LEFT" if dx < 0.0 else "RIGHT"
+                            self._last_trigger_ts = now
+                            self._trail.clear()
+                            self._peace_since_ts = None
+                            return {
+                                "nav_event": ev,
+                                "swipe_direction": sdir,
+                                "scroll_delta_norm": 0.0,
+                                "peace_hold_progress": 0.0,
+                                "question_hold_progress": round(question_prog, 3),
+                                "cooldown_remaining_ms": round(self.swipe_cooldown_sec * 1000.0, 1),
+                            }
+                        if (
+                            pose_tag in ("OPEN_PALM", "TWO_FINGERS", "HOVER")
+                            and vert_cooldown_rem_ms <= 0.0
+                            and abs(dy) >= self.vertical_min_dy
+                            and vel_y >= self.vertical_min_vel
+                            and abs(dy) >= 1.8 * abs(dx)
+                        ):
+                            ev = "SCROLL_DOWN" if dy < 0.0 else "SCROLL_UP"
+                            sdir = "UP" if dy < 0.0 else "DOWN"
+                            delta = 0.38 if dy < 0.0 else -0.38
+                            self._last_vert_trigger_ts = now
+                            self._trail.clear()
+                            self._peace_since_ts = None
+                            return {
+                                "nav_event": ev,
+                                "swipe_direction": sdir,
+                                "scroll_delta_norm": delta,
+                                "peace_hold_progress": 0.0,
+                                "question_hold_progress": round(question_prog, 3),
+                                "cooldown_remaining_ms": round(cooldown_rem_ms, 1),
+                            }
         else:
             self._trail.clear()
+            if self._rs_swipe is not None:
+                self._rs_swipe.reset()
 
         return {
             "nav_event": None,

@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections import OrderedDict
 import hashlib
 import html as html_lib
+import importlib.util
 import io
 import json
 import os
@@ -34,42 +35,99 @@ import tempfile
 import threading
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-try:
-    import pymupdf as fitz  # type: ignore
-except ImportError:  # pragma: no cover
-    import fitz  # type: ignore
+fitz: Any = None
+python_docx: Any = None
+Presentation: Any = None
+MSO_SHAPE_TYPE: Any = None
+PP_ALIGN: Any = None
+
+HAS_PYTHON_DOCX = importlib.util.find_spec("docx") is not None
+HAS_PYTHON_PPTX = importlib.util.find_spec("pptx") is not None
+
+
+def _ensure_fitz() -> Any:
+    """Lazy-load PyMuPDF (`fitz`) on first document use so app startup stays < 1.5s."""
+    global fitz
+    if fitz is not None:
+        return fitz
+    try:
+        import pymupdf as _fitz  # type: ignore
+    except ImportError:  # pragma: no cover
+        import fitz as _fitz  # type: ignore
+    fitz = _fitz
+    return fitz
+
+
+def _ensure_python_docx() -> bool:
+    """Lazy-load `python-docx` on first Word fallback parse."""
+    global python_docx, HAS_PYTHON_DOCX
+    if python_docx is not None:
+        return True
+    if not HAS_PYTHON_DOCX:
+        return False
+    try:
+        import docx as _docx  # type: ignore
+
+        python_docx = _docx
+        HAS_PYTHON_DOCX = True
+        return True
+    except Exception:  # pragma: no cover
+        python_docx = None
+        HAS_PYTHON_DOCX = False
+        return False
+
+
+def _ensure_python_pptx() -> bool:
+    """Lazy-load `python-pptx` on first PowerPoint parse/fallback render."""
+    global Presentation, MSO_SHAPE_TYPE, PP_ALIGN, HAS_PYTHON_PPTX
+    if Presentation is not None:
+        return True
+    if not HAS_PYTHON_PPTX:
+        return False
+    try:
+        from pptx import Presentation as _Pres  # type: ignore
+        from pptx.enum.shapes import MSO_SHAPE_TYPE as _ShapeType  # type: ignore
+        from pptx.enum.text import PP_ALIGN as _PpAlign  # type: ignore
+
+        Presentation = _Pres
+        MSO_SHAPE_TYPE = _ShapeType
+        PP_ALIGN = _PpAlign
+        HAS_PYTHON_PPTX = True
+        return True
+    except Exception:  # pragma: no cover
+        Presentation = None
+        MSO_SHAPE_TYPE = None
+        PP_ALIGN = None
+        HAS_PYTHON_PPTX = False
+        return False
+
+
+def warmup_document_engines() -> Dict[str, bool]:
+    """Warm document parsing modules safely in background thread."""
+    fitz_ok = False
+    try:
+        _ensure_fitz()
+        fitz_ok = True
+    except Exception:
+        fitz_ok = False
+    return {
+        "pymupdf": fitz_ok,
+        "python_docx": _ensure_python_docx(),
+        "python_pptx": _ensure_python_pptx(),
+    }
+
 
 from PIL import Image, ImageDraw, ImageFont
-
-try:
-    import docx as python_docx  # type: ignore
-
-    HAS_PYTHON_DOCX = True
-except Exception:  # pragma: no cover
-    python_docx = None  # type: ignore[assignment]
-    HAS_PYTHON_DOCX = False
-
-try:
-    from pptx import Presentation  # type: ignore
-    from pptx.enum.shapes import MSO_SHAPE_TYPE  # type: ignore
-    from pptx.enum.text import PP_ALIGN  # type: ignore
-
-    HAS_PYTHON_PPTX = True
-except Exception:  # pragma: no cover
-    Presentation = None  # type: ignore[assignment]
-    MSO_SHAPE_TYPE = None  # type: ignore[assignment]
-    PP_ALIGN = None  # type: ignore[assignment]
-    HAS_PYTHON_PPTX = False
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 
-from cv_engine.app_paths import get_app_logger, get_doc_cache_dir
+from cv_engine.app_paths import get_app_logger, get_doc_cache_dir, resource_path
 
 _LOGGER = get_app_logger("document_presenter")
 
 SUPPORTED_DOC_EXTENSIONS = {".pdf", ".pptx", ".ppt", ".ppsx", ".potx", ".docx", ".doc"}
-SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".svg"}
 
 
 def compute_file_sha256(path: Path) -> str:
@@ -243,6 +301,15 @@ def _load_pil_font(size_px: int, bold: bool = False, italic: bool = False) -> An
     if cached is not None:
         return cached
 
+    bundled_fonts_dir = resource_path("assets/fonts")
+    bundled_map = {
+        "r": (bundled_fonts_dir / "NotoSans-Regular.ttf",),
+        "b": (bundled_fonts_dir / "NotoSans-Bold.ttf", bundled_fonts_dir / "NotoSans-Regular.ttf"),
+        "i": (bundled_fonts_dir / "NotoSans-Italic.ttf", bundled_fonts_dir / "NotoSans-Regular.ttf"),
+        "bi": (bundled_fonts_dir / "NotoSans-BoldItalic.ttf", bundled_fonts_dir / "NotoSans-Bold.ttf"),
+    }
+    bundled_paths = list(bundled_map.get(variant, bundled_map["r"]))
+
     if sys.platform == "win32":
         fonts_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
         candidates_map = {
@@ -252,7 +319,7 @@ def _load_pil_font(size_px: int, bold: bool = False, italic: bool = False) -> An
             "bi": ("segoeuiz.ttf", "arialbi.ttf", "calibriz.ttf"),
         }
         names = candidates_map.get(variant, candidates_map["r"]) + candidates_map["r"]
-        paths = [fonts_dir / n for n in names]
+        paths = [fonts_dir / n for n in names] + bundled_paths
     else:
         candidates_map = {
             "r": ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
@@ -260,7 +327,7 @@ def _load_pil_font(size_px: int, bold: bool = False, italic: bool = False) -> An
             "i": ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",),
             "bi": ("/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",),
         }
-        paths = [Path(p) for p in candidates_map.get(variant, candidates_map["r"])]
+        paths = bundled_paths + [Path(p) for p in candidates_map.get(variant, candidates_map["r"])]
 
     font = None
     for fp in paths:
@@ -326,7 +393,7 @@ def _wrap_text_to_width(draw: ImageDraw.ImageDraw, text: str, font: Any, max_w: 
 
 
 def _extract_pptx_slide_texts(src_path: Path) -> List[str]:
-    if not HAS_PYTHON_PPTX or Presentation is None:
+    if not _ensure_python_pptx() or Presentation is None:
         return []
     try:
         prs = Presentation(str(src_path))
@@ -350,7 +417,8 @@ def _extract_pptx_slide_texts(src_path: Path) -> List[str]:
 
 
 def _render_pptx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool, List[str]]:
-    if not HAS_PYTHON_PPTX or Presentation is None:
+    _ensure_fitz()
+    if not _ensure_python_pptx() or Presentation is None:
         return False, []
     try:
         prs = Presentation(str(src_path))
@@ -641,6 +709,7 @@ def _render_legacy_ppt_fallback_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[b
 
     chunks_per_slide = 8
     groups = [extracted[i : i + chunks_per_slide] for i in range(0, max(1, len(extracted)), chunks_per_slide)]
+    _ensure_fitz()
     out_pdf = fitz.open()
     slide_texts: List[str] = []
     title_font = _load_pil_font(42, bold=True)
@@ -681,6 +750,7 @@ def convert_presentation_to_cached_pdf(
     src = Path(src_path)
     if not src.exists():
         raise FileNotFoundError(f"Không tìm thấy file bài giảng: {src}")
+    _ensure_fitz()
 
     doc_hash = compute_file_sha256(src)
     root_cache = Path(cache_dir) if cache_dir is not None else get_doc_cache_dir()
@@ -820,11 +890,41 @@ def _convert_via_word_com(src_path: Path, pdf_out: Path) -> bool:
 
 
 def _render_story_html_to_pdf_bytes(html_str: str, assets_dir: Optional[Path] = None) -> bytes:
+    _ensure_fitz()
     bio = io.BytesIO()
     mediabox = fitz.paper_rect("a4")
     where = mediabox + (42, 42, -42, -42)
-    archive = fitz.Archive(str(assets_dir)) if assets_dir is not None else None
-    story = fitz.Story(html=html_str, archive=archive) if archive is not None else fitz.Story(html=html_str)
+    fonts_dir = resource_path("assets/fonts")
+    noto_reg = fonts_dir / "NotoSans-Regular.ttf"
+    noto_bold = fonts_dir / "NotoSans-Bold.ttf"
+    archive = fitz.Archive()
+    has_archive = False
+    if assets_dir is not None and Path(assets_dir).exists():
+        archive.add(str(assets_dir))
+        has_archive = True
+    if noto_reg.exists():
+        archive.add(str(fonts_dir))
+        has_archive = True
+        font_rules = [
+            "@font-face { font-family: 'Noto Sans'; src: url('NotoSans-Regular.ttf'); font-weight: 400; font-style: normal; }"
+        ]
+        if noto_bold.exists():
+            font_rules.append(
+                "@font-face { font-family: 'Noto Sans'; src: url('NotoSans-Bold.ttf'); font-weight: 700; font-style: normal; }"
+            )
+        font_style = (
+            "<style>\n"
+            + "\n".join(font_rules)
+            + "\nbody, p, h1, h2, h3, th, td, span, b, i, u { font-family: 'Noto Sans', 'Segoe UI', Arial, sans-serif; }\n"
+            + "</style>"
+        )
+        if "</head>" in html_str:
+            html_str = html_str.replace("</head>", font_style + "</head>", 1)
+        elif "<body" in html_str:
+            html_str = html_str.replace("<body", f"<head>{font_style}</head><body", 1)
+        else:
+            html_str = f"<head>{font_style}</head>{html_str}"
+    story = fitz.Story(html=html_str, archive=archive) if has_archive else fitz.Story(html=html_str)
     writer = fitz.DocumentWriter(bio)
     try:
         more = 1
@@ -845,7 +945,8 @@ def _render_story_html_to_pdf_bytes(html_str: str, assets_dir: Optional[Path] = 
 
 
 def _render_docx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool, List[str]]:
-    if not HAS_PYTHON_DOCX or python_docx is None:
+    _ensure_fitz()
+    if not _ensure_python_docx() or python_docx is None:
         return False, []
     try:
         doc = python_docx.Document(str(src_path))
@@ -1024,6 +1125,7 @@ def _render_legacy_doc_fallback_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[b
     )
     pdf_out.write_bytes(_render_story_html_to_pdf_bytes(full_html))
     page_texts: List[str] = []
+    _ensure_fitz()
     out_doc = fitz.open(str(pdf_out))
     try:
         for i in range(out_doc.page_count):
@@ -1044,6 +1146,7 @@ def convert_word_to_cached_pdf(
     src = Path(src_path)
     if not src.exists():
         raise FileNotFoundError(f"Không tìm thấy tài liệu Word: {src}")
+    _ensure_fitz()
 
     doc_hash = compute_file_sha256(src)
     root_cache = Path(cache_dir) if cache_dir is not None else get_doc_cache_dir()
@@ -1132,6 +1235,7 @@ class LectureDocument:
         self.backend_used = backend_used
         self.doc_type = doc_type
         self._lock = threading.Lock()
+        _ensure_fitz()
         self._doc = fitz.open(str(self.pdf_path))
         self.page_count = int(self._doc.page_count)
         self.slide_texts: List[str] = list(slide_texts or [])
@@ -1361,6 +1465,7 @@ def export_annotated_lecture_pdf(
     """
     out_file = Path(output_path)
     out_file.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_fitz()
 
     if lecture_doc is not None and lecture_doc.pdf_path.exists():
         out_doc = fitz.open(str(lecture_doc.pdf_path))
@@ -1457,11 +1562,97 @@ def export_annotated_lecture_pdf(
                 target = fitz.Rect(ax, ay, ax + aw, ay + ah)
                 page.insert_image(target, stream=png_bytes, overlay=True)
 
+            for img_item in layer.get("images") or []:
+                img_obj = img_item.get("pixmap")
+                if isinstance(img_obj, QPixmap) and not img_obj.isNull():
+                    qimg_obj = img_obj.toImage()
+                elif isinstance(img_obj, QImage) and not img_obj.isNull():
+                    qimg_obj = img_obj
+                else:
+                    continue
+                img_bytes = _qimage_to_png_bytes(qimg_obj)
+                if not img_bytes:
+                    continue
+                ix = (float(img_item.get("x", 60.0)) - s_rect.left()) * sx
+                iy = (float(img_item.get("y", 80.0)) - s_rect.top()) * sy
+                iw = max(24.0, float(img_item.get("w", 240.0)) * sx)
+                ih = max(24.0, float(img_item.get("h", 180.0)) * sy)
+                target = fitz.Rect(ix, iy, ix + iw, iy + ih)
+                page.insert_image(target, stream=img_bytes, overlay=True)
+
         out_doc.save(str(out_file), garbage=3, deflate=True)
     finally:
         out_doc.close()
 
     return out_file
+
+
+def _natural_sort_key(name: str) -> List[Any]:
+    return [int(tok) if tok.isdigit() else tok.lower() for tok in re.split(r"(\d+)", name)]
+
+
+def list_folder_images(folder_path: Path | str) -> List[Path]:
+    """Return supported images inside `folder_path` ordered naturally for gallery slide deck."""
+    folder = Path(folder_path)
+    if not folder.is_dir():
+        return []
+    files = [
+        p
+        for p in folder.iterdir()
+        if p.is_file() and p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
+    ]
+    files.sort(key=lambda p: _natural_sort_key(p.name))
+    return files
+
+
+def load_image_file_qimage(src_path: Path | str, target_max_dim: int = 2048) -> QImage:
+    """Load PNG/JPG/WEBP/BMP or vector SVG at crisp high resolution as QImage."""
+    src = Path(src_path)
+    if not src.exists():
+        return QImage()
+    ext = src.suffix.lower()
+    if ext == ".svg":
+        try:
+            _ensure_fitz()
+            doc = fitz.open(str(src))
+            try:
+                page = doc.load_page(0)
+                rect = page.rect
+                base_dim = max(1.0, float(rect.width), float(rect.height))
+                scale = max(1.0, min(8.0, float(target_max_dim) / base_dim))
+                pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=True)
+                return QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGBA8888).copy()
+            finally:
+                doc.close()
+        except Exception as exc:
+            _LOGGER.warning("SVG PyMuPDF raster fallback triggered for %s: %s", src.name, exc)
+            try:
+                from PySide6.QtSvg import QSvgRenderer
+
+                renderer = QSvgRenderer(str(src))
+                if renderer.isValid():
+                    sz = renderer.defaultSize()
+                    w = max(64, int(sz.width()) or 1024)
+                    h = max(64, int(sz.height()) or 768)
+                    scale = min(6.0, float(target_max_dim) / max(w, h))
+                    out = QImage(int(round(w * scale)), int(round(h * scale)), QImage.Format_ARGB32)
+                    out.fill(Qt.transparent)
+                    p = QPainter(out)
+                    renderer.render(p)
+                    p.end()
+                    return out
+            except Exception:
+                return QImage()
+
+    qimg = QImage(str(src))
+    if not qimg.isNull():
+        return qimg
+    try:
+        pil_img = Image.open(str(src)).convert("RGBA")
+        raw = pil_img.tobytes("raw", "RGBA")
+        return QImage(raw, pil_img.width, pil_img.height, pil_img.width * 4, QImage.Format_RGBA8888).copy()
+    except Exception:
+        return QImage()
 
 
 def rasterize_document_to_png_dir(
@@ -1490,6 +1681,7 @@ def rasterize_document_to_png_dir(
         raise ValueError(f"Định dạng tài liệu không được hỗ trợ: {ext}")
 
     pages_meta: List[Dict[str, Any]] = []
+    _ensure_fitz()
     doc = fitz.open(str(pdf_path))
     try:
         total = min(int(doc.page_count), max(1, int(max_pages)))

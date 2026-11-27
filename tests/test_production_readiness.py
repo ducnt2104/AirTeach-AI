@@ -477,11 +477,11 @@ def test_slide_aware_ai_and_headless_window(monkeypatch: pytest.MonkeyPatch) -> 
             ldoc = LectureDocument.open(pdf_path, cache_dir=Path(tmp) / "cache")
             win.canvas.attach_lecture_document(ldoc)
 
-            # Verify zoom clamping [50%..300%] & floating toast
+            # Verify zoom clamping [25%..400%] & floating toast
             win.canvas.apply_zoom_factor(5.0)
-            assert win.canvas.zoom_scale == pytest.approx(3.0, abs=1e-3)
+            assert win.canvas.zoom_scale == pytest.approx(4.0, abs=1e-3)
             win.canvas.apply_zoom_factor(0.05)
-            assert win.canvas.zoom_scale == pytest.approx(0.50, abs=1e-3)
+            assert win.canvas.zoom_scale == pytest.approx(0.25, abs=1e-3)
             win.canvas.apply_zoom_factor(2.0)
 
             # Verify 60Hz cursor extrapolator + canvas update

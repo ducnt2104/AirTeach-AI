@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
 
-from cv_engine.app_paths import resource_path
+from cv_engine.app_paths import get_user_vision_config_path, resource_path
 
 DEFAULT_VISION_CONFIG_PATH = resource_path("config/vision_config.json")
 
@@ -128,7 +129,13 @@ def load_vision_config(config_path: Path | str | None = None) -> VisionConfig:
     """Load `VisionConfig` from disk + environment overrides with safe fallbacks."""
     cfg = VisionConfig()
     env_path = os.environ.get("AIRTEACH_VISION_CONFIG_PATH", "").strip()
-    target = Path(config_path) if config_path else (Path(env_path) if env_path else DEFAULT_VISION_CONFIG_PATH)
+    if config_path:
+        target = Path(config_path)
+    elif env_path:
+        target = Path(env_path)
+    else:
+        user_target = get_user_vision_config_path()
+        target = user_target if user_target.exists() else DEFAULT_VISION_CONFIG_PATH
 
     raw: Dict[str, Any] = {}
     if target.exists():
@@ -295,7 +302,18 @@ def load_vision_config(config_path: Path | str | None = None) -> VisionConfig:
 
 
 def save_vision_config(cfg: VisionConfig, config_path: Path | str | None = None) -> Path:
-    target = Path(config_path) if config_path else DEFAULT_VISION_CONFIG_PATH
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(cfg.to_dict(), indent=2), encoding="utf-8")
-    return target
+    if config_path:
+        target = Path(config_path)
+    elif getattr(sys, "frozen", False):
+        target = get_user_vision_config_path()
+    else:
+        target = DEFAULT_VISION_CONFIG_PATH
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(cfg.to_dict(), indent=2), encoding="utf-8")
+        return target
+    except OSError:
+        fallback = get_user_vision_config_path()
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        fallback.write_text(json.dumps(cfg.to_dict(), indent=2), encoding="utf-8")
+        return fallback

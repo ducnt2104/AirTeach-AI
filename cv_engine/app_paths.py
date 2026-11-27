@@ -44,16 +44,18 @@ def resource_path(relative_path: Union[str, Path]) -> Path:
     if candidate.exists():
         return candidate
     if getattr(sys, "frozen", False):
-        exe_sibling = Path(sys.executable).resolve().parent / rel
-        if exe_sibling.exists():
-            return exe_sibling
+        exe_dir = Path(sys.executable).resolve().parent
+        for base in (exe_dir / "_internal", exe_dir):
+            alt = base / rel
+            if alt.exists():
+                return alt
     return candidate
 
 
 def get_user_data_dir() -> Path:
     """
     Return writable per-user data directory (`%APPDATA%/AirTeachAI` on Windows).
-    Ensures `logs/`, `face_embeddings/`, and `recordings/` subdirectories exist.
+    Ensures `logs/`, `doc_cache/`, `face_embeddings/`, `recordings/`, and `models/` subdirectories exist.
     """
     if sys.platform == "win32":
         base = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
@@ -63,9 +65,21 @@ def get_user_data_dir() -> Path:
         base = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
 
     data_dir = base / APP_NAME
-    for sub in ("", "logs", "face_embeddings", "recordings"):
+    for sub in ("", "logs", "doc_cache", "face_embeddings", "recordings", "models"):
         (data_dir / sub if sub else data_dir).mkdir(parents=True, exist_ok=True)
     return data_dir
+
+
+def get_user_models_dir() -> Path:
+    """Return writable `%APPDATA%/AirTeachAI/models` directory for runtime model downloads."""
+    models_dir = get_user_data_dir() / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    return models_dir
+
+
+def get_user_vision_config_path() -> Path:
+    """Return writable `%APPDATA%/AirTeachAI/vision_config.json` user override path."""
+    return get_user_data_dir() / "vision_config.json"
 
 
 def get_config_file_path() -> Path:

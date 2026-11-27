@@ -84,11 +84,13 @@ class LocalAiRunResult:
     error_message_vi: str = ""
 
 
-# Immutable compact System Prompt prefix to maximize Local Engine KV-Cache reuse
+# Rich pedagogical System Prompt prefix maximizing explanation depth & KV-Cache reuse
 IMMUTABLE_SYSTEM_PROMPT_PREFIX = (
-    "Bạn là Trợ lý Sư phạm AirTeach AI (DNT - Victer). "
-    "Trả lời chính xác bằng tiếng Việt, ngắn gọn, từng bước rõ ràng. "
-    "Không dùng thẻ giả <arrow> hay $$$ vỡ; dùng mũi tên chuẩn →, ⇒, ⇔ và công thức $...$ hoặc $$...$$ hợp lệ."
+    "Bạn là Trợ lý Sư phạm AirTeach AI (chuyên gia giáo dục & khoa học kỹ thuật). "
+    "Hãy trả lời toàn diện, có cấu trúc mạch lạc, chuyên sâu và dễ hiểu bằng tiếng Việt: "
+    "dùng tiêu đề Markdown rõ ràng, phân tích từng bước (step-by-step), nêu ví dụ minh họa, bảng so sánh (nếu phù hợp), "
+    "và lưu ý lỗi sai thường gặp. Không cắt ngắn câu trả lời. "
+    "Không dùng thẻ giả <arrow> hay $$$ vỡ; dùng mũi tên chuẩn →, ⇒, ⇔ và công thức LaTeX $...$ hoặc $$...$$ hợp lệ."
 )
 
 RECOMMENDED_LOCAL_MODELS: Tuple[str, ...] = (
@@ -260,8 +262,25 @@ class LocalAIManager:
         self.active_provider: str = ""
         self.active_base_url: str = self.preferred_base_url
         self.active_model: str = self.preferred_local_model
+        self.active_gguf_path: str = ""
+        self._gguf_backend: Any = None
         self.last_tokens_per_sec: float = 0.0
         self._lock = threading.Lock()
+
+    def set_gguf_model(self, gguf_path: str) -> None:
+        """Configure a local `.gguf` file path for 100% offline in-process inference."""
+        with self._lock:
+            self.active_gguf_path = str(gguf_path or "").strip()
+            if self.active_gguf_path:
+                self.active_provider = "GGUF (In-Process)"
+                self.active_model = Path(self.active_gguf_path).name
+
+    def _ensure_gguf_backend(self) -> Any:
+        if self._gguf_backend is None:
+            from cv_engine.gguf_model_manager import LlamaCppLocalBackend
+
+            self._gguf_backend = LlamaCppLocalBackend()
+        return self._gguf_backend
 
     @staticmethod
     def _http_get_json(url: str, timeout: float = 0.45) -> Tuple[Optional[Dict[str, Any]], float]:
@@ -409,15 +428,15 @@ class LocalAIManager:
                 "messages": messages,
                 "stream": True,
                 "keep_alive": "15m",
-                "options": {"temperature": 0.2, "num_ctx": 4096},
+                "options": {"temperature": 0.25, "num_ctx": 8192, "num_predict": 4096},
             }
         else:
             url = f"{base_url}/v1/chat/completions"
             payload = {
                 "model": model_id,
                 "messages": messages,
-                "temperature": 0.2,
-                "max_tokens": 1536,
+                "temperature": 0.25,
+                "max_tokens": 4096,
                 "stream": True,
             }
 
@@ -544,8 +563,63 @@ class LocalAIManager:
 
         b64_img = base64.b64encode(compressed_png).decode("ascii") if compressed_png else None
 
-        # Try Local LLM first when mode is LOCAL or HYBRID (and a local server is active)
+        # Try Local LLM first when mode is LOCAL or HYBRID (and a local server or GGUF model is active)
         if self.routing_mode in (AiRoutingMode.LOCAL, AiRoutingMode.HYBRID):
+            gguf_file = Path(self.active_gguf_path) if self.active_gguf_path else None
+            if gguf_file and gguf_file.exists() and not active_local_ready and not structured_json:
+                backend = self._ensure_gguf_backend()
+                if backend.is_available():
+                    t_gguf0 = time.perf_counter()
+                    msgs_txt = [{"role": "system", "content": system_prompt}]
+                    for h in history[-4:]:
+                        role = str(h.get("role", "user")).strip().lower()
+                        content = str(h.get("content", "")).strip()
+                        if content:
+                            msgs_txt.append({"role": role if role in ("user", "assistant") else "user", "content": content})
+                    msgs_txt.append({"role": "user", "content": prompt})
+                    stream_san = StreamingSanitizer() if on_token is not None else None
+
+                    def _gguf_tok(piece: str) -> None:
+                        if stream_san is not None and on_token is not None:
+                            safe_c = stream_san.feed(piece)
+                            if safe_c:
+                                on_token(safe_c)
+
+                    ok_g, text_g, err_g = backend.stream_chat(
+                        gguf_path=gguf_file,
+                        messages=msgs_txt,
+                        max_tokens=4096,
+                        on_token=_gguf_tok if on_token is not None else None,
+                    )
+                    total_g_ms = (time.perf_counter() - t_gguf0) * 1000.0
+                    if ok_g:
+                        if stream_san is not None and on_token is not None:
+                            tail = stream_san.flush()
+                            if tail:
+                                on_token(tail)
+                        sanitized_g = OutputSanitizer.sanitize_plain_text(text_g)
+                        if use_cache:
+                            self.cache.put(cache_key, gguf_file.name, text_g)
+                        return LocalAiRunResult(
+                            ok=True,
+                            text=text_g,
+                            sanitized_text=sanitized_g,
+                            engine_used="Local-GGUF",
+                            model_used=gguf_file.name,
+                            tokens_per_sec=max(1.0, len(text_g.split()) / max(0.1, total_g_ms / 1000.0)),
+                            ttft_ms=total_g_ms,
+                            total_ms=total_g_ms,
+                        )
+                    if self.routing_mode == AiRoutingMode.LOCAL:
+                        return LocalAiRunResult(
+                            ok=False,
+                            text="",
+                            sanitized_text="",
+                            engine_used="Local-GGUF",
+                            model_used=gguf_file.name,
+                            error_message_vi=err_g,
+                        )
+
             if not active_local_ready and self.routing_mode == AiRoutingMode.HYBRID:
                 self.discover_local_engines(timeout=0.35)
                 active_local_ready = bool(self.active_base_url and self.active_model)
@@ -572,13 +646,18 @@ class LocalAIManager:
                 if self.routing_mode == AiRoutingMode.LOCAL:
                     return local_res
             elif self.routing_mode == AiRoutingMode.LOCAL:
+                hint = (
+                    f" Đã tìm thấy file GGUF '{gguf_file.name}' nhưng chưa cài `llama-cpp-python`."
+                    if gguf_file and gguf_file.exists()
+                    else " Mở [Quản Lý AI Local] để tải model GGUF hoặc bật Ollama / LM Studio."
+                )
                 return LocalAiRunResult(
                     ok=False,
                     text="",
                     sanitized_text="",
                     engine_used="Local",
                     model_used="",
-                    error_message_vi="Chế độ Local AI đang bật nhưng chưa tìm thấy Ollama (11434), LM Studio (1234) hay llama.cpp đang chạy.",
+                    error_message_vi="Chế độ Local AI đang bật nhưng chưa có engine Local hoạt động." + hint,
                 )
 
         # Tier 3: Gemini Cloud API (supports multi-key pool + live streaming)

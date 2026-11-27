@@ -39,16 +39,11 @@ from cv_engine.app_paths import get_app_logger, get_config_file_path, resource_p
 
 _LOGGER = get_app_logger("gemini_client")
 
-try:
-    from google import genai
-    from google.genai import types as genai_types
+import importlib.util
 
-    HAS_GENAI_SDK = True
-except Exception as exc:
-    _LOGGER.warning("google-genai SDK import failed: %s", exc)
-    genai = None  # type: ignore[assignment]
-    genai_types = None  # type: ignore[assignment]
-    HAS_GENAI_SDK = False
+HAS_GENAI_SDK = importlib.util.find_spec("google.genai") is not None
+genai = None  # type: ignore[assignment]
+genai_types = None  # type: ignore[assignment]
 
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_FALLBACK_MODELS: Tuple[str, ...] = (
@@ -59,8 +54,30 @@ DEFAULT_FALLBACK_MODELS: Tuple[str, ...] = (
 )
 EXPONENTIAL_BACKOFF_DELAYS_SEC: Tuple[float, ...] = (1.0, 2.0, 4.0)
 MAX_VISION_IMAGE_DIM = 1024
+DEFAULT_MAX_OUTPUT_TOKENS = 4096
 PLACEHOLDER_KEYS = {"", "your_gemini_api_key_here", "YOUR_GEMINI_API_KEY"}
 DEFAULT_SETTINGS_PATH = get_config_file_path()
+
+
+def _ensure_genai_sdk() -> bool:
+    """Lazy-load `google.genai` SDK when needed so UI startup remains < 1.5s."""
+    global genai, genai_types, HAS_GENAI_SDK
+    if genai is not None and genai_types is not None:
+        return True
+    if not HAS_GENAI_SDK:
+        return False
+    try:
+        from google import genai as _genai
+        from google.genai import types as _genai_types
+
+        genai = _genai
+        genai_types = _genai_types
+        HAS_GENAI_SDK = True
+        return True
+    except Exception as exc:
+        _LOGGER.warning("google-genai SDK import failed: %s", exc)
+        HAS_GENAI_SDK = False
+        return False
 
 
 class ApiConnectionStatus(str, Enum):
@@ -466,7 +483,7 @@ class ResilientGeminiClient:
 
     @staticmethod
     def _default_client_factory(api_key: str) -> Any:
-        if not HAS_GENAI_SDK or genai is None:
+        if not _ensure_genai_sdk() or genai is None:
             raise RuntimeError("Chưa cài đặt thư viện google-genai. Hãy chạy: pip install google-genai")
         return genai.Client(api_key=api_key)
 
@@ -475,7 +492,7 @@ class ResilientGeminiClient:
         client: Any,
         model_id: str,
         contents: Any,
-        max_output_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = DEFAULT_MAX_OUTPUT_TOKENS,
         structured_json: bool = False,
     ) -> str:
         kwargs: Dict[str, Any] = {"model": model_id, "contents": contents}
@@ -617,6 +634,7 @@ class ResilientGeminiClient:
         compressed_png = compress_snapshot_png(png_bytes, max_dim=MAX_VISION_IMAGE_DIM)
         contents: List[Any] = [prompt]
         if compressed_png:
+            _ensure_genai_sdk()
             if genai_types is not None and hasattr(genai_types, "Part"):
                 contents.append(
                     genai_types.Part.from_bytes(data=compressed_png, mime_type="image/png")
@@ -655,7 +673,10 @@ class ResilientGeminiClient:
                     try:
                         stream_fn = getattr(getattr(client, "models", None), "generate_content_stream", None)
                         if on_token is not None and not structured_json and callable(stream_fn):
-                            cfg_kwargs: Dict[str, Any] = {}
+                            _ensure_genai_sdk()
+                            cfg_kwargs: Dict[str, Any] = {
+                                "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+                            }
                             if genai_types is not None and hasattr(genai_types, "GenerateContentConfig"):
                                 stream_iter = stream_fn(
                                     model=model_id,
@@ -676,6 +697,7 @@ class ResilientGeminiClient:
                                 client,
                                 model_id=model_id,
                                 contents=contents,
+                                max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
                                 structured_json=structured_json,
                             )
                             if on_token is not None and txt and not structured_json:

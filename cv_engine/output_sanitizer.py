@@ -23,15 +23,31 @@ import io
 import re
 from typing import Dict, List, Optional, Tuple
 
-try:
-    from matplotlib.figure import Figure
-    from matplotlib.backends.backend_agg import FigureCanvasAgg
+import importlib.util
 
-    HAS_MATPLOTLIB = True
-except Exception:
-    Figure = None  # type: ignore[assignment]
-    FigureCanvasAgg = None  # type: ignore[assignment]
-    HAS_MATPLOTLIB = False
+HAS_MATPLOTLIB = importlib.util.find_spec("matplotlib") is not None
+Figure = None  # type: ignore[assignment]
+FigureCanvasAgg = None  # type: ignore[assignment]
+
+
+def _ensure_matplotlib() -> bool:
+    """Lazy-load matplotlib on first math rasterization to keep GUI startup < 1.5s."""
+    global Figure, FigureCanvasAgg, HAS_MATPLOTLIB
+    if Figure is not None and FigureCanvasAgg is not None:
+        return True
+    if not HAS_MATPLOTLIB:
+        return False
+    try:
+        from matplotlib.figure import Figure as _MplFigure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg as _MplAgg
+
+        Figure = _MplFigure
+        FigureCanvasAgg = _MplAgg
+        HAS_MATPLOTLIB = True
+        return True
+    except Exception:
+        HAS_MATPLOTLIB = False
+        return False
 
 
 _PSEUDO_TAG_REPLACEMENTS: Tuple[Tuple[re.Pattern[str], str], ...] = (
@@ -256,7 +272,7 @@ def render_latex_to_png_bytes(
     Render a clean LaTeX math expression 100% offline using `matplotlib.mathtext`
     into a transparent crisp PNG (`bytes`). Results are LRU-cached for zero-lag redraws.
     """
-    if not HAS_MATPLOTLIB or Figure is None or FigureCanvasAgg is None:
+    if not _ensure_matplotlib() or Figure is None or FigureCanvasAgg is None:
         return None
     cleaned = OutputSanitizer.clean_inner_latex_for_mathtext(latex_expr)
     if not cleaned:
@@ -592,21 +608,159 @@ class OutputSanitizer:
                     )
             else:
                 cleaned = cls.strip_all_stray_dollars(cls.latex_expr_to_unicode(payload))
-                esc = html.escape(cleaned)
-                # Lightweight safe Markdown bold/bullets + SVG vector arrows
-                esc = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc)
-                esc = re.sub(r"`([^`]+?)`", r'<code style="color:#06B6D4;font-weight:700;">\1</code>', esc)
-                esc = esc.replace("→", f'<img style="vertical-align:middle;" src="{arrow_svg_data_uri("right", arrow_color, 13)}" alt="→"/>')
-                esc = esc.replace("⇒", f'<img style="vertical-align:middle;" src="{arrow_svg_data_uri("implies", arrow_color, 13)}" alt="⇒"/>')
-                esc = esc.replace("⇔", f'<img style="vertical-align:middle;" src="{arrow_svg_data_uri("double", arrow_color, 14)}" alt="⇔"/>')
-                esc = esc.replace("←", f'<img style="vertical-align:middle;" src="{arrow_svg_data_uri("left", arrow_color, 13)}" alt="←"/>')
-                esc = esc.replace("\n", "<br/>")
-                html_parts.append(esc)
+                html_parts.append(
+                    cls._format_markdown_segment_html(
+                        cleaned,
+                        text_color=text_color,
+                        accent_color=accent_color,
+                        arrow_color=arrow_color,
+                        card_bg=card_bg,
+                        border_col=border_col,
+                    )
+                )
 
         return (
             f'<div style="color:{text_color}; font-family:Segoe UI,Arial,sans-serif; '
             f'font-size:13px; line-height:1.5;">{"".join(html_parts)}</div>'
         )
+
+    @classmethod
+    def _inline_markdown_to_html(
+        cls,
+        raw_line: str,
+        accent_color: str,
+        arrow_color: str,
+    ) -> str:
+        esc = html.escape(raw_line)
+        esc = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc)
+        esc = re.sub(r"(?<!\*)\*([^\*\n]+?)\*(?!\*)", r"<i>\1</i>", esc)
+        esc = re.sub(
+            r"`([^`]+?)`",
+            f'<code style="color:{accent_color};font-weight:700;padding:1px 4px;border-radius:4px;">\\1</code>',
+            esc,
+        )
+        esc = esc.replace("→", f'<img style="vertical-align:middle;" src="{arrow_svg_data_uri("right", arrow_color, 13)}" alt="→"/>')
+        esc = esc.replace("⇒", f'<img style="vertical-align:middle;" src="{arrow_svg_data_uri("implies", arrow_color, 13)}" alt="⇒"/>')
+        esc = esc.replace("⇔", f'<img style="vertical-align:middle;" src="{arrow_svg_data_uri("double", arrow_color, 14)}" alt="⇔"/>')
+        esc = esc.replace("←", f'<img style="vertical-align:middle;" src="{arrow_svg_data_uri("left", arrow_color, 13)}" alt="←"/>')
+        return esc
+
+    @classmethod
+    def _format_markdown_segment_html(
+        cls,
+        segment: str,
+        *,
+        text_color: str,
+        accent_color: str,
+        arrow_color: str,
+        card_bg: str,
+        border_col: str,
+    ) -> str:
+        if not segment:
+            return ""
+        lines = segment.splitlines()
+        out: List[str] = []
+        i = 0
+        n = len(lines)
+
+        def _is_table_sep(line: str) -> bool:
+            s = line.strip()
+            return bool(s.startswith("|") and re.fullmatch(r"[\|\s:\-]+", s) and "-" in s)
+
+        while i < n:
+            line = lines[i]
+            stripped = line.strip()
+
+            # Fenced code block ```
+            if stripped.startswith("```"):
+                lang = stripped[3:].strip()
+                code_lines: List[str] = []
+                i += 1
+                while i < n and not lines[i].strip().startswith("```"):
+                    code_lines.append(lines[i])
+                    i += 1
+                if i < n:
+                    i += 1
+                lang_hdr = f'<div style="color:#94A3B8;font-size:10px;margin-bottom:3px;">{html.escape(lang)}</div>' if lang else ""
+                code_esc = html.escape("\n".join(code_lines))
+                out.append(
+                    f'<div style="margin:6px 0;padding:8px 10px;background:{card_bg};border:1px solid {border_col};'
+                    f'border-radius:8px;">{lang_hdr}<pre style="margin:0;white-space:pre-wrap;'
+                    f'font-family:Consolas,monospace;font-size:12px;color:{text_color};">{code_esc}</pre></div>'
+                )
+                continue
+
+            # Markdown table | col1 | col2 |
+            if stripped.startswith("|") and stripped.endswith("|") and i + 1 < n and _is_table_sep(lines[i + 1]):
+                header_cells = [c.strip() for c in stripped.strip("|").split("|")]
+                i += 2
+                body_rows: List[List[str]] = []
+                while i < n:
+                    row_s = lines[i].strip()
+                    if not (row_s.startswith("|") and row_s.endswith("|")):
+                        break
+                    body_rows.append([c.strip() for c in row_s.strip("|").split("|")])
+                    i += 1
+                ths = "".join(
+                    f'<th style="padding:5px 8px;border:1px solid {border_col};background:{card_bg};'
+                    f'color:{accent_color};text-align:left;font-weight:700;">'
+                    f'{cls._inline_markdown_to_html(c, accent_color, arrow_color)}</th>'
+                    for c in header_cells
+                )
+                trs = []
+                for r in body_rows:
+                    tds = "".join(
+                        f'<td style="padding:4px 8px;border:1px solid {border_col};color:{text_color};">'
+                        f'{cls._inline_markdown_to_html(c, accent_color, arrow_color)}</td>'
+                        for c in r
+                    )
+                    trs.append(f"<tr>{tds}</tr>")
+                out.append(
+                    f'<table style="border-collapse:collapse;margin:6px 0;width:100%;font-size:12px;">'
+                    f'<thead><tr>{ths}</tr></thead><tbody>{"".join(trs)}</tbody></table>'
+                )
+                continue
+
+            # Markdown headings # .. ####
+            h_match = re.match(r"^(#{1,4})\s+(.+)$", stripped)
+            if h_match:
+                lvl = len(h_match.group(1))
+                fsize = {1: 16, 2: 15, 3: 14, 4: 13}.get(lvl, 13)
+                txt_html = cls._inline_markdown_to_html(h_match.group(2), accent_color, arrow_color)
+                out.append(
+                    f'<div style="font-size:{fsize}px;font-weight:700;color:{accent_color};margin:8px 0 3px 0;">{txt_html}</div>'
+                )
+                i += 1
+                continue
+
+            # Horizontal rule ---
+            if re.fullmatch(r"[-*_]{3,}", stripped):
+                out.append(f'<hr style="border:none;border-top:1px solid {border_col};margin:6px 0;"/>')
+                i += 1
+                continue
+
+            # Bullet or numbered list line
+            b_match = re.match(r"^[-*•]\s+(.+)$", stripped)
+            n_match = re.match(r"^(\d+[\.\)])\s+(.+)$", stripped)
+            if b_match:
+                txt_html = cls._inline_markdown_to_html(b_match.group(1), accent_color, arrow_color)
+                out.append(f'<div style="margin:2px 0 2px 10px;"><span style="color:{accent_color};font-weight:700;">•</span> {txt_html}</div>')
+                i += 1
+                continue
+            if n_match:
+                num_lbl = html.escape(n_match.group(1))
+                txt_html = cls._inline_markdown_to_html(n_match.group(2), accent_color, arrow_color)
+                out.append(f'<div style="margin:2px 0 2px 10px;"><span style="color:{accent_color};font-weight:700;">{num_lbl}</span> {txt_html}</div>')
+                i += 1
+                continue
+
+            if not stripped:
+                out.append("<br/>")
+            else:
+                out.append(cls._inline_markdown_to_html(line, accent_color, arrow_color) + ("<br/>" if i < n - 1 else ""))
+            i += 1
+
+        return "".join(out)
 
     @classmethod
     def to_katex_html(cls, raw: str, dark_mode: bool = True) -> str:

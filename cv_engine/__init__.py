@@ -26,11 +26,15 @@ from cv_engine.app_paths import (
     get_doc_cache_dir,
     get_local_cache_db_path,
     get_user_data_dir,
+    get_user_models_dir,
+    get_user_vision_config_path,
     install_global_excepthook,
     resource_path,
     set_windows_app_user_model_id,
     setup_app_logging,
 )
+
+from cv_engine.rust_bridge import HAS_RUST_CORE
 
 ensure_concurrent_futures_eager()
 from cv_engine.document_presenter import (
@@ -180,6 +184,9 @@ __all__ = [
     "Kinematic60HzExtrapolator",
     "map_active_workspace_norm",
     "get_user_data_dir",
+    "get_user_models_dir",
+    "get_user_vision_config_path",
+    "HAS_RUST_CORE",
     "install_global_excepthook",
     "resource_path",
     "set_windows_app_user_model_id",

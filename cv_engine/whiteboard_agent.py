@@ -393,10 +393,11 @@ class WhiteboardAgent:
             ctx_parts.append(f"Các vùng trống ưu tiên [x,y,w,h] hệ [0..1000]: {list(free_regions_norm)}.")
         ctx_str = (" " + " ".join(ctx_parts)) if ctx_parts else ""
         return (
-            "Nếu giáo viên yêu cầu vẽ hình, viết công thức, giải bài hoặc chú thích lên bảng, "
-            "hãy đính kèm block JSON trong thẻ ```whiteboard_actions ... ``` theo hệ tọa độ chuẩn hóa [0..1000]:\n"
+            "Hãy trình bày giải thích SƯ PHẠM CHI TIẾT, đầy đủ từng bước với cấu trúc Markdown rõ ràng (tiêu đề, bảng so sánh nếu phù hợp, công thức LaTeX $...$ / $$...$$).\n"
+            "Chỉ KHI giáo viên yêu cầu vẽ hình, viết công thức, giải bài hoặc chú thích trực tiếp lên bảng, "
+            "hãy đính kèm thêm ở cuối phản hồi một block JSON trong thẻ ```whiteboard_actions ... ``` theo hệ tọa độ chuẩn hóa [0..1000]:\n"
             "{\n"
-            '  "speech_or_text": "Giải thích ngắn gọn cho học sinh",\n'
+            '  "speech_or_text": "Tóm tắt nội dung vừa trình bày trên bảng cho học sinh",\n'
             '  "actions": [\n'
             '    {"type": "draw_shape", "shape": "triangle|line|arrow|rect|circle|ellipse|axes", "x": 150, "y": 200, "w": 220, "h": 180, "color": "#00F5D4", "strokeWidth": 3, "label": "ABC"},\n'
             '    {"type": "draw_text", "x": 150, "y": 420, "text": "a² + b² = c²", "color": "#FEE440", "fontSize": 18},\n'

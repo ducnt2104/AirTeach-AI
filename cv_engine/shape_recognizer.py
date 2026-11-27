@@ -24,6 +24,13 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from cv_engine.rust_bridge import (
+    catmull_rom_spline_fast,
+    rdp_simplify_fast,
+    resample_arc_length_fast,
+    snap_geometric_shape_fast,
+)
+
 RESAMPLE_N = 64
 CONFIDENCE_GATE = 0.78
 CLOSED_LOOP_GAP_RATIO = 0.18
@@ -111,10 +118,13 @@ def _perpendicular_distance(p: Point2D, a: Point2D, b: Point2D) -> float:
 
 
 def rdp_simplify(pts: Sequence[Point2D], epsilon: float) -> List[Point2D]:
-    """Iterative Ramer-Douglas-Peucker simplification."""
+    """Iterative Ramer-Douglas-Peucker simplification (Rust PyO3 accelerated with Python fallback)."""
     n = len(pts)
     if n <= 2 or epsilon <= 0.0:
         return list(pts)
+    fast = rdp_simplify_fast(pts, epsilon)
+    if fast is not None:
+        return fast
     keep = [False] * n
     keep[0] = True
     keep[-1] = True
@@ -140,11 +150,14 @@ def rdp_simplify(pts: Sequence[Point2D], epsilon: float) -> List[Point2D]:
 
 
 def resample_arc_length(pts: Sequence[Point2D], n: int = RESAMPLE_N) -> List[Point2D]:
-    """Resample polyline into exactly N equidistant points by cumulative arc length."""
+    """Resample polyline into exactly N equidistant points by cumulative arc length (Rust accelerated)."""
     if not pts:
         return []
     if len(pts) == 1 or n <= 1:
         return [pts[0]] * max(1, n)
+    fast = resample_arc_length_fast(pts, n)
+    if fast is not None:
+        return fast
 
     work = [tuple(p) for p in pts]
     total_len = polyline_length(work)
@@ -177,7 +190,10 @@ def resample_arc_length(pts: Sequence[Point2D], n: int = RESAMPLE_N) -> List[Poi
 
 
 def catmull_rom_spline(pts: Sequence[Point2D], subdivisions: int = 8) -> List[Point2D]:
-    """Centripetal-safe Catmull-Rom spline for smooth freehand curves / handwriting."""
+    """Centripetal-safe Catmull-Rom spline for smooth freehand curves / handwriting (Rust accelerated)."""
+    fast = catmull_rom_spline_fast(pts, max(3, subdivisions), alpha=0.5)
+    if fast is not None:
+        return fast
     clean = deduplicate_points(pts, min_step=1.0)
     if len(clean) < 3:
         return clean
@@ -865,7 +881,7 @@ def beautify_stroke(
         work_pts.append(clean[0])
     resampled = resample_arc_length(work_pts, RESAMPLE_N)
 
-    # Step 2A: Open Shapes (PCA Line, Arrow, & Coordinate Axes)
+    # Step 2A: Open Shapes (Coordinate Axes, then Rust Fast Snap for Arrow / Line)
     if not is_closed:
         axes_match = _try_detect_axes(clean, simplified, diag)
         if axes_match is not None:
@@ -880,6 +896,21 @@ def beautify_stroke(
                     beautified_points=axes_pts,
                     metadata={"diag": round(diag, 2)},
                 )
+
+        rust_open = snap_geometric_shape_fast(
+            clean, closed_gap_ratio=closed_gap_ratio, confidence_gate=confidence_gate
+        )
+        if rust_open is not None and rust_open[0] in ("ARROW", "LINE") and rust_open[1] >= confidence_gate:
+            r_type, r_conf, _, r_pts = rust_open
+            return BeautifiedShapeResult(
+                shape_type=r_type,
+                shape_label_vi=SHAPE_LABELS_VI.get(r_type, r_type),
+                confidence=round(r_conf, 3),
+                is_closed=False,
+                raw_points=raw_copy,
+                beautified_points=r_pts,
+                metadata={"diag": round(diag, 2), "engine": 1.0},
+            )
 
         arrow_match = _try_detect_arrow(resampled, diag)
         if arrow_match is not None:

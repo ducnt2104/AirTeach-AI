@@ -20,6 +20,8 @@ from typing import Dict, Optional, Tuple
 import cv2
 import numpy as np
 
+from cv_engine.rust_bridge import analyze_frame_luma_fast, apply_gamma_contrast_fast
+
 
 @dataclass
 class ExposureDiagnostics:
@@ -116,8 +118,12 @@ def _cached_rolloff_lut(knee: int) -> np.ndarray:
 def _sample_luma_stats(frame: np.ndarray, is_rgb: bool = True, stride: int = 4) -> Tuple[float, float, float]:
     """
     Fast strided exposure statistics on `frame[::stride, ::stride]`.
-    Uses ~1/16 pixels (`<0.15ms` on 640x480) instead of scanning all pixels per frame.
+    Uses Rust SIMD-friendly histogram pass (`<0.05ms`) when available, with NumPy fallback.
     """
+    eff_stride = stride if (frame.shape[0] >= 120 and frame.shape[1] >= 120) else 1
+    rust_stats = analyze_frame_luma_fast(frame, is_rgb=is_rgb, stride=eff_stride)
+    if rust_stats is not None:
+        return rust_stats
     sub = frame[::stride, ::stride] if (frame.shape[0] >= 120 and frame.shape[1] >= 120) else frame
     conv = cv2.COLOR_RGB2GRAY if is_rgb else cv2.COLOR_BGR2GRAY
     gray = cv2.cvtColor(sub, conv) if sub.ndim == 3 else sub
@@ -501,15 +507,17 @@ def sharpen_and_contrast_roi(
         mean_y = float(np.mean(gray))
         p2, p98 = (float(v) for v in np.percentile(gray, (2, 98)))
 
-        # Low-light local gamma boost (cached LUT, zero allocation)
+        # Low-light local gamma boost / contrast stretch (Rust fast-path with OpenCV fallback)
         if mean_y < 85.0:
             gamma = float(np.clip(0.55 + 0.35 * (mean_y / 85.0), 0.55, 0.90))
-            work = cv2.LUT(work, build_gamma_lut(gamma))
+            rust_out = apply_gamma_contrast_fast(work, gamma=gamma, alpha=1.0, beta=0.0)
+            work = rust_out if rust_out is not None else cv2.LUT(work, build_gamma_lut(gamma))
         elif (p98 - p2) < 90.0 and (p98 - p2) > 12.0:
             # Fast linear contrast stretch on low-contrast distant hand ROI
             alpha = min(2.2, 210.0 / max(12.0, p98 - p2))
             beta = -p2 * alpha + 18.0
-            work = cv2.convertScaleAbs(work, alpha=alpha, beta=beta)
+            rust_out = apply_gamma_contrast_fast(work, gamma=1.0, alpha=alpha, beta=beta)
+            work = rust_out if rust_out is not None else cv2.convertScaleAbs(work, alpha=alpha, beta=beta)
 
     strength = max(0.0, min(1.5, float(unsharp_strength)))
     if strength > 0.01:

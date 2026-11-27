@@ -15,6 +15,7 @@ proactive Pose-Wrist ROI search windows for 1.5m-3.0m long-range hand tracking:
 
 from __future__ import annotations
 
+import importlib.util
 import math
 import time
 from dataclasses import dataclass, field
@@ -27,14 +28,25 @@ from cv_engine.app_paths import get_app_logger
 
 _LOGGER = get_app_logger("subject_tracker")
 
-try:
-    import mediapipe as mp  # type: ignore
+mp = None  # type: ignore
+HAS_MEDIAPIPE_POSE = importlib.util.find_spec("mediapipe") is not None
 
-    HAS_MEDIAPIPE_POSE = hasattr(mp, "tasks") and hasattr(mp.tasks, "python")
-except Exception as exc:
-    _LOGGER.warning("MediaPipe Pose unavailable: %s", exc)
-    mp = None  # type: ignore
-    HAS_MEDIAPIPE_POSE = False
+
+def _ensure_mediapipe_pose() -> bool:
+    global mp, HAS_MEDIAPIPE_POSE
+    if mp is not None:
+        return True
+    try:
+        import mediapipe as _mp  # type: ignore
+
+        mp = _mp
+        HAS_MEDIAPIPE_POSE = hasattr(mp, "tasks") and hasattr(mp.tasks, "python")
+        return HAS_MEDIAPIPE_POSE
+    except Exception as exc:
+        _LOGGER.warning("MediaPipe Pose unavailable: %s", exc)
+        mp = None  # type: ignore
+        HAS_MEDIAPIPE_POSE = False
+        return False
 
 
 def _bbox_iou(a: Sequence[float], b: Sequence[float]) -> float:
@@ -188,7 +200,7 @@ class PoseTorsoEstimator:
             models_dir / "pose_landmarker_heavy.task",
         ]
         chosen = next((p for p in model_candidates if p.exists() and p.stat().st_size > 100_000), None)
-        if chosen is None:
+        if chosen is None or not _ensure_mediapipe_pose():
             return
         try:
             from cv_engine.app_paths import ensure_concurrent_futures_eager
