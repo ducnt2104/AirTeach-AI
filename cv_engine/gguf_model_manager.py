@@ -481,8 +481,8 @@ class ResumableModelDownloader:
         sidecar = Path(f"{final_path}.sha256")
         try:
             sidecar.write_text(f"{actual_sha}  {resolved_name}\n", encoding="utf-8")
-        except OSError:
-            pass
+        except OSError as exc:
+            _LOGGER.debug("Cannot write SHA-256 sidecar %s: %s", sidecar, exc)
 
         if progress_cb:
             final_size = final_path.stat().st_size
@@ -981,9 +981,10 @@ class LocalAiManagerDialog(QDialog):
         info = detect_local_ai_runtimes()
         parts: List[str] = []
         parts.append(f"llama-cpp-python: {'Sẵn sàng' if info['llama_cpp_python'] else 'Chưa cài'}")
+        parts.append(f"ONNX Runtime: {'Sẵn sàng' if info['onnxruntime'] else 'Chưa cài'}")
         parts.append(f"Ollama: {'Đang chạy' if info['ollama_online'] else ('Đã cài (chưa chạy)' if info['ollama_installed'] else 'Chưa cài')}")
         parts.append(f"LM Studio: {'Đang chạy (1234)' if info['lm_studio_online'] else 'Chưa mở'}")
-        parts.append(f"llama-server: {'Đang chạy (8080)' if info['llama_server_online'] else 'Chưa mở'}")
+        parts.append(f"llama-server: {'Đang chạy (8080)' if info['llama_server_online'] else ('Có CLI' if info['llama_server_bin'] else 'Chưa mở')}")
         self._runtime_status_lbl.setText("Runtime Local: " + "  |  ".join(parts))
 
     def _refresh_downloaded_list(self) -> None:

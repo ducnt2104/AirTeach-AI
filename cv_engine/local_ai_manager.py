@@ -268,12 +268,16 @@ class LocalAIManager:
         self._lock = threading.Lock()
 
     def set_gguf_model(self, gguf_path: str) -> None:
-        """Configure a local `.gguf` file path for 100% offline in-process inference."""
+        """Configure or clear a local `.gguf` file path for 100% offline in-process inference."""
         with self._lock:
-            self.active_gguf_path = str(gguf_path or "").strip()
-            if self.active_gguf_path:
+            cleaned = str(gguf_path or "").strip()
+            self.active_gguf_path = cleaned
+            if cleaned:
                 self.active_provider = "GGUF (In-Process)"
-                self.active_model = Path(self.active_gguf_path).name
+                self.active_model = Path(cleaned).name
+            elif self.active_provider == "GGUF (In-Process)":
+                self.active_provider = ""
+                self.active_model = ""
 
     def _ensure_gguf_backend(self) -> Any:
         if self._gguf_backend is None:
@@ -418,7 +422,7 @@ class LocalAIManager:
         ttft_ms = 0.0
         token_count = 0
         raw_accum: List[str] = []
-        stream_sanitizer = StreamingSanitizer()
+        stream_sanitizer = StreamingSanitizer(preserve_latex=True)
 
         use_ollama_native = provider == "Ollama" and not has_image
         if use_ollama_native:
@@ -566,18 +570,23 @@ class LocalAIManager:
         # Try Local LLM first when mode is LOCAL or HYBRID (and a local server or GGUF model is active)
         if self.routing_mode in (AiRoutingMode.LOCAL, AiRoutingMode.HYBRID):
             gguf_file = Path(self.active_gguf_path) if self.active_gguf_path else None
-            if gguf_file and gguf_file.exists() and not active_local_ready and not structured_json:
+            gguf_selected = bool(
+                gguf_file
+                and gguf_file.exists()
+                and (self.active_provider == "GGUF (In-Process)" or not active_local_ready)
+            )
+            if gguf_selected and not structured_json:
                 backend = self._ensure_gguf_backend()
                 if backend.is_available():
                     t_gguf0 = time.perf_counter()
                     msgs_txt = [{"role": "system", "content": system_prompt}]
-                    for h in history[-4:]:
+                    for h in history[-6:]:
                         role = str(h.get("role", "user")).strip().lower()
                         content = str(h.get("content", "")).strip()
                         if content:
                             msgs_txt.append({"role": role if role in ("user", "assistant") else "user", "content": content})
                     msgs_txt.append({"role": "user", "content": prompt})
-                    stream_san = StreamingSanitizer() if on_token is not None else None
+                    stream_san = StreamingSanitizer(preserve_latex=True) if on_token is not None else None
 
                     def _gguf_tok(piece: str) -> None:
                         if stream_san is not None and on_token is not None:
@@ -620,11 +629,12 @@ class LocalAIManager:
                             error_message_vi=err_g,
                         )
 
-            if not active_local_ready and self.routing_mode == AiRoutingMode.HYBRID:
+            http_local_ready = bool(self.active_base_url and self.active_model and self.active_provider != "GGUF (In-Process)")
+            if not http_local_ready and self.routing_mode == AiRoutingMode.HYBRID:
                 self.discover_local_engines(timeout=0.35)
-                active_local_ready = bool(self.active_base_url and self.active_model)
+                http_local_ready = bool(self.active_base_url and self.active_model and self.active_provider != "GGUF (In-Process)")
 
-            if active_local_ready and not structured_json:
+            if http_local_ready and not structured_json:
                 msgs = build_sliding_window_messages(
                     system_prompt=system_prompt,
                     history=history,
@@ -660,7 +670,7 @@ class LocalAIManager:
                     error_message_vi="Chế độ Local AI đang bật nhưng chưa có engine Local hoạt động." + hint,
                 )
 
-        # Tier 3: Gemini Cloud API (supports multi-key pool + live streaming)
+        # Tier 3: Gemini Cloud API (supports multi-key pool, deep system prompt, history & live streaming)
         key_pool = resolve_api_key_pool(cloud_api_key if (cloud_api_key or "").strip() else None)
         if not key_pool:
             return LocalAiRunResult(
@@ -673,7 +683,7 @@ class LocalAIManager:
             )
 
         t0 = time.perf_counter()
-        stream_sanitizer = StreamingSanitizer() if on_token is not None else None
+        stream_sanitizer = StreamingSanitizer(preserve_latex=True) if on_token is not None else None
 
         def _cloud_token(chunk: str) -> None:
             if stream_sanitizer is not None and on_token is not None:
@@ -688,6 +698,9 @@ class LocalAIManager:
             primary_model=cloud_model or DEFAULT_GEMINI_MODEL,
             structured_json=structured_json,
             on_token=_cloud_token if (on_token is not None and not structured_json) else None,
+            system_instruction=system_prompt,
+            history=history,
+            max_output_tokens=4096,
         )
         total_ms = (time.perf_counter() - t0) * 1000.0
         if res.ok:

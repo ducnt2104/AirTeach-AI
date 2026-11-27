@@ -236,30 +236,8 @@ def _convert_via_libreoffice(src_path: Path, entry_dir: Path, pdf_out: Path) -> 
 def _convert_via_powerpoint_com(src_path: Path, pdf_out: Path) -> bool:
     if not _has_windows_powerpoint_com():
         return False
-    # Try win32com directly if available
-    try:
-        import pythoncom  # type: ignore
-        import win32com.client  # type: ignore
-
-        pythoncom.CoInitialize()
-        app = None
-        pres = None
-        try:
-            app = win32com.client.DispatchEx("PowerPoint.Application")
-            pres = app.Presentations.Open(str(src_path.resolve()), WithWindow=False)
-            pres.SaveAs(str(pdf_out.resolve()), 32)  # ppSaveAsPDF = 32
-        finally:
-            if pres is not None:
-                pres.Close()
-            if app is not None:
-                app.Quit()
-            pythoncom.CoUninitialize()
-        if pdf_out.exists() and pdf_out.stat().st_size > 200:
-            return True
-    except Exception:
-        pass
-
-    # Fallback: PowerShell COM automation (requires no pywin32 package)
+    # Out-of-process PowerShell COM automation isolates Office RPC/SEH faults
+    # completely from the PySide6 Qt GUI thread apartment.
     try:
         src_esc = str(src_path.resolve()).replace("'", "''")
         out_esc = str(pdf_out.resolve()).replace("'", "''")
@@ -271,8 +249,8 @@ def _convert_via_powerpoint_com(src_path: Path, pdf_out: Path) -> bool:
             f"  $pres = $pp.Presentations.Open('{src_esc}', $true, $false, $false);"
             f"  $pres.SaveAs('{out_esc}', 32);"
             "} finally {"
-            "  if ($pres) { $pres.Close() };"
-            "  if ($pp) { $pp.Quit() };"
+            "  if ($pres) { try { $pres.Close() } catch {} };"
+            "  if ($pp) { try { $pp.Quit() } catch {} };"
             "}"
         )
         res = subprocess.run(
@@ -353,8 +331,8 @@ def _safe_rgb_from_color(color_obj: Any) -> Optional[Tuple[int, int, int]]:
         rgb = getattr(color_obj, "rgb", None)
         if rgb is not None:
             return (int(rgb[0]), int(rgb[1]), int(rgb[2]))
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOGGER.debug("RGB color read fallback: %s", exc)
     return None
 
 
@@ -519,14 +497,14 @@ def _render_pptx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool
                     try:
                         lw = float(draw.textlength(line, font=pil_font))
                         tx = max(bx0 + pad_x, int(bx0 + ((bx1 - bx0) - lw) * 0.5))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _LOGGER.debug("Center alignment width fallback: %s", exc)
                 elif PP_ALIGN is not None and align == PP_ALIGN.RIGHT:
                     try:
                         lw = float(draw.textlength(line, font=pil_font))
                         tx = max(bx0 + pad_x, int(bx1 - pad_x - lw))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _LOGGER.debug("Right alignment width fallback: %s", exc)
                 if line:
                     draw.text((tx, cur_y), line, fill=fg_col, font=pil_font)
                 cur_y += line_h
@@ -770,8 +748,8 @@ def convert_presentation_to_cached_pdf(
                 if cnt >= 1:
                     texts = [str(t) for t in (manifest.get("slide_texts") or [])]
                     return pdf_out, texts, "CACHE_HIT"
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.debug("PPTX PDF cache probe miss (%s): %s", src.name, exc)
 
     backend = ""
     slide_texts: List[str] = []
@@ -827,37 +805,7 @@ def convert_presentation_to_cached_pdf(
 def _convert_via_word_com(src_path: Path, pdf_out: Path) -> bool:
     if not _has_windows_word_com():
         return False
-    try:
-        import pythoncom  # type: ignore
-        import win32com.client  # type: ignore
-
-        pythoncom.CoInitialize()
-        word_app = None
-        word_doc = None
-        try:
-            word_app = win32com.client.DispatchEx("Word.Application")
-            word_app.Visible = False
-            word_doc = word_app.Documents.Open(
-                str(src_path.resolve()),
-                ConfirmConversions=False,
-                ReadOnly=True,
-                AddToRecentFiles=False,
-            )
-            word_doc.ExportAsFixedFormat(
-                OutputFileName=str(pdf_out.resolve()),
-                ExportFormat=17,  # wdExportFormatPDF
-            )
-        finally:
-            if word_doc is not None:
-                word_doc.Close(SaveChanges=False)
-            if word_app is not None:
-                word_app.Quit(SaveChanges=False)
-            pythoncom.CoUninitialize()
-        if pdf_out.exists() and pdf_out.stat().st_size > 200:
-            return True
-    except Exception:
-        pass
-
+    # Out-of-process PowerShell COM automation prevents RPC_E_DISCONNECTED SEH faults inside Qt.
     try:
         src_esc = str(src_path.resolve()).replace("'", "''")
         out_esc = str(pdf_out.resolve()).replace("'", "''")
@@ -870,8 +818,8 @@ def _convert_via_word_com(src_path: Path, pdf_out: Path) -> bool:
             f"  $d = $w.Documents.Open('{src_esc}', $false, $true, $false);"
             f"  $d.ExportAsFixedFormat('{out_esc}', 17);"
             "} finally {"
-            "  if ($d) { $d.Close($false) };"
-            "  if ($w) { $w.Quit($false) };"
+            "  if ($d) { try { $d.Close($false) } catch {} };"
+            "  if ($w) { try { $w.Quit($false) } catch {} };"
             "}"
         )
         res = subprocess.run(
@@ -1016,8 +964,8 @@ def _render_docx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool
                     align_css = "text-align: right;"
                 elif "JUSTIFY" in al:
                     align_css = "text-align: justify;"
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOGGER.debug("DOCX paragraph alignment fallback: %s", exc)
 
             bullet = "• " if "list" in s_low or p._element.find(f"{w_ns}pPr/{w_ns}numPr") is not None else ""
             if bullet:
@@ -1165,8 +1113,8 @@ def convert_word_to_cached_pdf(
                 if cnt >= 1:
                     texts = [str(t) for t in (manifest.get("page_texts") or [])]
                     return pdf_out, texts, "CACHE_HIT"
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.debug("Word PDF cache probe miss (%s): %s", src.name, exc)
 
     backend = ""
     page_texts: List[str] = []
@@ -1386,8 +1334,8 @@ class LectureDocument:
                 self._closed = True
                 try:
                     self._doc.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _LOGGER.debug("LectureDocument close note: %s", exc)
                 self._page_cache.clear()
                 self._thumb_cache.clear()
 

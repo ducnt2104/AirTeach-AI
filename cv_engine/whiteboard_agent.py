@@ -621,4 +621,4 @@ class WhiteboardAgent:
             elif extracted_speech not in cleaned_text:
                 cleaned_text = f"{cleaned_text.strip()}\n{extracted_speech}"
 
-        return actions, OutputSanitizer.sanitize_plain_text(cleaned_text)
+        return actions, OutputSanitizer.normalize_delimiters_and_tags(cleaned_text).strip()

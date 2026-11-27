@@ -782,9 +782,11 @@ class StreamingSanitizer:
     """
     Incremental token buffer holding unclosed `$...$` / `$$...$$` / `<tag>` markers
     so live token-by-token streaming never displays torn syntax.
+    When `preserve_latex=True`, emits clean Markdown + balanced `$...$`/`$$...$$` for rich HTML rendering.
     """
 
     buffer: str = ""
+    preserve_latex: bool = False
 
     def reset(self) -> None:
         self.buffer = ""
@@ -822,9 +824,14 @@ class StreamingSanitizer:
             return ""
         ready = normalized[:hold_idx]
         self.buffer = normalized[hold_idx:]
+        if self.preserve_latex:
+            return ready
         return OutputSanitizer.sanitize_plain_text(ready)
 
     def flush(self) -> str:
-        rem = OutputSanitizer.sanitize_plain_text(self.buffer)
+        if self.preserve_latex:
+            rem = OutputSanitizer.normalize_delimiters_and_tags(self.buffer)
+        else:
+            rem = OutputSanitizer.sanitize_plain_text(self.buffer)
         self.buffer = ""
         return rem

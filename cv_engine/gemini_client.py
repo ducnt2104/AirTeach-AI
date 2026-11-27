@@ -187,6 +187,9 @@ def save_ui_api_settings(
     preferred_model: Optional[str] = None,
     settings_path: Path = DEFAULT_SETTINGS_PATH,
     onboarding_skipped: Optional[bool] = None,
+    quick_tip_dismissed: Optional[bool] = None,
+    ai_routing_mode: Optional[str] = None,
+    active_gguf_path: Optional[str] = None,
 ) -> Dict[str, str]:
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     data = load_ui_api_settings(settings_path)
@@ -204,6 +207,20 @@ def save_ui_api_settings(
             data.pop("gemini_model_id", None)
     if onboarding_skipped is not None:
         data["onboarding_skipped"] = "true" if onboarding_skipped else "false"
+    if quick_tip_dismissed is not None:
+        data["quick_tip_dismissed"] = "true" if quick_tip_dismissed else "false"
+    if ai_routing_mode is not None:
+        rm = ai_routing_mode.strip().upper()
+        if rm in ("LOCAL", "CLOUD", "HYBRID"):
+            data["ai_routing_mode"] = rm
+        else:
+            data.pop("ai_routing_mode", None)
+    if active_gguf_path is not None:
+        gp = active_gguf_path.strip()
+        if gp:
+            data["active_gguf_path"] = gp
+        else:
+            data.pop("active_gguf_path", None)
     settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return data
 
@@ -494,6 +511,7 @@ class ResilientGeminiClient:
         contents: Any,
         max_output_tokens: Optional[int] = DEFAULT_MAX_OUTPUT_TOKENS,
         structured_json: bool = False,
+        system_instruction: Optional[str] = None,
     ) -> str:
         kwargs: Dict[str, Any] = {"model": model_id, "contents": contents}
         cfg_kwargs: Dict[str, Any] = {}
@@ -501,6 +519,8 @@ class ResilientGeminiClient:
             cfg_kwargs["max_output_tokens"] = int(max_output_tokens)
         if structured_json:
             cfg_kwargs["response_mime_type"] = "application/json"
+        if system_instruction and system_instruction.strip():
+            cfg_kwargs["system_instruction"] = system_instruction.strip()
 
         if cfg_kwargs:
             if genai_types is not None and hasattr(genai_types, "GenerateContentConfig"):
@@ -611,6 +631,9 @@ class ResilientGeminiClient:
         fallback_models: Optional[Sequence[str]] = None,
         structured_json: bool = False,
         on_token: Optional[Callable[[str], None]] = None,
+        system_instruction: Optional[str] = None,
+        history: Sequence[Dict[str, str]] = (),
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     ) -> GeminiCallResult:
         """
         Execute multimodal Gemini request with:
@@ -618,6 +641,7 @@ class ResilientGeminiClient:
         - Multi-key rotation when multiple keys are configured
         - Exponential Backoff retries on HTTP 429 (`1s, 2s, 4s`)
         - Model fallback on HTTP 404 or exhausted 429
+        - Deep pedagogical system_instruction, history context & max_output_tokens >= 4096
         - Optional live token streaming via `on_token`
         - Structured Vietnamese error translation on failure
         """
@@ -631,8 +655,25 @@ class ResilientGeminiClient:
                 error_message_vi="Chưa cấu hình GEMINI_API_KEY trong UI Settings hoặc file .env.",
             )
 
+        effective_max_tokens = max(DEFAULT_MAX_OUTPUT_TOKENS, int(max_output_tokens))
+        effective_prompt = prompt
+        clean_hist = [
+            h for h in (history or ())
+            if isinstance(h, dict) and h.get("role") in ("user", "assistant") and str(h.get("content") or "").strip()
+        ]
+        if clean_hist:
+            hist_lines = []
+            for turn in clean_hist[-6:]:
+                who = "Giáo viên" if turn["role"] == "user" else "Trợ lý AI"
+                hist_lines.append(f"{who}: {str(turn['content']).strip()[:600]}")
+            effective_prompt = (
+                "Ngữ cảnh hội thoại gần đây:\n"
+                + "\n".join(hist_lines)
+                + f"\n\nYêu cầu hiện tại của giáo viên:\n{prompt}"
+            )
+
         compressed_png = compress_snapshot_png(png_bytes, max_dim=MAX_VISION_IMAGE_DIM)
-        contents: List[Any] = [prompt]
+        contents: List[Any] = [effective_prompt]
         if compressed_png:
             _ensure_genai_sdk()
             if genai_types is not None and hasattr(genai_types, "Part"):
@@ -675,16 +716,19 @@ class ResilientGeminiClient:
                         if on_token is not None and not structured_json and callable(stream_fn):
                             _ensure_genai_sdk()
                             cfg_kwargs: Dict[str, Any] = {
-                                "max_output_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
+                                "max_output_tokens": effective_max_tokens,
                             }
+                            if system_instruction and system_instruction.strip():
+                                cfg_kwargs["system_instruction"] = system_instruction.strip()
                             if genai_types is not None and hasattr(genai_types, "GenerateContentConfig"):
-                                stream_iter = stream_fn(
-                                    model=model_id,
-                                    contents=contents,
-                                    config=genai_types.GenerateContentConfig(**cfg_kwargs),
-                                )
+                                stream_cfg: Any = genai_types.GenerateContentConfig(**cfg_kwargs)
                             else:
-                                stream_iter = stream_fn(model=model_id, contents=contents)
+                                stream_cfg = cfg_kwargs
+                            stream_iter = stream_fn(
+                                model=model_id,
+                                contents=contents,
+                                config=stream_cfg,
+                            )
                             chunks: List[str] = []
                             for ev in stream_iter:
                                 piece = getattr(ev, "text", None) or ""
@@ -697,8 +741,9 @@ class ResilientGeminiClient:
                                 client,
                                 model_id=model_id,
                                 contents=contents,
-                                max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+                                max_output_tokens=effective_max_tokens,
                                 structured_json=structured_json,
+                                system_instruction=system_instruction,
                             )
                             if on_token is not None and txt and not structured_json:
                                 on_token(txt)

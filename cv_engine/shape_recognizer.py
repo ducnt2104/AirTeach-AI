@@ -897,6 +897,20 @@ def beautify_stroke(
                     metadata={"diag": round(diag, 2)},
                 )
 
+        arrow_match = _try_detect_arrow(resampled, diag)
+        if arrow_match is not None:
+            arrow_pts, arrow_conf = arrow_match
+            if arrow_conf >= confidence_gate:
+                return BeautifiedShapeResult(
+                    shape_type="ARROW",
+                    shape_label_vi=SHAPE_LABELS_VI["ARROW"],
+                    confidence=round(arrow_conf, 3),
+                    is_closed=False,
+                    raw_points=raw_copy,
+                    beautified_points=arrow_pts,
+                    metadata={"diag": round(diag, 2)},
+                )
+
         rust_open = snap_geometric_shape_fast(
             clean, closed_gap_ratio=closed_gap_ratio, confidence_gate=confidence_gate
         )
@@ -911,20 +925,6 @@ def beautify_stroke(
                 beautified_points=r_pts,
                 metadata={"diag": round(diag, 2), "engine": 1.0},
             )
-
-        arrow_match = _try_detect_arrow(resampled, diag)
-        if arrow_match is not None:
-            arrow_pts, arrow_conf = arrow_match
-            if arrow_conf >= confidence_gate:
-                return BeautifiedShapeResult(
-                    shape_type="ARROW",
-                    shape_label_vi=SHAPE_LABELS_VI["ARROW"],
-                    confidence=round(arrow_conf, 3),
-                    is_closed=False,
-                    raw_points=raw_copy,
-                    beautified_points=arrow_pts,
-                    metadata={"diag": round(diag, 2)},
-                )
 
         centroid, l1, l2, uvec = _pca_2d(resampled)
         eig_ratio = l2 / max(l1, 1e-9)

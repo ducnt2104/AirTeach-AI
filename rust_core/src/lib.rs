@@ -920,14 +920,59 @@ fn snap_geometric_shape_rs(
         let eig_ratio = l2 / l1.max(1e-9);
         let simplified = rdp_simplify_rs(clean.clone(), (bbox_diag * 0.025).max(3.0));
         if eig_ratio < 0.035 && simplified.len() <= 6 {
-            let line_conf = (1.0 - (eig_ratio / 0.035) * 0.18).clamp(0.80, 0.99);
-            if line_conf >= confidence_gate {
-                return (
-                    "LINE".to_string(),
-                    line_conf,
-                    false,
-                    vec![clean[0], *clean.last().unwrap()],
-                );
+            let (mut ux, mut uy) = if sxy.abs() > 1e-12 {
+                let vx = l1 - syy;
+                let vy = sxy;
+                let nrm = vx.hypot(vy).max(1e-12);
+                (vx / nrm, vy / nrm)
+            } else if sxx >= syy {
+                (1.0, 0.0)
+            } else {
+                (0.0, 1.0)
+            };
+            let p0_proj = (clean[0].0 - mx) * ux + (clean[0].1 - my) * uy;
+            let p1_proj = (clean.last().unwrap().0 - mx) * ux + (clean.last().unwrap().1 - my) * uy;
+            if p1_proj < p0_proj {
+                ux = -ux;
+                uy = -uy;
+            }
+            let projs: Vec<f64> = resampled
+                .iter()
+                .map(|p| (p.0 - mx) * ux + (p.1 - my) * uy)
+                .collect();
+            let t_min = projs.iter().copied().fold(f64::INFINITY, f64::min);
+            let t_max = projs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let line_len = (t_max - t_min).max(1e-6);
+            let mut max_backtrack = 0.0_f64;
+            let mut running_max = projs[0];
+            for &tp in &projs[1..] {
+                if tp > running_max {
+                    running_max = tp;
+                } else {
+                    max_backtrack = max_backtrack.max(running_max - tp);
+                }
+            }
+            if max_backtrack <= 0.08 * line_len {
+                let raw_ang = uy.atan2(ux).to_degrees();
+                let mut snap_ang = raw_ang;
+                for &anchor in &[-180.0_f64, -135.0, -90.0, -45.0, 0.0, 45.0, 90.0, 135.0, 180.0] {
+                    if (raw_ang - anchor).abs() <= 6.0 {
+                        snap_ang = anchor;
+                        break;
+                    }
+                }
+                let mid_proj = 0.5 * (t_min + t_max);
+                let mid_x = mx + mid_proj * ux;
+                let mid_y = my + mid_proj * uy;
+                let rad = snap_ang.to_radians();
+                let sx = rad.cos();
+                let sy = rad.sin();
+                let p_start = (mid_x - 0.5 * line_len * sx, mid_y - 0.5 * line_len * sy);
+                let p_end = (mid_x + 0.5 * line_len * sx, mid_y + 0.5 * line_len * sy);
+                let line_conf = (1.0 - (eig_ratio / 0.035) * 0.18).clamp(0.80, 0.99);
+                if line_conf >= confidence_gate {
+                    return ("LINE".to_string(), line_conf, false, vec![p_start, p_end]);
+                }
             }
         }
         return ("FREEHAND".to_string(), 0.0, false, clean);

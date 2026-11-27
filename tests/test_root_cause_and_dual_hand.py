@@ -363,9 +363,11 @@ def test_appdata_paths_and_api_settings_roundtrip(tmp_path: Path):
     assert hc_err.ok is False
 
 
-def test_whiteboard_agent_json_actions_and_gui_pan_zoom_undo(qapp, monkeypatch):
+def test_whiteboard_agent_json_actions_and_gui_pan_zoom_undo(monkeypatch):
+    from PySide6.QtWidgets import QApplication
     import main
 
+    qapp = QApplication.instance() or QApplication(["pytest-airteach"])
     # Avoid spawning a second background LiteRT/WebGPU QThread inside the same pytest process
     # where test_real_mediapipe_init_after_main_import already exercised real model init on Thread 0.
     monkeypatch.setattr(main.CameraHandWorker, "start", lambda self: None)

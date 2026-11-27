@@ -169,23 +169,24 @@ def build_lasso_prompt(
         )
     if action == LassoQuickAction.WRITE_SOLUTION_TO_BOARD:
         return (
-            "Đọc bài toán trong ảnh vùng khoanh, giải ngắn gọn theo từng bước rõ ràng. "
-            "Hãy trả về lời giải ngắn gọn và đính kèm khối JSON "
+            "Đọc chính xác bài toán trong ảnh vùng khoanh, phân tích đầy đủ cơ sở lý thuyết và lời giải chi tiết từng bước "
+            "kèm công thức LaTeX chuẩn ($...$ / $$...$$), đồng thời đính kèm ở cuối một khối JSON "
             "```whiteboard_actions\n"
             '{"speech_or_text": "Đã viết lời giải lên bảng.", "actions": ['
             '{"type": "draw_text", "x": 420, "y": 140, "text": "Bước 1: ...", "color": "#00F5D4", "fontSize": 17}'
             "]}\n"
-            "``` (theo hệ tọa độ [0..1000]) để đưa thẳng vào vùng trống bên cạnh."
+            "``` (theo hệ tọa độ [0..1000]) để đưa các bước trọng tâm vào vùng trống bên cạnh."
             + free_hint
         )
     if action == LassoQuickAction.BEAUTIFY_LATEX:
         return (
             "Hãy nhận diện chính xác duy nhất công thức toán học hoặc dòng chữ viết tay trong ảnh này. "
             "Chỉ trả về đúng biểu thức LaTeX chuẩn (ví dụ: 2x + 1 = 3 hoặc \\frac{-b \\pm \\sqrt{\\Delta}}{2a}), "
-            "không giải thích dài dòng."
+            "không giải thích thêm."
         )
     return (
-        "Hãy tóm tắt và giải thích ngắn gọn khái niệm hoặc nội dung trong ảnh vùng khoanh này "
+        "Hãy phân tích chuyên sâu, có cấu trúc Markdown rõ ràng (khái niệm cốt lõi, công thức LaTeX $...$/$$...$$, "
+        "ví dụ minh họa và lưu ý lỗi sai thường gặp) cho nội dung trong ảnh vùng khoanh này "
         "theo ngôn ngữ sư phạm dễ hiểu cho học sinh."
         + free_hint
     )

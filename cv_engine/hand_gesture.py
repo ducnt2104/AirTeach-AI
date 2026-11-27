@@ -149,8 +149,8 @@ def ensure_hand_model(path: Path, url: str = HAND_MODEL_URL) -> bool:
                     return True
                 except OSError:
                     return True
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOGGER.debug("Local bundled hand model lookup skipped: %s", exc)
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "AirTeachAI/1.0"})
         with urllib.request.urlopen(req, timeout=20) as resp:

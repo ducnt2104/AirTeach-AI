@@ -1976,7 +1976,7 @@ class MiniCameraHudOverlay(QFrame):
             bg_c, fg_c = NEON_CYAN, BG_DARK
         elif badge_upper in ("ERASER", "LOCKED"):
             bg_c, fg_c = ALERT_ROSE, TEXT_LIGHT
-        elif badge_upper in ("NEXT SLIDE", "PREV SLIDE", "AI SLIDE", "ZOOM / PAN"):
+        elif badge_upper in ("NEXT SLIDE", "PREV SLIDE", "SCROLL DOWN", "SCROLL UP", "AI SLIDE", "ZOOM / PAN"):
             bg_c, fg_c = BRIGHT_YELLOW, BG_DARK
         else:
             bg_c, fg_c = PRIMARY_INDIGO, TEXT_LIGHT
@@ -2336,8 +2336,8 @@ class SmartboardCanvas(QWidget):
             _cfg_tip = load_ui_api_settings()
             if str(_cfg_tip.get("quick_tip_dismissed", "")).lower() in ("true", "1"):
                 self.quick_tip_banner.setVisible(False)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.debug("Cannot read quick_tip_dismissed preference: %s", exc)
         self.quick_tip_banner.dismissed.connect(self._persist_quick_tip_dismissed)
 
         # Right-Click Blender/Maya-style Radial Pie Menu (8 ergonomic directional slices)
@@ -2435,11 +2435,9 @@ class SmartboardCanvas(QWidget):
 
     def _persist_quick_tip_dismissed(self) -> None:
         try:
-            cfg = load_ui_api_settings()
-            cfg["quick_tip_dismissed"] = "true"
-            save_ui_api_settings(cfg)
-        except Exception:
-            pass
+            save_ui_api_settings(quick_tip_dismissed=True)
+        except Exception as exc:
+            _LOGGER.warning("Cannot persist quick_tip_dismissed preference: %s", exc)
 
     def _refresh_nav_hud(self) -> None:
         if hasattr(self, "nav_hud") and self.nav_hud is not None:
@@ -2552,7 +2550,7 @@ class SmartboardCanvas(QWidget):
         self.doc_scroll_y = 0.0
         self.continuous_scroll_mode = (getattr(doc, "doc_type", "PDF") == "WORD")
         self.slide_visible = True
-        self.toggle_slide_btn.setText("[Ẩn Slide -> Bảng trống]")
+        self.toggle_slide_btn.setText("Ẩn Slide -> Bảng trống")
         self.clear_tutorial_btn.setVisible(False)
         doc.prewarm_around(0, radius=2, scale=2.25)
         self.reset_viewport()
@@ -3502,9 +3500,9 @@ class SmartboardCanvas(QWidget):
     def toggle_slide_visibility(self) -> None:
         self.slide_visible = not self.slide_visible
         if self.slide_visible:
-            self.toggle_slide_btn.setText("[Ẩn Slide -> Bảng trống]")
+            self.toggle_slide_btn.setText("Ẩn Slide -> Bảng trống")
         else:
-            self.toggle_slide_btn.setText("[Hiện nội dung Slide]")
+            self.toggle_slide_btn.setText("Hiện nội dung Slide")
         self._bump_scene()
         self.update()
 
@@ -3528,7 +3526,10 @@ class SmartboardCanvas(QWidget):
         cursor_norm = pkt.get("cursor_norm")
         left_pan = bool(pkt.get("left_pan_active", False))
         dual_info = pkt.get("dual_hand") or {}
-        suppress_draw = bool(dual_info.get("suppress_primary_drawing", False))
+        two_mode = str(dual_info.get("two_hand_mode") or "NONE")
+        self._two_hand_nav_active = two_mode in ("DUAL_PINCH_ZOOM", "DUAL_PALM_PAN")
+        suppress_nav = bool(pkt.get("suppress_fsm_for_nav", False))
+        suppress_draw = bool(dual_info.get("suppress_primary_drawing", False)) or suppress_nav
         self.active_modifier_mode = str(dual_info.get("modifier_mode") or "NONE")
         self.two_hand_status_text = str(dual_info.get("status_label_vi") or "")
         hand_span = float(pkt.get("hand_span") or 0.20)
@@ -3582,7 +3583,10 @@ class SmartboardCanvas(QWidget):
         self.hud_mode = upd.hud_mode
         self.cooldown_remaining_ms = upd.cooldown_remaining_ms
         self.cancel_hold_progress = upd.cancel_hold_progress
-        self.cursor_mode = upd.hud_mode.value
+        if getattr(self, "_two_hand_nav_active", False):
+            self.cursor_mode = "TWO_HAND_NAV"
+        else:
+            self.cursor_mode = upd.hud_mode.value
 
         if upd.action in ("BEGIN_STROKE", "APPEND_POINT", "HOLD_GRACE"):
             if upd.action == "BEGIN_STROKE":
@@ -3628,6 +3632,10 @@ class SmartboardCanvas(QWidget):
         self.update()
 
     def trigger_esc_cancel(self) -> None:
+        if hasattr(self, "pie_menu") and self.pie_menu.isVisible():
+            self.pie_menu.cancel()
+            self.update()
+            return
         now_ms = self._now_ms()
         if self.current_stroke:
             # Mouse or CV active stroke cancel + 300ms lock
@@ -4136,7 +4144,39 @@ class SmartboardCanvas(QWidget):
         self.update()
 
     def export_board_png(self, rect: Optional[QRectF] = None, enhance_crop: bool = False) -> Tuple[bytes, QPixmap]:
-        full_pm = self.grab()
+        # Render clean offscreen scene + live stroke without floating HUD/button overlays obscuring slide content
+        w_out = max(640, int(self.width()))
+        h_out = max(420, int(self.height()))
+        full_pm = QPixmap(w_out, h_out)
+        p_out = QPainter(full_pm)
+        p_out.setRenderHint(QPainter.Antialiasing)
+        self._paint_static_scene(p_out)
+        if len(self.current_stroke) >= 2:
+            z = max(0.20, float(self.zoom_scale))
+            p_out.save()
+            p_out.translate(self.pan_x, self.pan_y)
+            p_out.scale(z, z)
+            is_hi_cur = self.active_tool == "HIGHLIGHTER"
+            live_col = QColor(self.highlighter_color if is_hi_cur else self.ink_color)
+            if is_hi_cur and live_col.alpha() > 120:
+                live_col.setAlpha(96)
+            live_thick = max(18, int(self.pen_thickness * 4)) if is_hi_cur else self.pen_thickness
+            p_out.setPen(
+                QPen(
+                    live_col,
+                    live_thick,
+                    Qt.SolidLine,
+                    Qt.FlatCap if is_hi_cur else Qt.RoundCap,
+                    Qt.RoundJoin,
+                )
+            )
+            lpath = QPainterPath(self.current_stroke[0])
+            for pt_s in self.current_stroke[1:]:
+                lpath.lineTo(pt_s)
+            p_out.drawPath(lpath)
+            p_out.restore()
+        p_out.end()
+
         if rect is not None and rect.width() > 16 and rect.height() > 16:
             tl = self._board_to_screen(rect.topLeft())
             br = self._board_to_screen(rect.bottomRight())
@@ -4544,15 +4584,6 @@ class SmartboardCanvas(QWidget):
             painter.drawRoundedRect(sel_rect, 8.0, 8.0)
         painter.restore()
 
-        if abs(z - 1.0) > 0.02 or abs(self.pan_x) > 2.0 or abs(self.pan_y) > 2.0:
-            z_rect = QRectF(self.width() - 122.0, 10.0, 110.0, 24.0)
-            painter.setBrush(QBrush(QColor(15, 23, 42, 200)))
-            painter.setPen(QPen(QColor(BORDER_SLATE), 1.0))
-            painter.drawRoundedRect(z_rect, 6.0, 6.0)
-            painter.setPen(QColor(NEON_CYAN))
-            painter.setFont(QFont("Segoe UI", 8, QFont.Bold))
-            painter.drawText(z_rect, Qt.AlignCenter, f"Zoom: {int(round(z * 100))}%")
-
         # 5. Floating Auto-Shape Beautify Toast ("Đã chuẩn hóa: ... • [Hoàn tác về nét gốc]")
         self.toast_revert_rect = None
         if self.shape_toast is not None:
@@ -4595,6 +4626,13 @@ class SmartboardCanvas(QWidget):
                     cp + QPointF(20.0, 4.0),
                     f"KHÓA {int(max(0.0, self.cooldown_remaining_ms))}ms",
                 )
+            elif self.cursor_mode == "TWO_HAND_NAV":
+                painter.setBrush(QBrush(QColor(6, 182, 212, 52)))
+                painter.setPen(QPen(QColor(NEON_CYAN), 2.2))
+                painter.drawEllipse(cp, 20.0, 20.0)
+                painter.setPen(QPen(QColor(BRIGHT_YELLOW), 2.0))
+                painter.drawLine(cp + QPointF(-10.0, 0.0), cp + QPointF(10.0, 0.0))
+                painter.drawLine(cp + QPointF(0.0, -10.0), cp + QPointF(0.0, 10.0))
             elif self.cursor_mode == "PAN_ERASE":
                 er_r = max(24.0, min(110.0, self.dynamic_eraser_radius * z))
                 painter.setBrush(QBrush(QColor(244, 63, 94, 50)))
@@ -4800,6 +4838,8 @@ class AirTeachMainWindow(QMainWindow):
         self.voice_worker: Optional[VoiceQuestionWorker] = None
         self.warmup_worker: Optional[EngineWarmupWorker] = None
         self.active_gguf_path: str = ""
+        self._stream_last_render_t: float = 0.0
+        self._load_persisted_local_ai_settings()
         self.dark_mode: bool = True
         self.chat_history: List[Dict[str, str]] = []
         self.last_ai_raw_text: str = ""
@@ -4882,6 +4922,44 @@ class AirTeachMainWindow(QMainWindow):
         self.cursor_60hz_timer = QTimer(self)
         self.cursor_60hz_timer.timeout.connect(self._on_60hz_cursor_tick)
         self.cursor_60hz_timer.start(16)
+
+        self._app_event_filter_installed = False
+        qapp_inst = QApplication.instance()
+        if qapp_inst is not None:
+            qapp_inst.installEventFilter(self)
+            self._app_event_filter_installed = True
+
+    def _load_persisted_local_ai_settings(self) -> None:
+        cfg = load_ui_api_settings()
+        rm = str(cfg.get("ai_routing_mode") or "").strip().upper()
+        if rm in ("LOCAL", "CLOUD", "HYBRID"):
+            self.local_ai_manager.routing_mode = AiRoutingMode(rm)
+        gp = str(cfg.get("active_gguf_path") or "").strip()
+        if gp and Path(gp).exists():
+            self.active_gguf_path = gp
+            self.local_ai_manager.set_gguf_model(gp)
+
+    def eventFilter(self, watched, event) -> bool:
+        from PySide6.QtCore import QEvent
+
+        if (
+            not self._shutting_down
+            and self.stack.currentIndex() == 1
+            and event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
+            and event.key() == Qt.Key_Space
+            and not event.isAutoRepeat()
+        ):
+            fw = QApplication.focusWidget()
+            if not isinstance(fw, (QLineEdit, QTextBrowser, QComboBox)):
+                if event.type() == QEvent.Type.KeyPress:
+                    self.canvas._space_panning = True
+                    self.canvas.setCursor(Qt.OpenHandCursor)
+                else:
+                    self.canvas._space_panning = False
+                    self.canvas._mouse_pan_last = None
+                    self.canvas.unsetCursor()
+                return True
+        return super().eventFilter(watched, event)
 
     def _start_audio_stream(self) -> None:
         if self._shutting_down or not HAS_SOUNDDEVICE or self.audio_stream is not None:
@@ -4997,7 +5075,7 @@ class AirTeachMainWindow(QMainWindow):
         explain_slide_hdr_btn.clicked.connect(lambda: self._on_explain_active_slide())
         h_layout.addWidget(explain_slide_hdr_btn)
 
-        self.local_mgr_btn = QPushButton("🤖 AI Local")
+        self.local_mgr_btn = QPushButton("🤖 Quản Lý AI Local")
         self.local_mgr_btn.setToolTip("Mở Quản lý AI Local Offline & Kho Model GGUF (HuggingFace / GitHub)")
         self.local_mgr_btn.clicked.connect(self._on_open_local_ai_manager)
         h_layout.addWidget(self.local_mgr_btn)
@@ -5018,7 +5096,9 @@ class AirTeachMainWindow(QMainWindow):
         h_layout.addWidget(self.rec_btn)
 
         self.toggle_cam_btn = QPushButton("Cam")
-        self.toggle_cam_btn.setToolTip("Ẩn/hiện khung điều khiển Camera & CV")
+        self.toggle_cam_btn.setCheckable(True)
+        self.toggle_cam_btn.setChecked(False)
+        self.toggle_cam_btn.setToolTip("Thu gọn / mở rộng thanh điều khiển Camera & CV")
         self.toggle_cam_btn.clicked.connect(self._on_toggle_studio_camera)
         h_layout.addWidget(self.toggle_cam_btn)
 
@@ -5102,6 +5182,12 @@ class AirTeachMainWindow(QMainWindow):
             b.setFixedHeight(26)
             b.clicked.connect(lambda _=False, i=c_idx: self.cam_worker.select_camera(i))
             cam_ctrl_row.addWidget(b)
+
+        self.cam_hw_btn = QPushButton("Tắt Cam")
+        self.cam_hw_btn.setFixedHeight(26)
+        self.cam_hw_btn.setToolTip("Tạm giải phóng hoặc kết nối lại phần cứng Webcam")
+        self.cam_hw_btn.clicked.connect(self._on_toggle_camera_hardware)
+        cam_ctrl_row.addWidget(self.cam_hw_btn)
 
         self.hdr_chk = QCheckBox("Auto-HDR")
         self.hdr_chk.setChecked(True)
@@ -5332,6 +5418,7 @@ class AirTeachMainWindow(QMainWindow):
         local_row.setSpacing(4)
         self.routing_combo = QComboBox()
         self.routing_combo.addItems(["Hybrid", "Local", "Cloud"])
+        self.routing_combo.setCurrentText(self.local_ai_manager.routing_mode.label_vi)
         self.routing_combo.currentTextChanged.connect(self._on_routing_mode_changed)
         self.local_model_combo = QComboBox()
         self.local_model_combo.addItem("Auto (Local chưa bật)")
@@ -5339,7 +5426,7 @@ class AirTeachMainWindow(QMainWindow):
         scan_local_btn = QPushButton("Quét")
         scan_local_btn.setFixedWidth(48)
         scan_local_btn.clicked.connect(self._on_discover_local_ai)
-        local_mgr_dock_btn = QPushButton("Quản Lý GGUF")
+        local_mgr_dock_btn = QPushButton("Quản Lý AI Local")
         local_mgr_dock_btn.setToolTip("Tải model GGUF từ HuggingFace / GitHub & chuyển chế độ AI")
         local_mgr_dock_btn.clicked.connect(self._on_open_local_ai_manager)
         local_row.addWidget(self.routing_combo, stretch=1)
@@ -5559,6 +5646,11 @@ class AirTeachMainWindow(QMainWindow):
 
         root.addWidget(bottom)
 
+        # Keep Space+Drag and Canvas shortcuts active after clicking any Header/Bottom toolbar button
+        for bar in (header, bottom):
+            for btn_w in bar.findChildren(QPushButton):
+                btn_w.setFocusPolicy(Qt.NoFocus)
+
     def _on_show_about(self) -> None:
         AboutBrandDialog(self).exec()
 
@@ -5587,13 +5679,22 @@ class AirTeachMainWindow(QMainWindow):
         self.stack.setCurrentIndex(0)
 
     def _on_toggle_studio_camera(self) -> None:
+        vis = not self.left_dock.isVisible()
+        self.left_dock.setVisible(vis)
+        if hasattr(self, "toggle_cam_btn"):
+            self.toggle_cam_btn.blockSignals(True)
+            self.toggle_cam_btn.setChecked(vis)
+            self.toggle_cam_btn.blockSignals(False)
+
+    def _on_toggle_camera_hardware(self) -> None:
         if self.cam_worker._camera_paused:
             self.cam_worker.resume_camera_hardware()
-            self.left_dock.setVisible(True)
-        elif not self.left_dock.isVisible():
-            self.left_dock.setVisible(True)
+            if hasattr(self, "cam_hw_btn"):
+                self.cam_hw_btn.setText("Tắt Cam")
         else:
             self.cam_worker.release_camera_hardware()
+            if hasattr(self, "cam_hw_btn"):
+                self.cam_hw_btn.setText("Bật Cam")
 
     def _on_toggle_hd_camera(self, checked: bool) -> None:
         self.cam_worker.set_hd_resolution(bool(checked))
@@ -5712,13 +5813,18 @@ class AirTeachMainWindow(QMainWindow):
                 f"Palm: {palm_ok} ({palm_sc_v:.2f}) | FSM: {vt.get('fsm_state', 'IDLE')}{roi_tag}{kal_tag}"
             )
 
-        fsm_upd = self.canvas.apply_cv_fsm_packet(pkt)
+        # Slide & Document Air-Navigation (evaluated BEFORE FSM so air-swipes NEVER erase ink!)
+        nav_ev = pkt.get("nav_event")
+        scroll_delta = float(pkt.get("scroll_delta_norm") or 0.0)
+        is_nav_frame = bool(
+            nav_ev in ("SLIDE_NEXT", "SLIDE_PREV", "SCROLL_DOWN", "SCROLL_UP", "ASK_SLIDE_AI")
+            or (abs(scroll_delta) > 1e-3 and self.canvas.continuous_scroll_mode)
+        )
+        fsm_pkt = dict(pkt, suppress_fsm_for_nav=True) if is_nav_frame else pkt
+        fsm_upd = self.canvas.apply_cv_fsm_packet(fsm_pkt)
         hud_key = fsm_upd.hud_mode.value
         self.extrapolator.ingest_vision(pkt.get("cursor_norm"), t_sec=time.perf_counter())
 
-        # Slide & Document Air-Navigation (Horizontal Next/Prev, Vertical Word/PDF Scroll, AI Slide)
-        nav_ev = pkt.get("nav_event")
-        scroll_delta = float(pkt.get("scroll_delta_norm") or 0.0)
         now_mono = time.monotonic()
         if nav_ev == "SLIDE_NEXT":
             self._on_next_slide()
@@ -5984,6 +6090,13 @@ class AirTeachMainWindow(QMainWindow):
         gguf_path = str(data.get("active_gguf_path") or "").strip()
         self.active_gguf_path = gguf_path
         self.local_ai_manager.set_gguf_model(gguf_path)
+        try:
+            save_ui_api_settings(
+                ai_routing_mode=self.local_ai_manager.routing_mode.value,
+                active_gguf_path=gguf_path,
+            )
+        except Exception as exc:
+            _LOGGER.warning("Cannot persist Local AI settings: %s", exc)
         self._refresh_status_pill()
 
     def _start_engine_warmup(self) -> None:
@@ -6041,13 +6154,16 @@ class AirTeachMainWindow(QMainWindow):
         header_info = f"Slide {int(ctx.get('slide_index', 0)) + 1}/{int(ctx.get('slide_count', 1))}: {ctx.get('slide_title', '')}"
         q_part = f"\nCâu hỏi bổ sung của giáo viên: {extra_question}" if extra_question.strip() else ""
         prompt = (
-            f"Hãy phân tích Slide đang trình chiếu ({header_info}) kết hợp hình ảnh chụp bảng + các nét viết/khoanh chú thích tay của giáo viên."
+            f"Hãy phân tích chuyên sâu và toàn diện Slide đang trình chiếu ({header_info}) kết hợp hình ảnh chụp bảng + các nét viết/khoanh chú thích tay của giáo viên."
             f"{q_part}\n"
             + (f"\nVăn bản trích xuất từ Slide:\n\"\"\"\n{slide_txt}\n\"\"\"\n" if slide_txt else "")
-            + "\nHãy trả lời ngắn gọn, mạch lạc bằng tiếng Việt gồm:\n"
-            "1. **Giải thích trọng tâm** của Slide / vùng được giáo viên đánh dấu.\n"
-            "2. **Lời giải từng bước** (nếu có bài tập, công thức toán/lý/hóa).\n"
-            "3. **2 câu hỏi trắc nghiệm nhanh** để kiểm tra học sinh trên lớp."
+            + "\nHãy trình bày bài giảng chi tiết, có cấu trúc Markdown rõ ràng và công thức LaTeX chuẩn ($...$ / $$...$$) bằng tiếng Việt gồm:\n"
+            "## 1. Giải thích trọng tâm & bản chất kiến thức\n"
+            "Phân tích đầy đủ nội dung Slide và vùng giáo viên đánh dấu, nêu ví dụ minh họa hoặc bảng so sánh nếu phù hợp.\n"
+            "## 2. Lời giải chi tiết từng bước\n"
+            "Trình bày từng bước giải tường minh, kiểm tra lỗi sai thường gặp (nếu có bài tập, công thức Toán/Lý/Hóa).\n"
+            "## 3. Câu hỏi trắc nghiệm kiểm tra nhanh\n"
+            "Tạo 2 câu hỏi trắc nghiệm 4 lựa chọn (A/B/C/D) kèm đáp án và giải thích chi tiết."
         )
         self._set_sanitized_ai_html(f"✨ Đang phân tích **{header_info}** bằng AI...")
         self._start_hybrid_worker(prompt, png_bytes=ctx.get("png_bytes"), structured_json=False)
@@ -6322,6 +6438,10 @@ class AirTeachMainWindow(QMainWindow):
     def _on_routing_mode_changed(self, text: str) -> None:
         mapping = {"Hybrid": AiRoutingMode.HYBRID, "Local": AiRoutingMode.LOCAL, "Cloud": AiRoutingMode.CLOUD}
         self.local_ai_manager.routing_mode = mapping.get(text, AiRoutingMode.HYBRID)
+        try:
+            save_ui_api_settings(ai_routing_mode=self.local_ai_manager.routing_mode.value)
+        except Exception as exc:
+            _LOGGER.debug("Cannot persist routing mode: %s", exc)
         self._refresh_status_pill()
 
     def _on_discover_local_ai(self) -> None:
@@ -6479,7 +6599,15 @@ class AirTeachMainWindow(QMainWindow):
             self.api_key_edit.text().strip() if self.api_key_edit.text().strip() else None
         )
         self.api_key = self.api_key_state.key
+        if self.hybrid_worker is not None and self.hybrid_worker.isRunning():
+            try:
+                self.hybrid_worker.token_delta.disconnect(self._on_hybrid_token)
+                self.hybrid_worker.finished_result.disconnect(self._on_hybrid_finished)
+            except Exception as exc:
+                _LOGGER.debug("Prior hybrid_worker disconnect note: %s", exc)
+            self.hybrid_worker.requestInterruption()
         self._stream_raw_accum = ""
+        self._stream_last_render_t = 0.0
         eff_prompt = prompt
         if include_board_tools and not structured_json:
             canvas_sz = (float(max(640, self.canvas.width())), float(max(420, self.canvas.height())))
@@ -6499,8 +6627,16 @@ class AirTeachMainWindow(QMainWindow):
         self.hybrid_worker.start()
 
     def _on_hybrid_token(self, chunk: str) -> None:
+        if not chunk:
+            return
         self._stream_raw_accum += chunk
-        self._set_sanitized_ai_html(self._stream_raw_accum, render_math_images=False)
+        now_t = time.perf_counter()
+        if (now_t - self._stream_last_render_t) >= 0.06 or "\n" in chunk:
+            self._stream_last_render_t = now_t
+            self._set_sanitized_ai_html(self._stream_raw_accum, render_math_images=False)
+            sb = self.ai_output.verticalScrollBar()
+            if sb is not None:
+                sb.setValue(sb.maximum())
 
     def _on_hybrid_finished(self, res: LocalAiRunResult) -> None:
         if not res.ok:
@@ -6614,11 +6750,16 @@ class AirTeachMainWindow(QMainWindow):
                             worker.wait(200)
                 except Exception as exc:
                     _LOGGER.warning("worker %s stop error: %s", attr, exc)
+        if getattr(self, "_app_event_filter_installed", False):
+            qapp_inst = QApplication.instance()
+            if qapp_inst is not None:
+                qapp_inst.removeEventFilter(self)
+            self._app_event_filter_installed = False
         if hasattr(self, "canvas") and getattr(self.canvas, "lecture_doc", None) is not None:
             try:
                 self.canvas.lecture_doc.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOGGER.debug("lecture_doc close note during shutdown: %s", exc)
 
     def closeEvent(self, event) -> None:
         self.shutdown_resources()
