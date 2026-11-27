@@ -110,9 +110,9 @@ def build_default_airteach_spotlight_steps(win: Any) -> List[SpotlightStep]:
             title="Menu Tròn Chuột Phải 8 Hướng & Vòng Chọn Con",
             body=(
                 "Nhấn giữ Chuột Phải tại bất kỳ đâu trên bảng để mở vòng tròn 8 công cụ "
-                "(Bút vẽ, Tẩy, Chọn, Kéo bảng, Chữ, Hình khối, Hoàn tác, Xóa/Mới).\n"
-                "Kéo chuột ra vòng ngoài ở mục Bút vẽ, Hình khối hoặc Xóa/Mới để chọn nhanh "
-                "màu mực, loại hình, Thêm trang mới hoặc Mở AI Chat."
+                "(Chọn & Kéo, Bút vẽ, Tẩy, Kéo bảng, Chữ, Hình khối, Hoàn tác, Sơ đồ Cử chỉ / AI).\n"
+                "Kéo chuột ra vòng ngoài ở mục Bút vẽ, Hình khối hoặc Cử chỉ / AI để chọn nhanh "
+                "màu mực, loại hình, Sơ đồ Cử chỉ, Thêm trang mới hoặc Mở AI Chat."
             ),
             target_getter=lambda: None,
             accent_hex="#00F5D4",

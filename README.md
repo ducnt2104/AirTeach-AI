@@ -139,12 +139,12 @@ Nhấn giữ **Chuột phải** tại bất kỳ vị trí nào trên bảng đ�
 |---|---|---|
 | **N (Bắc — 12h)** | ✎ **Bút Vẽ (`PEN`)** `▸` | Mực Cyan (`#00F5D4`) · Mực Vàng (`#FEE440`) · Mực Đỏ (`#F43F5E`) · Bút Dạ Quang (`HIGHLIGHTER`) · Bật/Tắt Nắn Hình Thông Minh |
 | **NE (Đông Bắc)** | ⌫ **Tẩy Nét (`ERASER`)** | — |
-| **E (Đông — 3h)** | ⬉ **Chọn Object (`SELECT`)** | — |
+| **E (Đông — 3h)** | ⬉ **Chọn & Kéo (`SELECT`)** | — |
 | **SE (Đông Nam)** | ✥ **Kéo Bảng (`PAN`)** | — |
 | **S (Nam — 6h)** | **T Thêm Chữ (`TEXT`)** | — |
 | **SW (Tây Nam)** | ◇ **Hình Khối (`SHAPES`)** `▸` | Hình Chữ Nhật · Hình Tròn · Hình Tam Giác · Mũi Tên Vector · Giấy Ghi Chú (`STICKY`) |
 | **W (Tây — 9h)** | ↶ **Hoàn Tác (`UNDO`)** | — |
-| **NW (Tây Bắc)** | ✦ **Xóa / Mới (`CLEAR_OR_NEW`)** `▸` | Trang Mới (`NEW_PAGE`) · Xóa Bảng (`CLEAR_BOARD`) · Khoanh Vùng Hỏi AI (`ASK_AI_REGION`) · Con Trỏ Laser (`LASER`) · **Mở AI Chat (`OPEN_AI_CHAT`)** |
+| **NW (Tây Bắc)** | ✦ **Cử Chỉ / AI (`CLEAR_OR_NEW`)** `▸` | Trang Mới (`NEW_PAGE`) · Xóa Bảng (`CLEAR_BOARD`) · Khoanh Vùng Hỏi AI (`ASK_AI_REGION`) · **Sơ Đồ Cử Chỉ (`OPEN_GESTURE_MAP`)** · **Mở AI Chat (`OPEN_AI_CHAT`)** |
 
 ---
 
@@ -221,11 +221,10 @@ Mở nút **🤖 Quản Lý AI Local (Model Hub)** để chuyển 1-click giữa
   6. **Trợ lý AI Cloud Gemini Full Model & Local AI GGUF Offline**
 - Thẻ hướng dẫn tự căn vị trí thông minh không tràn màn hình (`1366×768` đến `4K`), hỗ trợ chọn *"Không hiện lại lần sau"* và phím `Esc` để đóng tức thì.
 
-### Phòng Thử Cử Chỉ — Gesture Sandbox (`cv_engine/user_guide_dialog.py`)
+### Sơ Đồ Cử Chỉ Trực Quan 2 Cột & Phòng Thử Cử Chỉ (`cv_engine/user_guide_dialog.py`)
 
-- Mở bằng phím **`F1`** hoặc nút **`?`** → chuyển sang **Tab 5: `🧪 Thử Cử Chỉ (Sandbox)`**.
-- Hiển thị trực tiếp khung hình Webcam và bảng **8 thẻ mục tiêu** (1 Ngón trỏ, 2 Ngón chữ V, Chụm Cái+Trỏ, Xòe 5 ngón, Vẫy ngang, 2 Tay chụm Zoom, 2 Tay nắm/xòe Pan, 3 Ngón Undo).
-- Khi bạn thực hiện đúng cử chỉ, ô tương ứng lập tức sáng **Xanh lá (`✓ ĐÃ NHẬN DIỆN`)**; nếu tay quay nghiêng hoặc thiếu sáng, hệ thống cảnh báo **Đỏ** kèm hướng dẫn chỉnh góc tay theo thời gian thực.
+- Nhấn nút **`Sơ đồ Cử chỉ`** ngay trên thanh tiêu đề, trên Mini Camera HUD góc phải, trong bảng Camera hoặc từ lát cắt **Cử Chỉ / AI** của Bảng Chọn Tròn Chuột Phải → mở cửa sổ trực quan chia **2 cột (Cử Chỉ 1 Tay | Cử Chỉ 2 Tay)** có hình minh họa vector bàn tay, ngưỡng kích hoạt chi tiết và **thanh Test thử cử chỉ trực tiếp** qua Webcam.
+- Nhấn nút **`? Hướng dẫn`** trên thanh trên để chạy **Interactive Spotlight Tour (6 bước)**, hoặc nhấn phím **`F1`** để mở sổ tay đầy đủ 5 tab kèm **Phòng Thử Cử Chỉ (Gesture Sandbox)** phản hồi Xanh (`✓ ĐÃ NHẬN DIỆN`) / Đỏ theo thời gian thực.
 
 ---
 
@@ -236,7 +235,8 @@ Mở nút **🤖 Quản Lý AI Local (Model Hub)** để chuyển 1-click giữa
 | Script | Mục đích sử dụng | File Log đầu ra |
 |---|---|---|
 | `setup_all.bat` | **Bước 1 — Cài đặt toàn bộ môi trường từ máy trắng:** VC++ 2015–2022 x64, Python 3.11/3.12 x64, Rust/Cargo (`rustup`), `.venv`, `requirements.txt` (retry 3 lần), tải/xác thực MediaPipe models + NotoSans fonts + icons + locales, kiểm tra LibreOffice & MS Office | `setup_all.log` |
-| `build_exe.bat` | **Bước 2 — Biên dịch Rust & Đóng gói `.exe` độc lập:** Kích hoạt `.venv` (tự gọi `setup_all.bat` nếu chưa có), chạy `maturin develop --release`, đóng gói PyInstaller (`AirTeachAI.spec`), copy launcher vào `dist\AirTeachAI\` và chạy `AirTeachAI.exe --smoke-test` | `build_exe.log` |
+| `build_exe.bat` | **Bước 2 — Biên dịch Rust & Đóng gói `.exe` độc lập:** Kích hoạt `.venv` (tự gọi `setup_all.bat` nếu chưa có), chạy `maturin develop --release` (`lto = true`, `opt-level = 3`, `strip = true`), đóng gói PyInstaller (`AirTeachAI.spec`), cập nhật launcher gốc `AirTeach-AI.exe`, copy launcher vào `dist\AirTeachAI\` và chạy `--smoke-test` | `build_exe.log` |
+| `AirTeach-AI.exe` | **Launcher Native gốc siêu nhẹ (~150 KB):** Tự động khởi chạy `dist\AirTeachAI\AirTeachAI.exe` (hoặc `.venv\Scripts\pythonw.exe main.py`) khi nháy đúp trực tiếp tại thư mục gốc | — |
 | `auto_setup_and_build.bat` | **Gộp 1-Click trọn gói:** Chạy liên hoàn cả cài môi trường + biên dịch Rust + đóng gói `.exe` + smoke test trong 1 lần duy nhất | `setup_build.log` |
 | `run_airteach.bat` | **Khởi chạy nhanh:** Ưu tiên mở `AirTeachAI.exe` độc lập; nếu đang ở chế độ phát triển sẽ tự chạy `.venv\Scripts\python.exe main.py` | — |
 | `Chay_AirTeachAI_AutoFix.bat` | **Launcher bảo vệ Máy Thi / USB:** Tự cài VC++ x64 nếu thiếu, tạo `%APPDATA%\AirTeachAI\`, tự mở quyền Camera Windows, chạy `AirTeachAI.exe` và tự xuất `crash_log.txt` tiếng Việt kèm 60 dòng log cuối nếu có sự cố | `crash_log.txt` |

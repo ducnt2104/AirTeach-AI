@@ -598,7 +598,7 @@ class LocalAIManager:
                     ok_g, text_g, err_g = backend.stream_chat(
                         gguf_path=gguf_file,
                         messages=msgs_txt,
-                        max_tokens=6144,
+                        max_tokens=8192,
                         on_token=_gguf_tok if on_token is not None else None,
                     )
                     total_g_ms = (time.perf_counter() - t_gguf0) * 1000.0

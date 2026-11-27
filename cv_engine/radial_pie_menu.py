@@ -62,12 +62,12 @@ class PieSubItemSpec:
 PIE_MENU_SLICES: Tuple[PieSliceSpec, ...] = (
     PieSliceSpec(0, "PEN", "N", "Bút Vẽ", "Bút Vẽ (Pen)", "✎", "#00F5D4"),
     PieSliceSpec(1, "ERASER", "NE", "Tẩy", "Tẩy Nét (Eraser)", "⌫", "#F43F5E"),
-    PieSliceSpec(2, "SELECT", "E", "Chọn", "Chọn / Di Chuyển Object", "⬉", "#38BDF8"),
+    PieSliceSpec(2, "SELECT", "E", "Chọn & Kéo", "Chọn & Kéo Object (Select)", "⬉", "#38BDF8"),
     PieSliceSpec(3, "PAN", "SE", "Kéo Bảng", "Di Chuyển Bảng (Pan)", "✥", "#10B981"),
     PieSliceSpec(4, "TEXT", "S", "Thêm Chữ", "Thêm Hộp Văn Bản (Text)", "T", "#FACC15"),
     PieSliceSpec(5, "SHAPES", "SW", "Hình Khối", "Vẽ Hình Khối (Shapes)", "◇", "#A855F7"),
     PieSliceSpec(6, "UNDO", "W", "Hoàn Tác", "Hoàn Tác (Undo)", "↶", "#FB923C"),
-    PieSliceSpec(7, "CLEAR_OR_NEW", "NW", "Xóa / Mới", "Xóa Bảng / Trang Mới", "✦", "#EF4444"),
+    PieSliceSpec(7, "CLEAR_OR_NEW", "NW", "Cử Chỉ / AI", "Sơ Đồ Cử Chỉ / AI & Bảng", "✦", "#06B6D4"),
 )
 
 PIE_SUB_ACTIONS: Dict[str, Tuple[PieSubItemSpec, ...]] = {
@@ -89,7 +89,7 @@ PIE_SUB_ACTIONS: Dict[str, Tuple[PieSubItemSpec, ...]] = {
         PieSubItemSpec("NEW_PAGE", "Trang Mới", "Thêm Trang Trắng Mới", "📄", "#10B981"),
         PieSubItemSpec("CLEAR_BOARD", "Xóa Bảng", "Xóa Sạch Trang Hiện Tại", "🗑", "#F43F5E"),
         PieSubItemSpec("ASK_AI_REGION", "Hỏi AI", "Khoanh Vùng Hỏi Trợ Lý AI", "✦", "#A855F7"),
-        PieSubItemSpec("LASER", "Laser", "Con Trỏ Laser Thuyết Trình", "◉", "#EF4444"),
+        PieSubItemSpec("OPEN_GESTURE_MAP", "Sơ Đồ Cử Chỉ", "Mở Sơ Đồ Cử Chỉ 1 & 2 Tay", "🖐", "#FEE440"),
         PieSubItemSpec("OPEN_AI_CHAT", "Mở AI Chat", "Mở Ngăn Trợ Lý AI Chat", "🤖", "#06B6D4"),
     ),
 }
@@ -272,6 +272,145 @@ class RadialPieMenuOverlay(QWidget):
         self.active_sub_item = None
         self.hide()
 
+    def _draw_vector_icon(
+        self,
+        painter: QPainter,
+        action_id: str,
+        cx: float,
+        cy: float,
+        r: float,
+        color: QColor,
+    ) -> None:
+        """Render crisp anti-aliased vector glyphs via QPainter (zero missing-font tofu boxes)."""
+        painter.save()
+        painter.translate(cx, cy)
+        pen = QPen(color, max(1.6, r * 0.22), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+        aid = str(action_id or "").upper()
+        if aid == "PEN":
+            # Diagonal pencil body + tip
+            painter.drawLine(QPointF(-r * 0.75, r * 0.75), QPointF(r * 0.55, -r * 0.55))
+            painter.drawLine(QPointF(r * 0.25, -r * 0.85), QPointF(r * 0.85, -r * 0.25))
+            painter.drawLine(QPointF(-r * 0.75, r * 0.75), QPointF(-r * 0.95, r * 0.95))
+        elif aid == "ERASER":
+            # Angled eraser block + horizontal erase baseline
+            path = QPainterPath()
+            path.moveTo(-r * 0.55, r * 0.15)
+            path.lineTo(r * 0.10, -r * 0.55)
+            path.lineTo(r * 0.75, r * 0.05)
+            path.lineTo(r * 0.15, r * 0.65)
+            path.lineTo(-r * 0.35, r * 0.65)
+            path.closeSubpath()
+            painter.drawPath(path)
+            painter.drawLine(QPointF(-r * 0.85, r * 0.72), QPointF(r * 0.85, r * 0.72))
+        elif aid == "SELECT":
+            # Crisp pointer arrow polygon
+            path = QPainterPath()
+            path.moveTo(-r * 0.55, -r * 0.80)
+            path.lineTo(-r * 0.55, r * 0.65)
+            path.lineTo(-r * 0.12, r * 0.28)
+            path.lineTo(r * 0.22, r * 0.85)
+            path.lineTo(r * 0.45, r * 0.72)
+            path.lineTo(r * 0.12, r * 0.18)
+            path.lineTo(r * 0.65, r * 0.14)
+            path.closeSubpath()
+            painter.setBrush(color)
+            painter.drawPath(path)
+        elif aid == "PAN":
+            # 4-way pan cross arrows
+            painter.drawLine(QPointF(-r * 0.80, 0.0), QPointF(r * 0.80, 0.0))
+            painter.drawLine(QPointF(0.0, -r * 0.80), QPointF(0.0, r * 0.80))
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                tip = QPointF(dx * r * 0.82, dy * r * 0.82)
+                if dx != 0:
+                    painter.drawLine(tip, QPointF(tip.x() - dx * r * 0.30, -r * 0.26))
+                    painter.drawLine(tip, QPointF(tip.x() - dx * r * 0.30, r * 0.26))
+                else:
+                    painter.drawLine(tip, QPointF(-r * 0.26, tip.y() - dy * r * 0.30))
+                    painter.drawLine(tip, QPointF(r * 0.26, tip.y() - dy * r * 0.30))
+        elif aid == "TEXT":
+            painter.setFont(QFont("Segoe UI", max(9, int(round(r * 1.45))), QFont.ExtraBold))
+            painter.drawText(QRectF(-r * 1.2, -r * 1.1, r * 2.4, r * 2.2), Qt.AlignCenter, "T")
+        elif aid in ("SHAPES", "TOGGLE_SMART_SHAPE"):
+            path = QPainterPath()
+            path.moveTo(0.0, -r * 0.82)
+            path.lineTo(r * 0.82, 0.0)
+            path.lineTo(0.0, r * 0.82)
+            path.lineTo(-r * 0.82, 0.0)
+            path.closeSubpath()
+            painter.drawPath(path)
+        elif aid == "UNDO":
+            # Curved undo arrow
+            arc_rect = QRectF(-r * 0.65, -r * 0.35, r * 1.35, r * 1.15)
+            painter.drawArc(arc_rect, -35 * 16, 195 * 16)
+            painter.drawLine(QPointF(-r * 0.72, -r * 0.05), QPointF(-r * 0.72, -r * 0.62))
+            painter.drawLine(QPointF(-r * 0.72, -r * 0.05), QPointF(-r * 0.16, -r * 0.08))
+        elif aid.startswith("COLOR:"):
+            c_hex = action_id.split(":", 1)[1].strip()
+            painter.setBrush(QColor(c_hex))
+            painter.setPen(QPen(QColor("#FFFFFF"), 1.5))
+            painter.drawEllipse(QPointF(0.0, 0.0), r * 0.68, r * 0.68)
+        elif aid == "HIGHLIGHTER":
+            painter.setBrush(QColor(color.red(), color.green(), color.blue(), 110))
+            painter.drawRoundedRect(QRectF(-r * 0.75, -r * 0.40, r * 1.50, r * 0.80), 2.5, 2.5)
+        elif aid == "SHAPE:RECT":
+            painter.drawRect(QRectF(-r * 0.75, -r * 0.52, r * 1.50, r * 1.04))
+        elif aid == "SHAPE:CIRCLE":
+            painter.drawEllipse(QPointF(0.0, 0.0), r * 0.68, r * 0.68)
+        elif aid == "SHAPE:TRIANGLE":
+            path = QPainterPath()
+            path.moveTo(0.0, -r * 0.72)
+            path.lineTo(r * 0.78, r * 0.62)
+            path.lineTo(-r * 0.78, r * 0.62)
+            path.closeSubpath()
+            painter.drawPath(path)
+        elif aid == "SHAPE:ARROW":
+            painter.drawLine(QPointF(-r * 0.80, 0.0), QPointF(r * 0.78, 0.0))
+            painter.drawLine(QPointF(r * 0.25, -r * 0.45), QPointF(r * 0.78, 0.0))
+            painter.drawLine(QPointF(r * 0.25, r * 0.45), QPointF(r * 0.78, 0.0))
+        elif aid == "STICKY":
+            painter.drawRoundedRect(QRectF(-r * 0.65, -r * 0.65, r * 1.30, r * 1.30), 2.0, 2.0)
+            painter.drawLine(QPointF(-r * 0.40, -r * 0.15), QPointF(r * 0.40, -r * 0.15))
+            painter.drawLine(QPointF(-r * 0.40, r * 0.25), QPointF(r * 0.20, r * 0.25))
+        elif aid == "NEW_PAGE":
+            painter.drawRoundedRect(QRectF(-r * 0.58, -r * 0.72, r * 1.16, r * 1.44), 2.0, 2.0)
+            painter.drawLine(QPointF(-r * 0.30, 0.0), QPointF(r * 0.30, 0.0))
+            painter.drawLine(QPointF(0.0, -r * 0.30), QPointF(0.0, r * 0.30))
+        elif aid == "CLEAR_BOARD":
+            painter.drawLine(QPointF(-r * 0.65, -r * 0.45), QPointF(r * 0.65, -r * 0.45))
+            painter.drawRect(QRectF(-r * 0.48, -r * 0.45, r * 0.96, r * 1.12))
+            painter.drawLine(QPointF(-r * 0.20, -r * 0.68), QPointF(r * 0.20, -r * 0.68))
+        elif aid == "OPEN_GESTURE_MAP":
+            # Stylised open hand silhouette (palm + 5 fingers)
+            painter.drawRoundedRect(QRectF(-r * 0.48, -r * 0.05, r * 0.96, r * 0.76), 3.0, 3.0)
+            for fx, fy in ((-0.42, -0.52), (-0.16, -0.78), (0.12, -0.82), (0.38, -0.62)):
+                painter.drawLine(QPointF(fx * r, -r * 0.05), QPointF(fx * r, fy * r))
+            painter.drawLine(QPointF(-r * 0.48, r * 0.35), QPointF(-r * 0.80, r * 0.02))
+        elif aid == "OPEN_AI_CHAT":
+            painter.drawRoundedRect(QRectF(-r * 0.72, -r * 0.56, r * 1.44, r * 1.12), 4.0, 4.0)
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(-r * 0.26, -r * 0.06), r * 0.14, r * 0.14)
+            painter.drawEllipse(QPointF(r * 0.26, -r * 0.06), r * 0.14, r * 0.14)
+            painter.drawLine(QPointF(-r * 0.28, r * 0.28), QPointF(r * 0.28, r * 0.28))
+        elif aid == "CANCEL":
+            painter.drawLine(QPointF(-r * 0.55, -r * 0.55), QPointF(r * 0.55, r * 0.55))
+            painter.drawLine(QPointF(r * 0.55, -r * 0.55), QPointF(-r * 0.55, r * 0.55))
+        else:
+            # 4-point AI / Gesture sparkle star (CLEAR_OR_NEW / ASK_AI_REGION)
+            path = QPainterPath()
+            path.moveTo(0.0, -r * 0.85)
+            path.quadTo(0.0, 0.0, r * 0.85, 0.0)
+            path.quadTo(0.0, 0.0, 0.0, r * 0.85)
+            path.quadTo(0.0, 0.0, -r * 0.85, 0.0)
+            path.quadTo(0.0, 0.0, 0.0, -r * 0.85)
+            path.closeSubpath()
+            painter.setBrush(color)
+            painter.drawPath(path)
+
+        painter.restore()
+
     def _draw_annular_wedge(
         self,
         painter: QPainter,
@@ -350,15 +489,10 @@ class RadialPieMenuOverlay(QWidget):
             ly = -label_r * math.sin(mid_rad)
 
             has_sub = spec.action_id in PIE_SUB_ACTIONS
-            painter.setPen(QColor("#0F172A") if is_sel else accent)
-            painter.setFont(QFont("Segoe UI Symbol", 14, QFont.Bold))
-            painter.drawText(
-                QRectF(lx - 28.0, ly - 22.0, 56.0, 24.0),
-                Qt.AlignCenter,
-                spec.glyph,
-            )
+            icon_col = QColor("#0F172A") if is_sel else accent
+            self._draw_vector_icon(painter, spec.action_id, lx, ly - 10.0, 9.5, icon_col)
 
-            short_txt = spec.short_label + (" ▸" if has_sub else "")
+            short_txt = spec.short_label + (" ›" if has_sub else "")
             painter.setPen(
                 QColor("#0F172A") if is_sel else (QColor("#F8FAFC") if self.dark_mode else QColor("#0F172A"))
             )
@@ -369,7 +503,7 @@ class RadialPieMenuOverlay(QWidget):
                 short_txt,
             )
 
-        # Outer Sub-Ring when hovering a sector with sub-actions (Pen / Shapes / Clear-or-New)
+        # Outer Sub-Ring when hovering a sector with sub-actions (Pen / Shapes / Gestures-AI)
         if self.active_slice_idx is not None:
             parent_spec = PIE_MENU_SLICES[self.active_slice_idx]
             sub_items = PIE_SUB_ACTIONS.get(parent_spec.action_id)
@@ -405,14 +539,19 @@ class RadialPieMenuOverlay(QWidget):
                     sr_mid = 0.5 * (self.sub_inner_radius + self.sub_outer_radius)
                     sx = sr_mid * math.cos(rad_s)
                     sy = -sr_mid * math.sin(rad_s)
-                    painter.setPen(QColor("#0F172A") if is_sub_sel else sub_acc)
-                    painter.setFont(QFont("Segoe UI Symbol", 11, QFont.Bold))
-                    painter.drawText(QRectF(sx - 24.0, sy - 16.0, 48.0, 18.0), Qt.AlignCenter, sub.glyph)
+                    self._draw_vector_icon(
+                        painter,
+                        sub.action_id,
+                        sx,
+                        sy - 7.5,
+                        6.8,
+                        QColor("#0F172A") if is_sub_sel else sub_acc,
+                    )
                     painter.setPen(
                         QColor("#0F172A") if is_sub_sel else (QColor("#F8FAFC") if self.dark_mode else QColor("#0F172A"))
                     )
                     painter.setFont(QFont("Segoe UI", 7, QFont.Bold))
-                    painter.drawText(QRectF(sx - 34.0, sy + 1.0, 68.0, 15.0), Qt.AlignCenter, sub.short_label)
+                    painter.drawText(QRectF(sx - 34.0, sy + 2.0, 68.0, 15.0), Qt.AlignCenter, sub.short_label)
 
         # Center Hub (Deadzone Cancel / Active Function Name Display)
         hub_r = self.inner_radius - 3.0
@@ -429,28 +568,26 @@ class RadialPieMenuOverlay(QWidget):
         painter.drawEllipse(QPointF(0.0, 0.0), hub_r, hub_r)
 
         if self.active_sub_item is not None:
-            hub_glyph = self.active_sub_item.glyph
+            hub_action = self.active_sub_item.action_id
             hub_lbl = self.active_sub_item.short_label
             full_banner = self.active_sub_item.full_label_vi
         elif self.active_slice_idx is not None:
             spec = PIE_MENU_SLICES[self.active_slice_idx]
-            hub_glyph = spec.glyph
+            hub_action = spec.action_id
             hub_lbl = spec.short_label
             full_banner = spec.full_label_vi
             if spec.action_id in PIE_SUB_ACTIONS:
                 full_banner += "  •  Kéo ra ngoài chọn mục con"
         else:
-            hub_glyph = "✕"
+            hub_action = "CANCEL"
             hub_lbl = "Hủy"
             full_banner = ""
 
-        painter.setPen(active_accent)
-        painter.setFont(QFont("Segoe UI Symbol", 12, QFont.Bold))
-        painter.drawText(QRectF(-hub_r + 4.0, -21.0, 2.0 * hub_r - 8.0, 20.0), Qt.AlignCenter, hub_glyph)
+        self._draw_vector_icon(painter, hub_action, 0.0, -10.5, 8.2, active_accent)
 
         painter.setPen(QColor("#F8FAFC") if self.dark_mode else QColor("#0F172A"))
         painter.setFont(QFont("Segoe UI", 7.5, QFont.Bold))
-        painter.drawText(QRectF(-hub_r + 3.0, 0.0, 2.0 * hub_r - 6.0, 18.0), Qt.AlignCenter, hub_lbl)
+        painter.drawText(QRectF(-hub_r + 3.0, 1.0, 2.0 * hub_r - 6.0, 18.0), Qt.AlignCenter, hub_lbl)
 
         # Bottom glassmorphic description pill
         if full_banner:

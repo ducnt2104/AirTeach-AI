@@ -149,6 +149,17 @@ if exist "%REPO_DIR%\run_airteach.bat" copy /y "%REPO_DIR%\run_airteach.bat" "%R
 if exist "%REPO_DIR%\Chay_AirTeachAI_AutoFix.bat" copy /y "%REPO_DIR%\Chay_AirTeachAI_AutoFix.bat" "%REPO_DIR%\dist\AirTeachAI\Chay_AirTeachAI_AutoFix.bat" >nul 2>&1
 call :log "  [OK] Da tao thanh cong dist\AirTeachAI\AirTeachAI.exe va copy launchers."
 
+rem Cap nhat launcher goc AirTeach-AI.exe (Rust sieu nhe) de click dup luon mo dung ban PySide6+Rust moi nhat
+where cargo >nul 2>&1
+if not errorlevel 1 if exist "%REPO_DIR%\launcher\Cargo.toml" (
+    call :log "  Dang cap nhat launcher goc AirTeach-AI.exe (Rust release)..."
+    cargo build --release --manifest-path "%REPO_DIR%\launcher\Cargo.toml" >> "%LOG_FILE%" 2>&1
+    if not errorlevel 1 if exist "%REPO_DIR%\launcher\target\release\AirTeach-AI.exe" (
+        copy /y "%REPO_DIR%\launcher\target\release\AirTeach-AI.exe" "%REPO_DIR%\AirTeach-AI.exe" >nul 2>&1
+        call :log "  [OK] Da cap nhat launcher goc AirTeach-AI.exe."
+    )
+)
+
 rem ============================================================================
 rem [5/5] CHAY SMOKE TEST KIEM TRA ZERO MISSING DLL / MODULE
 rem ============================================================================
@@ -159,7 +170,14 @@ if errorlevel 1 (
     call :log "[LOI] AirTeachAI.exe --smoke-test that bai. Xem chi tiet trong build_exe.log."
     goto :fail
 )
-call :log "  [OK] Smoke test AirTeachAI.exe thanh cong [khong thieu DLL hay module]."
+if exist "%REPO_DIR%\AirTeach-AI.exe" (
+    "%REPO_DIR%\AirTeach-AI.exe" --smoke-test >> "%LOG_FILE%" 2>&1
+    if errorlevel 1 (
+        call :log "[LOI] Launcher AirTeach-AI.exe --smoke-test that bai. Xem chi tiet trong build_exe.log."
+        goto :fail
+    )
+)
+call :log "  [OK] Smoke test AirTeachAI.exe & AirTeach-AI.exe thanh cong [khong thieu DLL hay module]."
 
 echo.
 call :log "============================================================================"

@@ -1,0 +1,18 @@
+[workspace]
+
+[package]
+name = "airteach_launcher"
+version = "2.1.0"
+edition = "2021"
+description = "Lightweight native Windows GUI launcher for AirTeach AI (PySide6 + airteach_core_rs)"
+
+[[bin]]
+name = "AirTeach-AI"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

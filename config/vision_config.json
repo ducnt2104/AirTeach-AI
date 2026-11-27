@@ -2,7 +2,7 @@
   "camera": {
     "width": 640,
     "height": 480,
-    "target_fps": 30,
+    "target_fps": 60,
     "hd_width": 1280,
     "hd_height": 720,
     "prefer_hd": false

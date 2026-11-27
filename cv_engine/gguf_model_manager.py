@@ -973,7 +973,7 @@ class LocalAiManagerDialog(QDialog):
         # Footer
         foot = QHBoxLayout()
         foot.addStretch(1)
-        close_btn = QPushButton("Áp Dụng & Đóng")
+        close_btn = QPushButton("Áp Dụng && Đóng")
         close_btn.setObjectName("PrimaryBtn")
         close_btn.clicked.connect(self._on_apply_and_close)
         foot.addWidget(close_btn)
