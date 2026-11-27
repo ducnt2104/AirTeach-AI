@@ -27,7 +27,7 @@ class CameraConfig:
     target_fps: int = 30
     hd_width: int = 1280
     hd_height: int = 720
-    prefer_hd: bool = False
+    prefer_hd: bool = True
 
     def active_resolution(self) -> Tuple[int, int]:
         if self.prefer_hd:
@@ -50,40 +50,42 @@ class PreprocessingConfig:
 
 @dataclass
 class SubjectTrackerConfig:
+    teacher_lock_enabled: bool = True
     teacher_grace_sec: float = 1.5
     teacher_match_iou_min: float = 0.18
     teacher_face_sim_threshold: float = 0.48
     wrist_gate_radius_scale: float = 2.35
     enable_pose_landmarker: bool = True
-    pose_min_detection_confidence: float = 0.50
-    pose_min_presence_confidence: float = 0.50
-    pose_min_tracking_confidence: float = 0.55
+    pose_min_detection_confidence: float = 0.45
+    pose_min_presence_confidence: float = 0.45
+    pose_min_tracking_confidence: float = 0.45
 
 
 @dataclass
 class HandTrackingConfig:
-    min_detection_confidence: float = 0.55
-    min_presence_confidence: float = 0.52
-    min_tracking_confidence: float = 0.65
+    num_hands: int = 2
+    min_detection_confidence: float = 0.35
+    min_presence_confidence: float = 0.35
+    min_tracking_confidence: float = 0.40
     roi_area_threshold: float = 0.08
     roi_expand_factor: float = 2.2
-    roi_padding_ratio: float = 0.45
-    roi_target_size: int = 384
+    roi_padding_ratio: float = 0.35
+    roi_target_size: int = 256
 
 
 @dataclass
 class Gesture3DConfig:
-    finger_extended_max_deg: float = 40.0
-    finger_half_bent_max_deg: float = 78.0
+    finger_extended_max_deg: float = 42.0
+    finger_half_bent_max_deg: float = 80.0
     pinch_enter_ratio: float = 0.28
     pinch_exit_ratio: float = 0.42
     palm_facing_min_z: float = 0.20
-    one_euro_min_cutoff: float = 1.35
-    one_euro_beta: float = 0.015
+    one_euro_min_cutoff: float = 1.45
+    one_euro_beta: float = 0.02
     one_euro_d_cutoff: float = 1.0
     voting_window_size: int = 7
-    voting_min_votes: int = 5
-    debounce_ms: float = 150.0
+    voting_min_votes: int = 3
+    debounce_ms: float = 80.0
     grace_period_ms: float = 160.0
 
 
@@ -178,6 +180,9 @@ def load_vision_config(config_path: Path | str | None = None) -> VisionConfig:
 
     subj = raw.get("subject_tracker") or {}
     if isinstance(subj, dict):
+        cfg.subject_tracker.teacher_lock_enabled = bool(
+            subj.get("teacher_lock_enabled", cfg.subject_tracker.teacher_lock_enabled)
+        )
         cfg.subject_tracker.teacher_grace_sec = _clamp_float(
             subj.get("teacher_grace_sec"), 0.5, 4.0, cfg.subject_tracker.teacher_grace_sec
         )
@@ -205,6 +210,7 @@ def load_vision_config(config_path: Path | str | None = None) -> VisionConfig:
 
     ht = raw.get("hand_tracking") or {}
     if isinstance(ht, dict):
+        cfg.hand_tracking.num_hands = _clamp_int(ht.get("num_hands"), 1, 2, cfg.hand_tracking.num_hands)
         cfg.hand_tracking.min_detection_confidence = _clamp_float(
             ht.get("min_detection_confidence"), 0.25, 0.95, cfg.hand_tracking.min_detection_confidence
         )

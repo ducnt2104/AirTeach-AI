@@ -36,6 +36,7 @@ SHAPE_LABELS_VI: Dict[str, str] = {
     "FREEHAND": "Nét mượt tự do",
     "LINE": "Đoạn thẳng",
     "ARROW": "Mũi tên",
+    "AXES": "Hệ trục tọa độ Oxy",
     "CIRCLE": "Hình tròn",
     "ELLIPSE": "Hình elip",
     "TRIANGLE": "Hình tam giác",
@@ -612,6 +613,78 @@ def _try_detect_arrow(pts: Sequence[Point2D], diag: float) -> Optional[Tuple[Lis
     return arrow_poly, conf
 
 
+def _try_detect_axes(
+    pts: Sequence[Point2D],
+    simplified: Sequence[Point2D],
+    diag: float,
+) -> Optional[Tuple[List[Point2D], float]]:
+    """
+    Detect single-stroke L-shaped coordinate axes (vertical Y-leg + horizontal X-leg)
+    and auto-complete crisp orthogonal Oxy axes with arrowheads.
+    """
+    if diag < 60.0 or len(simplified) != 3:
+        return None
+    p0, corner, p2 = simplified[0], simplified[1], simplified[2]
+    l1 = _dist(p0, corner)
+    l2 = _dist(corner, p2)
+    max_leg = max(l1, l2)
+    min_leg = min(l1, l2)
+    if min_leg < 45.0 or min_leg < 0.35 * max_leg:
+        return None
+
+    u = (p0[0] - corner[0], p0[1] - corner[1])
+    v = (p2[0] - corner[0], p2[1] - corner[1])
+    nu = math.hypot(u[0], u[1])
+    nv = math.hypot(v[0], v[1])
+    if nu < 1e-6 or nv < 1e-6:
+        return None
+    cos_ang = max(-1.0, min(1.0, (u[0] * v[0] + u[1] * v[1]) / (nu * nv)))
+    ang_deg = math.degrees(math.acos(cos_ang))
+    if not (76.0 <= ang_deg <= 104.0):
+        return None
+
+    ang_u = abs(math.degrees(math.atan2(u[1], u[0])))
+    ang_v = abs(math.degrees(math.atan2(v[1], v[0])))
+    u_is_vert = abs(ang_u - 90.0) <= 13.0
+    v_is_vert = abs(ang_v - 90.0) <= 13.0
+    u_is_horiz = ang_u <= 13.0 or abs(ang_u - 180.0) <= 13.0
+    v_is_horiz = ang_v <= 13.0 or abs(ang_v - 180.0) <= 13.0
+    if not ((u_is_vert and v_is_horiz) or (v_is_vert and u_is_horiz)):
+        return None
+
+    # Verify points actually hug the two orthogonal legs closely (reject curved sine/handwriting)
+    rms = _point_to_polyline_rms(pts, [p0, corner, p2]) / max(diag, 1.0)
+    if rms > 0.042:
+        return None
+
+    y_tip = p0 if u_is_vert else p2
+    x_tip = p2 if u_is_vert else p0
+    # Enforce canonical Oxy corner bottom-left unless user drew downward/leftward
+    span_y = max(48.0, abs(y_tip[1] - corner[1]))
+    span_x = max(48.0, abs(x_tip[0] - corner[0]))
+    sign_y = -1.0 if y_tip[1] <= corner[1] else 1.0
+    sign_x = 1.0 if x_tip[0] >= corner[0] else -1.0
+
+    y_end = (corner[0], corner[1] + sign_y * span_y)
+    x_end = (corner[0] + sign_x * span_x, corner[1])
+    ah = max(10.0, min(18.0, 0.10 * min(span_x, span_y)))
+
+    # Continuous polyline: Y-tip + arrow -> back to origin -> X-tip + arrow
+    axes_poly: List[Point2D] = [
+        (y_end[0] - ah * 0.55, y_end[1] - sign_y * ah),
+        y_end,
+        (y_end[0] + ah * 0.55, y_end[1] - sign_y * ah),
+        y_end,
+        corner,
+        x_end,
+        (x_end[0] - sign_x * ah, x_end[1] - ah * 0.55),
+        x_end,
+        (x_end[0] - sign_x * ah, x_end[1] + ah * 0.55),
+    ]
+    conf = max(0.82, min(0.95, 0.96 - rms * 3.0))
+    return axes_poly, conf
+
+
 def _reconstruct_triangle(verts: Sequence[Point2D]) -> Tuple[List[Point2D], str]:
     pts = _order_ccw(verts)
     sides = [_dist(pts[i], pts[(i + 1) % 3]) for i in range(3)]
@@ -792,8 +865,22 @@ def beautify_stroke(
         work_pts.append(clean[0])
     resampled = resample_arc_length(work_pts, RESAMPLE_N)
 
-    # Step 2A: Open Shapes (PCA Line & Arrow)
+    # Step 2A: Open Shapes (PCA Line, Arrow, & Coordinate Axes)
     if not is_closed:
+        axes_match = _try_detect_axes(clean, simplified, diag)
+        if axes_match is not None:
+            axes_pts, axes_conf = axes_match
+            if axes_conf >= confidence_gate:
+                return BeautifiedShapeResult(
+                    shape_type="AXES",
+                    shape_label_vi=SHAPE_LABELS_VI["AXES"],
+                    confidence=round(axes_conf, 3),
+                    is_closed=False,
+                    raw_points=raw_copy,
+                    beautified_points=axes_pts,
+                    metadata={"diag": round(diag, 2)},
+                )
+
         arrow_match = _try_detect_arrow(resampled, diag)
         if arrow_match is not None:
             arrow_pts, arrow_conf = arrow_match

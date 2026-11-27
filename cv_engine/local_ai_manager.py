@@ -35,13 +35,17 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 import urllib.error
 import urllib.request
 
+from cv_engine.app_paths import get_app_logger, get_local_cache_db_path
 from cv_engine.gemini_client import (
     DEFAULT_GEMINI_MODEL,
     ResilientGeminiClient,
     compress_snapshot_png,
     resolve_api_key_layered,
+    resolve_api_key_pool,
 )
 from cv_engine.output_sanitizer import OutputSanitizer, StreamingSanitizer
+
+_LOGGER = get_app_logger("local_ai_manager")
 
 
 class AiRoutingMode(str, Enum):
@@ -99,8 +103,8 @@ RECOMMENDED_LOCAL_MODELS: Tuple[str, ...] = (
 class LocalResponseCache:
     """Two-tier (Memory LRU + SQLite) exact/normalized local cache providing 0ms repeated replies."""
 
-    def __init__(self, db_path: Path = Path("data") / "local_ai_cache.sqlite", max_mem_items: int = 128) -> None:
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[Path] = None, max_mem_items: int = 128) -> None:
+        self.db_path = Path(db_path) if db_path is not None else get_local_cache_db_path()
         self.max_mem_items = max(16, int(max_mem_items))
         self._mem: OrderedDict[str, Tuple[str, str]] = OrderedDict()
         self._lock = threading.Lock()
@@ -120,8 +124,8 @@ class LocalResponseCache:
                     )
                     """
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.warning("Cannot init local AI cache DB at %s: %s", self.db_path, exc)
 
     @staticmethod
     def make_key(model_id: str, prompt: str, png_bytes: Optional[bytes] = None) -> str:
@@ -152,8 +156,8 @@ class LocalResponseCache:
                             while len(self._mem) > self.max_mem_items:
                                 self._mem.popitem(last=False)
                         return res
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.debug("Local cache read error: %s", exc)
         return None
 
     def put(self, key: str, model_id: str, response_text: str) -> None:
@@ -178,8 +182,8 @@ class LocalResponseCache:
                     """,
                     (key, model_id, response_text, time.time()),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.debug("Local cache write error: %s", exc)
 
 
 def build_sliding_window_messages(
@@ -374,10 +378,10 @@ class LocalAIManager:
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=2.5) as _:
-                    pass
-            except Exception:
-                pass
+                with urllib.request.urlopen(req, timeout=2.5) as resp:
+                    _ = resp.read(16)
+            except Exception as exc:
+                _LOGGER.debug("Local AI warmup skipped (%s): %s", url, exc)
 
         threading.Thread(target=_worker, daemon=True, name="airteach-local-warmup").start()
 
@@ -577,9 +581,9 @@ class LocalAIManager:
                     error_message_vi="Chế độ Local AI đang bật nhưng chưa tìm thấy Ollama (11434), LM Studio (1234) hay llama.cpp đang chạy.",
                 )
 
-        # Tier 3: Gemini Cloud API
-        resolved_key = (cloud_api_key or "").strip() or resolve_api_key_layered().key
-        if not resolved_key:
+        # Tier 3: Gemini Cloud API (supports multi-key pool + live streaming)
+        key_pool = resolve_api_key_pool(cloud_api_key if (cloud_api_key or "").strip() else None)
+        if not key_pool:
             return LocalAiRunResult(
                 ok=False,
                 text="",
@@ -590,12 +594,21 @@ class LocalAIManager:
             )
 
         t0 = time.perf_counter()
+        stream_sanitizer = StreamingSanitizer() if on_token is not None else None
+
+        def _cloud_token(chunk: str) -> None:
+            if stream_sanitizer is not None and on_token is not None:
+                safe_chunk = stream_sanitizer.feed(chunk)
+                if safe_chunk:
+                    on_token(safe_chunk)
+
         res = self.cloud_client.generate_multimodal(
-            api_key=resolved_key,
+            api_key=key_pool,
             prompt=prompt,
             png_bytes=compressed_png,
             primary_model=cloud_model or DEFAULT_GEMINI_MODEL,
             structured_json=structured_json,
+            on_token=_cloud_token if (on_token is not None and not structured_json) else None,
         )
         total_ms = (time.perf_counter() - t0) * 1000.0
         if res.ok:
@@ -603,8 +616,10 @@ class LocalAIManager:
             est_tokens = max(1, len(res.text.split()))
             tps = est_tokens / max(0.1, total_ms / 1000.0)
             self.last_tokens_per_sec = tps
-            if on_token is not None and not structured_json:
-                on_token(sanitized)
+            if stream_sanitizer is not None and on_token is not None and not structured_json:
+                tail = stream_sanitizer.flush()
+                if tail:
+                    on_token(tail)
             if use_cache and not structured_json:
                 self.cache.put(cache_key, res.model_used, res.text)
             return LocalAiRunResult(

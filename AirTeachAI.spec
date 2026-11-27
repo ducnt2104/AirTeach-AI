@@ -16,10 +16,12 @@ datas = [
     (str(ROOT / "assets"), "assets"),
 ]
 datas += collect_data_files("mediapipe")
+datas += collect_data_files("matplotlib")
 
 hiddenimports = [
     "cv_engine",
     "cv_engine.app_paths",
+    "cv_engine.document_presenter",
     "cv_engine.drawing_fsm",
     "cv_engine.face_id",
     "cv_engine.gemini_client",
@@ -36,8 +38,17 @@ hiddenimports = [
     "cv_engine.whiteboard_agent",
     "PySide6.QtSvg",
     "PySide6.QtSvgWidgets",
+    "pymupdf",
+    "fitz",
+    "pptx",
     "google.genai",
-    "onnxruntime",
+    "matplotlib",
+    "matplotlib.figure",
+    "matplotlib.backends.backend_agg",
+    "PIL",
+    "PIL.Image",
+    "PIL.ImageDraw",
+    "PIL.ImageFont",
     "sounddevice",
     "cv2",
     "numpy",
@@ -53,7 +64,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib"],
+    excludes=["tkinter"],
     noarchive=False,
 )
 

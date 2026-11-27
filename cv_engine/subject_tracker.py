@@ -23,11 +23,16 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from cv_engine.app_paths import get_app_logger
+
+_LOGGER = get_app_logger("subject_tracker")
+
 try:
     import mediapipe as mp  # type: ignore
 
     HAS_MEDIAPIPE_POSE = hasattr(mp, "tasks") and hasattr(mp.tasks, "python")
-except Exception:
+except Exception as exc:
+    _LOGGER.warning("MediaPipe Pose unavailable: %s", exc)
     mp = None  # type: ignore
     HAS_MEDIAPIPE_POSE = False
 
@@ -137,6 +142,9 @@ class SubjectTrackingSnapshot:
     ignored_torso_bboxes: List[List[float]] = field(default_factory=list)
     teacher_in_grace_period: bool = False
     pose_landmarker_active: bool = False
+    teacher_lock_enabled: bool = True
+    bypass_active: bool = True
+    person_count: int = 0
     mode: str = "UNLOCKED"
 
     def to_dict(self) -> Dict[str, object]:
@@ -149,6 +157,9 @@ class SubjectTrackingSnapshot:
             "ignored_torso_bboxes": self.ignored_torso_bboxes,
             "teacher_in_grace_period": self.teacher_in_grace_period,
             "pose_landmarker_active": self.pose_landmarker_active,
+            "teacher_lock_enabled": self.teacher_lock_enabled,
+            "bypass_active": self.bypass_active,
+            "person_count": self.person_count,
             "mode": self.mode,
         }
 
@@ -180,6 +191,9 @@ class PoseTorsoEstimator:
         if chosen is None:
             return
         try:
+            from cv_engine.app_paths import ensure_concurrent_futures_eager
+
+            ensure_concurrent_futures_eager()
             base_opts = mp.tasks.BaseOptions(model_asset_path=str(chosen))
             opts = mp.tasks.vision.PoseLandmarkerOptions(
                 base_options=base_opts,
@@ -190,14 +204,16 @@ class PoseTorsoEstimator:
                 min_tracking_confidence=float(min_track_conf),
             )
             self.landmarker = mp.tasks.vision.PoseLandmarker.create_from_options(opts)
-        except Exception:
+        except Exception as exc:
+            _LOGGER.warning("PoseLandmarker init failed (%s): %s", chosen, exc)
             self.landmarker = None
 
     def detect_poses(self, rgb_frame: np.ndarray) -> List[Dict[str, object]]:
         if self.landmarker is None or rgb_frame is None or rgb_frame.size == 0:
             return []
         try:
-            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            rgb_contig = np.ascontiguousarray(rgb_frame, dtype=np.uint8)
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_contig)
             res = self.landmarker.detect(mp_img)
             poses: List[Dict[str, object]] = []
             for plm in (res.pose_landmarks or []):
@@ -233,15 +249,16 @@ class PoseTorsoEstimator:
                     }
                 )
             return poses
-        except Exception:
+        except Exception as exc:
+            _LOGGER.warning("PoseLandmarker inference failed: %s", exc)
             return []
 
     def close(self) -> None:
         if self.landmarker is not None and hasattr(self.landmarker, "close"):
             try:
                 self.landmarker.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOGGER.warning("PoseLandmarker close error: %s", exc)
             self.landmarker = None
 
 
@@ -262,21 +279,32 @@ class PrimaryTeacherLockTracker:
         match_iou_min: float = 0.18,
         face_sim_threshold: float = 0.48,
         wrist_gate_radius_scale: float = 2.35,
+        enabled: bool = True,
     ) -> None:
         self.teacher_grace_sec = max(0.5, float(teacher_grace_sec))
         self.match_iou_min = float(match_iou_min)
         self.face_sim_threshold = float(face_sim_threshold)
         self.wrist_gate_radius_scale = float(wrist_gate_radius_scale)
+        self.enabled = bool(enabled)
 
         self._next_track_id = 1
         self._tracks: Dict[int, TrackState] = {}
         self._locked_track_id: Optional[int] = None
-        self._last_snapshot = SubjectTrackingSnapshot()
+        self._last_snapshot = SubjectTrackingSnapshot(teacher_lock_enabled=self.enabled)
+
+    @property
+    def locked_track_id(self) -> Optional[int]:
+        return self._locked_track_id
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = bool(enabled)
+        if not self.enabled:
+            self._locked_track_id = None
 
     def reset(self) -> None:
         self._tracks.clear()
         self._locked_track_id = None
-        self._last_snapshot = SubjectTrackingSnapshot()
+        self._last_snapshot = SubjectTrackingSnapshot(teacher_lock_enabled=self.enabled)
 
     def force_unlock(self) -> None:
         self._locked_track_id = None
@@ -440,22 +468,38 @@ class PrimaryTeacherLockTracker:
             )
             self._locked_track_id = chosen.track_id
 
+        if not self.enabled:
+            self._last_snapshot = SubjectTrackingSnapshot(
+                pose_landmarker_active=any(tr.pose_backed for tr in active_now),
+                teacher_lock_enabled=False,
+                bypass_active=True,
+                person_count=len(active_now),
+                mode="BYPASS (OFF)",
+            )
+            return self._last_snapshot
+
         locked_tr = self._tracks.get(self._locked_track_id) if self._locked_track_id is not None else None
         if locked_tr is None:
             self._last_snapshot = SubjectTrackingSnapshot(
                 pose_landmarker_active=any(tr.pose_backed for tr in active_now),
-                mode="UNLOCKED",
+                teacher_lock_enabled=True,
+                bypass_active=True,
+                person_count=len(active_now),
+                mode="BYPASS (UNLOCKED)",
             )
             return self._last_snapshot
 
         in_grace = abs(locked_tr.last_seen_ts - ts) > 1e-4
         ignored_faces = [tr.face_bbox for tr in active_now if tr.track_id != locked_tr.track_id]
         ignored_torsos = [tr.torso_bbox for tr in active_now if tr.track_id != locked_tr.track_id]
-        mode = (
-            "GRACE_HOLD"
-            if in_grace
-            else ("POSE+FACE_LOCK" if locked_tr.pose_backed else "FACE_TORSO_LOCK")
-        )
+        multi_person_active = len(ignored_faces) >= 1
+        bypass_active = not multi_person_active
+        if in_grace:
+            mode = "GRACE_HOLD"
+        elif multi_person_active:
+            mode = "POSE+FACE_LOCK" if locked_tr.pose_backed else "FACE_TORSO_LOCK"
+        else:
+            mode = "BYPASS (1-NGƯỜI)"
 
         self._last_snapshot = SubjectTrackingSnapshot(
             locked_teacher_id=locked_tr.track_id,
@@ -467,6 +511,9 @@ class PrimaryTeacherLockTracker:
             ignored_torso_bboxes=ignored_torsos,
             teacher_in_grace_period=in_grace,
             pose_landmarker_active=locked_tr.pose_backed,
+            teacher_lock_enabled=True,
+            bypass_active=bypass_active,
+            person_count=len(active_now),
             mode=mode,
         )
         return self._last_snapshot
@@ -499,44 +546,52 @@ class PrimaryTeacherLockTracker:
         snap: Optional[SubjectTrackingSnapshot] = None,
     ) -> bool:
         """
-        Wrist-to-Hand Spatial Gating:
-        - Rejects hands closer to an ignored background person's face/torso or inside an ignored person's tight face.
-        - Accepts hands inside the locked teacher's expanded reach envelope OR wrist spheres.
-        - When `locked_teacher_id is None` (no faces locked yet), allows hands unless overlapping face directly.
+        Fail-Open Wrist-to-Hand Spatial Gating:
+        - If Teacher Lock is disabled, unlocked, or <= 1 person is present -> BYPASS (returns True!).
+        - Only filters hands when >= 2 people are confirmed (`len(ignored_face_bboxes) >= 1` or grace hold
+          with background person), rejecting hands inside an ignored passerby's torso/face while keeping
+          the locked teacher's hands even if raised high or close to camera.
         """
         if not hand_lm or len(hand_lm) < 10:
             return False
+        if not self.enabled:
+            return True
+
         s = snap or self._last_snapshot
+        if not s.teacher_lock_enabled:
+            return True
+
+        # Fail-Open Bypass: never reject hands when no teacher is locked or only <= 1 person in scene
+        if s.locked_teacher_id is None or s.locked_torso_bbox is None:
+            return True
+        if len(s.ignored_face_bboxes) == 0 and len(s.ignored_torso_bboxes) == 0:
+            return True
+
         wrist = (float(hand_lm[0][0]), float(hand_lm[0][1]))
         palm_center = (
             0.5 * (wrist[0] + float(hand_lm[9][0])),
             0.5 * (wrist[1] + float(hand_lm[9][1])),
         )
 
-        # Reject face interior false positives against ANY detected face
-        all_faces = ([] if s.locked_face_bbox is None else [s.locked_face_bbox]) + list(s.ignored_face_bboxes)
-        for fb in all_faces:
+        # Reject face-interior false positives ONLY against ignored background people
+        for fb in s.ignored_face_bboxes:
             fx, fy, fw, fh = fb
             if _point_in_expanded_box(palm_center, fb, pad_x=-fw * 0.12, pad_y=-fh * 0.12):
                 return False
 
-        if s.locked_teacher_id is None or s.locked_torso_bbox is None:
-            return True
-
-        # Check ownership against locked teacher envelope + pose wrists
         in_locked_torso = _point_in_expanded_box(
-            wrist, s.locked_torso_bbox, pad_x=0.12, pad_y=0.14
+            wrist, s.locked_torso_bbox, pad_x=0.14, pad_y=0.16
         ) or _point_in_expanded_box(
-            palm_center, s.locked_torso_bbox, pad_x=0.12, pad_y=0.14
+            palm_center, s.locked_torso_bbox, pad_x=0.14, pad_y=0.16
         )
         near_locked_wrist = any(
-            _point_dist(wrist, anc) <= (s.wrist_search_radius * 1.45)
+            _point_dist(wrist, anc) <= (s.wrist_search_radius * 1.6)
             for anc in s.locked_wrist_anchors
         )
         locked_center = _bbox_center(s.locked_face_bbox or s.locked_torso_bbox)
         dist_locked = _point_dist(wrist, locked_center)
 
-        # If ignored passersby exist behind/around teacher, verify hand isn't clearly theirs
+        # Reject hands clearly belonging to an ignored passerby
         for ig_idx, ig_torso in enumerate(s.ignored_torso_bboxes):
             ig_face = (
                 s.ignored_face_bboxes[ig_idx]
@@ -546,9 +601,13 @@ class PrimaryTeacherLockTracker:
             ig_center = _bbox_center(ig_face)
             dist_ignored = _point_dist(wrist, ig_center)
             inside_ignored = _point_in_expanded_box(wrist, ig_torso, pad_x=0.05, pad_y=0.05)
-            if inside_ignored and dist_ignored < (dist_locked * 0.90):
+            if inside_ignored and dist_ignored < (dist_locked * 0.92):
                 return False
-            if dist_ignored < (dist_locked * 0.72) and not (near_locked_wrist and dist_locked < dist_ignored * 1.15):
+            if dist_ignored < (dist_locked * 0.78) and not (near_locked_wrist and dist_locked < dist_ignored * 1.15):
                 return False
 
-        return bool(in_locked_torso or near_locked_wrist)
+        # Fail-open for locked teacher: if hand is not owned by any ignored person, allow it
+        # unless it is in grace hold without teacher visible and outside a generous reach margin.
+        if in_locked_torso or near_locked_wrist:
+            return True
+        return not s.teacher_in_grace_period or dist_locked <= 0.55

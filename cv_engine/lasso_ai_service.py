@@ -149,21 +149,34 @@ def enhance_lasso_crop_png(
     return compress_snapshot_png(encoded.tobytes(), max_dim=max_dim)
 
 
-def build_lasso_prompt(action: LassoQuickAction) -> str:
+def build_lasso_prompt(
+    action: LassoQuickAction,
+    free_regions_norm: Optional[Sequence[Sequence[int]]] = None,
+) -> str:
     """Build targeted prompts for each of the 4 Smart Lasso Floating Action Bar buttons."""
+    free_hint = ""
+    if free_regions_norm:
+        free_hint = (
+            f" Hãy đặt nội dung vẽ/viết lời giải vào vùng trống bên cạnh theo hệ tọa độ [0..1000]: "
+            f"{list(free_regions_norm)}."
+        )
     if action == LassoQuickAction.SOLVE_AI:
         return (
             "Đọc chính xác đề bài, biểu thức hoặc sơ đồ viết tay trong ảnh vùng khoanh này "
             "và giải chi tiết từng bước bằng tiếng Việt. "
             "Không dùng ký tự $$$ hay thẻ <arrow>, dùng ký hiệu toán chuẩn."
+            + free_hint
         )
     if action == LassoQuickAction.WRITE_SOLUTION_TO_BOARD:
         return (
             "Đọc bài toán trong ảnh vùng khoanh, giải ngắn gọn theo từng bước rõ ràng. "
             "Hãy trả về lời giải ngắn gọn và đính kèm khối JSON "
             "```whiteboard_actions\n"
-            "[{\"tool\": \"solve_on_board\", \"args\": {\"steps\": [\"Bước 1: ...\", \"Bước 2: ...\"]}}]\n"
-            "``` để đưa thẳng lên bảng."
+            '{"speech_or_text": "Đã viết lời giải lên bảng.", "actions": ['
+            '{"type": "draw_text", "x": 420, "y": 140, "text": "Bước 1: ...", "color": "#00F5D4", "fontSize": 17}'
+            "]}\n"
+            "``` (theo hệ tọa độ [0..1000]) để đưa thẳng vào vùng trống bên cạnh."
+            + free_hint
         )
     if action == LassoQuickAction.BEAUTIFY_LATEX:
         return (
@@ -174,6 +187,7 @@ def build_lasso_prompt(action: LassoQuickAction) -> str:
     return (
         "Hãy tóm tắt và giải thích ngắn gọn khái niệm hoặc nội dung trong ảnh vùng khoanh này "
         "theo ngôn ngữ sư phạm dễ hiểu cho học sinh."
+        + free_hint
     )
 
 

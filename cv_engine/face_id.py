@@ -21,9 +21,12 @@ Strictly implements:
 """
 
 import math
+import logging
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 import urllib.request
+
+_FACE_LOGGER = logging.getLogger("airteach.face_id")
 
 import cv2
 import numpy as np
@@ -31,7 +34,10 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
+from cv_engine.app_paths import get_app_logger
 from cv_engine.preprocessing import compute_laplacian_sharpness
+
+_LOGGER = get_app_logger("face_id")
 
 
 FACE_MODEL_URL = (
@@ -154,26 +160,18 @@ class ArcFace512Extractor:
         face_model_path = models_dir / "blaze_face_short_range.tflite"
         if ensure_face_detector_model(face_model_path, FACE_MODEL_URL):
             try:
+                from cv_engine.app_paths import ensure_concurrent_futures_eager
+
+                ensure_concurrent_futures_eager()
                 f_opts = mp_vision.FaceDetectorOptions(
                     base_options=mp_python.BaseOptions(model_asset_path=str(face_model_path)),
-                    running_mode=mp_vision.FaceDetectorOptions.running_mode
-                    if hasattr(mp_vision.FaceDetectorOptions, "running_mode")
-                    else mp_vision.RunningMode.IMAGE,
+                    running_mode=mp_vision.RunningMode.IMAGE,
                     min_detection_confidence=float(min_detection_confidence),
                 )
                 self.face_detector = mp_vision.FaceDetector.create_from_options(f_opts)
             except Exception as exc:
-                _ = exc
-                try:
-                    f_opts2 = mp_vision.FaceDetectorOptions(
-                        base_options=mp_python.BaseOptions(model_asset_path=str(face_model_path)),
-                        running_mode=mp_vision.RunningMode.IMAGE,
-                        min_detection_confidence=float(min_detection_confidence),
-                    )
-                    self.face_detector = mp_vision.FaceDetector.create_from_options(f_opts2)
-                except Exception as exc2:
-                    _ = exc2
-                    self.face_detector = None
+                _FACE_LOGGER.warning("FaceDetector init failed (%s): %s", face_model_path, exc)
+                self.face_detector = None
 
         # Check for InsightFace buffalo_l / buffalo_s 512-D ONNX models in models/ and ~/.insightface/models/
         candidate_dirs = [
@@ -304,7 +302,7 @@ class ArcFace512Extractor:
                     out = self._zero_mean_unit(out)
                     return aligned_112, None, out
             except Exception as exc:
-                _ = exc
+                _FACE_LOGGER.warning("InsightFace ORT session failed: %s", exc)
 
         # Path 2: OpenCV DNN 512-D ArcFace ONNX if available
         if self.arcface_dnn is not None:
@@ -322,7 +320,7 @@ class ArcFace512Extractor:
                     out = self._zero_mean_unit(out)
                     return aligned_112, None, out
             except cv2.error as exc:
-                _ = exc
+                _FACE_LOGGER.warning("OpenCV DNN ArcFace failed: %s", exc)
 
         # Path 3: OpenCV SFace Deep Neural Network (`models/mobilefacenet.onnx`) fed with the
         # 5-point aligned `112x112` crop + 384-D zero-mean 5-pt aligned descriptor -> 512-D unit vector
@@ -337,7 +335,7 @@ class ArcFace512Extractor:
                         vec = vec - self.sface_baseline
                     emb_128 = self._zero_mean_unit(vec)
             except cv2.error as exc:
-                _ = exc
+                _FACE_LOGGER.warning("OpenCV SFace extractor failed: %s", exc)
 
         spatial_384 = self._extract_aligned_112_spatial_384d(aligned_112)
         if emb_128 is not None and float(np.linalg.norm(emb_128)) > 1e-5:
@@ -383,7 +381,8 @@ class ArcFace512Extractor:
             }
 
         try:
-            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            rgb_contig = np.ascontiguousarray(rgb_frame, dtype=np.uint8)
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_contig)
             f_res = self.face_detector.detect(mp_img)
             if f_res and f_res.detections:
                 primary_det = max(
@@ -476,8 +475,8 @@ class ArcFace512Extractor:
                         if emb128 is not None:
                             face_emb_128 = [round(float(v), 5) for v in emb128]
                         face_emb_512 = [round(float(v), 5) for v in emb512]
-        except RuntimeError as exc:
-            _ = exc
+        except Exception as exc:
+            _LOGGER.warning("FaceDetector inference error: %s", exc)
 
         return {
             "face_boxes": face_boxes,
@@ -494,7 +493,7 @@ class ArcFace512Extractor:
             try:
                 self.face_detector.close()
             except Exception as exc:
-                _ = exc
+                _LOGGER.warning("FaceDetector close error: %s", exc)
             self.face_detector = None
         self.ort_session = None
         self.arcface_dnn = None

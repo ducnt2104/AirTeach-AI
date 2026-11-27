@@ -69,7 +69,7 @@ PROFILE_PRESETS: Dict[PerformanceProfile, ProfilePreset] = {
         profile=PerformanceProfile.BALANCED,
         search_size=(426, 240),
         roi_size=256,
-        pose_interval_frames=10,
+        pose_interval_frames=12,
         face_interval_sec=1.5,
         exposure_interval_n=4,
         model_complexity=1,
@@ -213,18 +213,22 @@ class PipelineTelemetry:
 
 def detect_hardware_acceleration() -> HardwareAccelReport:
     """Probe & configure fastest safe local CV/ML execution delegates."""
+    from cv_engine.app_paths import get_app_logger
+
+    logger = get_app_logger("performance_pipeline")
     cpu_cnt = max(2, min(8, os.cpu_count() or 4))
     try:
         cv2.setNumThreads(cpu_cnt)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("cv2.setNumThreads failed: %s", exc)
 
     ocl_avail = False
     try:
         ocl_avail = bool(cv2.ocl.haveOpenCL())
         if ocl_avail:
             cv2.ocl.setUseOpenCL(True)
-    except Exception:
+    except Exception as exc:
+        logger.debug("OpenCL probe failed: %s", exc)
         ocl_avail = False
 
     ort_providers: List[str] = []
@@ -232,7 +236,8 @@ def detect_hardware_acceleration() -> HardwareAccelReport:
         import onnxruntime as ort  # type: ignore
 
         ort_providers = list(ort.get_available_providers())
-    except Exception:
+    except Exception as exc:
+        logger.debug("ONNX Runtime probe unavailable: %s", exc)
         ort_providers = []
 
     if "DmlExecutionProvider" in ort_providers:

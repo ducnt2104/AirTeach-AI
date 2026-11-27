@@ -24,7 +24,10 @@ import math
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from cv_engine.app_paths import get_app_logger
 from cv_engine.output_sanitizer import OutputSanitizer
+
+_LOGGER = get_app_logger("whiteboard_agent")
 
 
 RectTuple = Tuple[float, float, float, float]  # (x, y, w, h)
@@ -438,12 +441,22 @@ class WhiteboardAgent:
             nonlocal extracted_speech
             if not isinstance(it, dict):
                 return
+            tool_name = str(it.get("tool") or "").strip()
+            act_type = str(it.get("type") or "").strip().lower()
+
+            # Allow normalized actions specified via {"tool": "draw_text", "args": {...}}
+            if not act_type and tool_name.lower() in _ALLOWED_NEW:
+                merged: Dict[str, Any] = dict(it)
+                if isinstance(it.get("args"), dict):
+                    merged.update(it["args"])
+                it = merged
+                act_type = tool_name.lower()
+
             # Case A: Legacy {"tool": "...", "args": {...}}
-            tool_name = it.get("tool")
-            if tool_name in _ALLOWED_LEGACY:
+            if not act_type and tool_name in _ALLOWED_LEGACY:
                 actions.append(
                     WhiteboardAction(
-                        tool=str(tool_name),
+                        tool=tool_name,
                         args=dict(it.get("args") or {}),
                         source="llm_tool",
                     )
@@ -451,7 +464,6 @@ class WhiteboardAgent:
                 return
 
             # Case B: Normalized [0..1000] {"type": "draw_text" | "draw_shape" | ...}
-            act_type = str(it.get("type") or "").strip().lower()
             if act_type not in _ALLOWED_NEW:
                 return
             if act_type == "clear_all":
@@ -534,10 +546,18 @@ class WhiteboardAgent:
             if act_type == "draw_shape":
                 shape_kind = str(it.get("shape") or it.get("shape_type") or it.get("kind") or "rect").strip().lower()
                 bbox = it.get("bbox")
-                bx = it.get("x", bbox[0] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else 160.0)
-                by = it.get("y", bbox[1] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else 180.0)
-                bw = it.get("w", bbox[2] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else 200.0)
-                bh = it.get("h", bbox[3] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else 150.0)
+                rad_norm = _clamp_norm(it["radius"], 70.0) if "radius" in it else None
+                if "center_x" in it and "x" not in it:
+                    r_val = rad_norm if rad_norm is not None else 90.0
+                    bx = max(0.0, float(it["center_x"]) - r_val)
+                    by = max(0.0, float(it.get("center_y", 500.0)) - r_val)
+                    bw = float(it.get("w", r_val * 2.0))
+                    bh = float(it.get("h", r_val * 2.0))
+                else:
+                    bx = it.get("x", bbox[0] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else 160.0)
+                    by = it.get("y", bbox[1] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else 180.0)
+                    bw = it.get("w", bbox[2] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else 200.0)
+                    bh = it.get("h", bbox[3] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else 150.0)
                 args_out: Dict[str, Any] = {
                     "type": shape_kind,
                     "x": _clamp_norm(bx, 160.0),
@@ -549,8 +569,8 @@ class WhiteboardAgent:
                     "label": str(it.get("label") or "").strip(),
                     "normalized": True,
                 }
-                if "radius" in it:
-                    args_out["radius"] = max(15.0, _clamp_norm(it.get("radius"), 70.0))
+                if rad_norm is not None:
+                    args_out["radius"] = max(15.0, rad_norm)
                 if "x2" in it and "y2" in it:
                     args_out["x2"] = _clamp_norm(it.get("x2"), 360.0)
                     args_out["y2"] = _clamp_norm(it.get("y2"), 180.0)
@@ -566,7 +586,8 @@ class WhiteboardAgent:
             nonlocal extracted_speech
             try:
                 data = json.loads(blob.strip())
-            except Exception:
+            except Exception as exc:
+                _LOGGER.debug("Whiteboard JSON parse skipped malformed block: %s", exc)
                 return
             if isinstance(data, dict) and isinstance(data.get("actions"), list):
                 if isinstance(data.get("speech_or_text"), str) and data["speech_or_text"].strip():
@@ -593,7 +614,10 @@ class WhiteboardAgent:
             if actions or extracted_speech is not None:
                 cleaned_text = extracted_speech or ""
 
-        if extracted_speech and not cleaned_text.strip():
-            cleaned_text = extracted_speech
+        if extracted_speech:
+            if not cleaned_text.strip():
+                cleaned_text = extracted_speech
+            elif extracted_speech not in cleaned_text:
+                cleaned_text = f"{cleaned_text.strip()}\n{extracted_speech}"
 
         return actions, OutputSanitizer.sanitize_plain_text(cleaned_text)

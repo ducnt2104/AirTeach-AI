@@ -19,6 +19,26 @@ Modules:
   5-Angle Multi-Template Cosine Similarity Matching (default threshold `0.50`).
 """
 
+from cv_engine.app_paths import (
+    ensure_concurrent_futures_eager,
+    get_app_logger,
+    get_config_file_path,
+    get_doc_cache_dir,
+    get_local_cache_db_path,
+    get_user_data_dir,
+    install_global_excepthook,
+    resource_path,
+    set_windows_app_user_model_id,
+    setup_app_logging,
+)
+
+ensure_concurrent_futures_eager()
+from cv_engine.document_presenter import (
+    LectureDocument,
+    compute_slide_rect_on_canvas,
+    convert_presentation_to_cached_pdf,
+    export_annotated_lecture_pdf,
+)
 from cv_engine.preprocessing import (
     AdaptiveExposureController,
     ExposureDiagnostics,
@@ -26,6 +46,8 @@ from cv_engine.preprocessing import (
     preprocess_adaptive_frame,
 )
 from cv_engine.hand_gesture import (
+    DualHandActionState,
+    DualHandGestureCoordinator,
     FingerFlexionState,
     FrameSkipLock,
     GestureFsmEngine,
@@ -35,6 +57,7 @@ from cv_engine.hand_gesture import (
     OneEuroFilter1D,
     OneEuroFilter2D,
     OneEuroFilter3D,
+    SlideNavigationGestureDetector,
     classify_finger_flexion_3d,
     classify_hand_3d_vectors,
     compute_palm_normal_3d,
@@ -93,7 +116,9 @@ from cv_engine.gemini_client import (
     compress_snapshot_png,
     mask_api_key,
     resolve_api_key_layered,
+    resolve_api_key_pool,
     save_ui_api_settings,
+    split_api_keys,
 )
 from cv_engine.output_sanitizer import (
     OutputSanitizer,
@@ -135,7 +160,22 @@ from cv_engine.performance_pipeline import (
 
 __all__ = [
     "AdaptiveExposureController",
+    "DualHandActionState",
+    "DualHandGestureCoordinator",
     "ExposureDiagnostics",
+    "get_app_logger",
+    "get_config_file_path",
+    "get_doc_cache_dir",
+    "get_local_cache_db_path",
+    "LectureDocument",
+    "compute_slide_rect_on_canvas",
+    "convert_presentation_to_cached_pdf",
+    "export_annotated_lecture_pdf",
+    "get_user_data_dir",
+    "install_global_excepthook",
+    "resource_path",
+    "set_windows_app_user_model_id",
+    "setup_app_logging",
     "compute_laplacian_sharpness",
     "preprocess_adaptive_frame",
     "FingerFlexionState",
@@ -147,6 +187,7 @@ __all__ = [
     "OneEuroFilter1D",
     "OneEuroFilter2D",
     "OneEuroFilter3D",
+    "SlideNavigationGestureDetector",
     "classify_finger_flexion_3d",
     "classify_hand_3d_vectors",
     "compute_palm_normal_3d",
@@ -193,7 +234,9 @@ __all__ = [
     "compress_snapshot_png",
     "mask_api_key",
     "resolve_api_key_layered",
+    "resolve_api_key_pool",
     "save_ui_api_settings",
+    "split_api_keys",
     "OutputSanitizer",
     "StreamingSanitizer",
     "arrow_svg_data_uri",

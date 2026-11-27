@@ -33,7 +33,10 @@ from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from cv_engine.app_paths import get_app_logger
 from cv_engine.preprocessing import sharpen_and_contrast_roi
+
+_LOGGER = get_app_logger("hand_gesture")
 
 try:
     import mediapipe as mp  # type: ignore
@@ -41,7 +44,8 @@ try:
     from mediapipe.tasks.python import vision as mp_vision  # type: ignore
 
     HAS_MEDIAPIPE = True
-except Exception:
+except Exception as exc:
+    _LOGGER.error("MediaPipe import failed: %s", exc)
     mp = None  # type: ignore
     mp_python = None  # type: ignore
     mp_vision = None  # type: ignore
@@ -90,18 +94,46 @@ class FingerFlexionState(str, Enum):
     CURLED = "CURLED"
 
 
+def _is_valid_hand_model_file(path: Path) -> bool:
+    try:
+        if not path.exists() or not path.is_file() or path.stat().st_size <= 500_000:
+            return False
+        with path.open("rb") as fh:
+            head = fh.read(32)
+        return (b"PK" in head) or (b"TFL3" in head)
+    except OSError:
+        return False
+
+
 def ensure_hand_model(path: Path, url: str = HAND_MODEL_URL) -> bool:
-    if path.exists() and path.stat().st_size > 500_000:
+    if _is_valid_hand_model_file(path):
         return True
+    try:
+        from cv_engine.app_paths import get_user_data_dir, resource_path
+
+        for cand in (
+            resource_path("models/hand_landmarker.task"),
+            get_user_data_dir() / "models" / "hand_landmarker.task",
+        ):
+            if cand != path and _is_valid_hand_model_file(cand):
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(cand.read_bytes())
+                    return True
+                except OSError:
+                    return True
+    except Exception:
+        pass
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         req = urllib.request.Request(url, headers={"User-Agent": "AirTeachAI/1.0"})
         with urllib.request.urlopen(req, timeout=20) as resp:
             data = resp.read()
-        if len(data) > 500_000:
+        if len(data) > 500_000 and (b"PK" in data[:32] or b"TFL3" in data[:32]):
             path.write_bytes(data)
             return True
-    except Exception:
+    except Exception as exc:
+        _LOGGER.warning("Failed to download hand model to %s: %s", path, exc)
         return False
     return False
 
@@ -123,14 +155,14 @@ def dist_3d(a: Sequence[float], b: Sequence[float]) -> float:
 
 def compute_palm_scale_3d(lm: Sequence[Sequence[float]]) -> float:
     """Reference palm length `dist(landmark[0], landmark[9])` with zero-division floor."""
-    if not lm or len(lm) < 10:
+    if lm is None or len(lm) < 10:
         return 1e-4
     return max(1e-4, dist_3d(lm[WRIST], lm[MIDDLE_MCP]))
 
 
 def compute_pinch_ratio_3d(lm: Sequence[Sequence[float]]) -> float:
     """Palm-normalized Pinch Ratio `dist(4, 8) / dist(0, 9)`."""
-    if not lm or len(lm) < 10:
+    if lm is None or len(lm) < 10:
         return 1.0
     palm = compute_palm_scale_3d(lm)
     return dist_3d(lm[THUMB_TIP], lm[INDEX_TIP]) / max(1e-4, palm)
@@ -184,7 +216,7 @@ def compute_palm_normal_3d(
     Compute Palm Normal Vector from `cross(LM5 - LM0, LM17 - LM0)` with zero-division protection.
     Measures how directly the palm/back-of-hand faces the camera vs edge-on side profile.
     """
-    if not lm or len(lm) <= PINKY_MCP:
+    if lm is None or len(lm) <= PINKY_MCP:
         return {
             "normal": (0.0, 0.0, 1.0),
             "facing_score": 1.0,
@@ -346,7 +378,7 @@ def classify_hand_3d_vectors(
     joint angles (`arccos(dot(u,v)/(|u||v|))`), 3-level finger flexion (`EXTENDED`/`HALF_BENT`/`CURLED`),
     Palm Normal vector orientation check, and palm-normalized Pinch Ratio hysteresis.
     """
-    if not lm or len(lm) < 21:
+    if lm is None or len(lm) < 21:
         return {
             "gesture": "IDLE",
             "pose_tag": "IDLE",
@@ -362,7 +394,7 @@ def classify_hand_3d_vectors(
             "palm_orientation": "SIDE",
         }
 
-    state = list(prev_fingers) if (prev_fingers and len(prev_fingers) == 5) else [False] * 5
+    state = list(prev_fingers) if (prev_fingers is not None and len(prev_fingers) == 5) else [False] * 5
     thumb_up = is_thumb_extended_3d(lm, state[0])
     idx_up = is_finger_extended_3d(lm, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP, state[1])
     mid_up = is_finger_extended_3d(lm, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP, state[2])
@@ -394,6 +426,7 @@ def classify_hand_3d_vectors(
     base_meta: Dict[str, object] = {
         "pinch_ratio": round(pinch_ratio, 4),
         "palm_scale": round(palm_scale, 4),
+        "hand_span": round(max(palm_scale, dist_3d(lm[THUMB_TIP], lm[PINKY_TIP])), 4),
         "fingers": fingers,
         "finger_states": finger_states,
         "finger_angles_deg": finger_angles,
@@ -462,6 +495,15 @@ def classify_hand_3d_vectors(
             "gesture": "DRAW",
             "pose_tag": "INDEX",
             "cursor_norm": map_box(lm[INDEX_TIP][0], lm[INDEX_TIP][1]),
+        }
+
+    # 6B. Pinky Extended Alone (unpinched): QUESTION_HOLD (Context Slide AI trigger)
+    if pinky_up and not idx_up and not mid_up and not ring_up and pinch_ratio > 0.40:
+        return {
+            **base_meta,
+            "gesture": "HOVER",
+            "pose_tag": "QUESTION_HOLD",
+            "cursor_norm": map_box(lm[PINKY_TIP][0], lm[PINKY_TIP][1]),
         }
 
     # 7. Loose curl fallback
@@ -670,15 +712,16 @@ class GestureFsmEngine:
 
     def __init__(
         self,
-        min_hold_frames: int = 5,
-        min_hold_sec: float = 0.150,
+        min_hold_frames: int = 3,
+        min_hold_sec: float = 0.080,
         grace_period_sec: float = 0.160,
-        min_cutoff: float = 1.35,
-        beta: float = 0.015,
+        min_cutoff: float = 1.45,
+        beta: float = 0.020,
+        d_cutoff: float = 1.0,
         frame_size: Tuple[int, int] = (640, 480),
         deadzone_px: float = 2.0,
         voting_window_size: int = 7,
-        voting_min_votes: int = 5,
+        voting_min_votes: int = 3,
         pinch_enter_ratio: float = 0.28,
         pinch_exit_ratio: float = 0.42,
         palm_facing_min_z: float = 0.20,
@@ -694,9 +737,10 @@ class GestureFsmEngine:
         self.pinch_exit_ratio = float(pinch_exit_ratio)
         self.palm_facing_min_z = float(palm_facing_min_z)
 
-        self.cursor_filter = OneEuroFilter2D(min_cutoff=min_cutoff, beta=beta)
-        self.thumb_tip_filter = OneEuroFilter3D(min_cutoff=min_cutoff, beta=beta)
-        self.index_tip_filter = OneEuroFilter3D(min_cutoff=min_cutoff, beta=beta)
+        self.cursor_filter = OneEuroFilter2D(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
+        self.thumb_tip_filter = OneEuroFilter3D(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
+        self.index_tip_filter = OneEuroFilter3D(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
+        self.pinch_filter = OneEuroFilter1D(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
         self.kalman_predictor = KalmanVelocityPredictor2D()
 
         self.fsm_state = GestureFsmState.IDLE
@@ -744,6 +788,8 @@ class GestureFsmEngine:
             lm_filtered[INDEX_TIP] = self.index_tip_filter.filter(landmarks[INDEX_TIP], now)
 
             was_pinched = self.active_gesture == "CLICK"
+            raw_pinch_ratio = compute_pinch_ratio_3d(lm_filtered)
+            smoothed_pinch_ratio = max(0.01, min(3.0, self.pinch_filter.filter(raw_pinch_ratio, now)))
             info = classify_hand_3d_vectors(
                 lm_filtered,
                 self.prev_fingers,
@@ -753,9 +799,19 @@ class GestureFsmEngine:
                 handedness=handedness,
                 palm_facing_min_z=self.palm_facing_min_z,
             )
+            pinch_thresh = float(self.pinch_exit_ratio) if was_pinched else float(self.pinch_enter_ratio)
+            if smoothed_pinch_ratio < pinch_thresh and info.get("pose_tag") not in (
+                "OPEN_PALM",
+                "FIST",
+                "THREE_FINGERS",
+                "QUESTION_HOLD",
+            ):
+                info["gesture"] = "CLICK"
+                info["pose_tag"] = "PINCH"
+            info["pinch_ratio"] = round(smoothed_pinch_ratio, 4)
             self.last_classify_meta = info
             self.prev_fingers = list(info["fingers"])  # type: ignore[arg-type]
-            self.last_smoothed_pinch_ratio = float(info["pinch_ratio"])  # type: ignore[arg-type]
+            self.last_smoothed_pinch_ratio = float(smoothed_pinch_ratio)
             palm_scale = float(info["palm_scale"])  # type: ignore[arg-type]
             raw_gesture = str(info["gesture"])
             raw_cursor = info["cursor_norm"]  # type: ignore[assignment]
@@ -852,6 +908,7 @@ class GestureFsmEngine:
         self.cursor_filter.reset()
         self.thumb_tip_filter.reset()
         self.index_tip_filter.reset()
+        self.pinch_filter.reset()
         self.kalman_predictor.reset()
         return GestureFsmSnapshot(
             fsm_state=GestureFsmState.IDLE,
@@ -887,42 +944,51 @@ class FrameSkipLock:
 
 class HandGestureEngine:
     """
-    2-Stage High-Precision Hand Landmark & Gesture Engine (Tier 3 + Tier 4):
-    - Separated confidence gates: `min_detection_confidence`, `min_presence_confidence`, `min_tracking_confidence`.
-    - Stage-2 ROI Crop-Zoom (`384x384` `cv2.INTER_CUBIC`) both on small full-frame hands (`bbox_area < 8%`)
-      AND proactively around last known hand box / Teacher Pose wrists (`2.2x` padded ROI) on full-frame miss!
+    Fail-Open 2-Hand High-Precision Landmark & Gesture Engine:
+    - Always runs `num_hands = 2` with sensitive thresholds (`0.35 / 0.40 / 0.40`) for 30cm–3m range.
+    - Immediate 1-Frame ROI Fallback: if ROI crop misses on frame N, immediately clears cache and
+      runs Full-Frame Scan in the same pass + next frame so tracking NEVER gets stuck on empty ROI.
+    - Periodic 2nd-hand Full-Frame Discovery when only 1 hand is tracked, plus center deduplication.
+    - Stores `last_raw_hands` before any Teacher Lock filtering for live debug verification.
     """
 
     ROI_AREA_THRESHOLD = 0.08
-    ROI_PADDING_RATIO = 0.45
-    ROI_TARGET_SIZE = 384
+    ROI_PADDING_RATIO = 0.35
+    ROI_TARGET_SIZE = 256
 
     def __init__(
         self,
         model_path: Path = Path("models/hand_landmarker.task"),
-        min_detection_confidence: float = 0.55,
-        min_presence_confidence: float = 0.52,
-        min_tracking_confidence: float = 0.65,
+        num_hands: int = 2,
+        min_detection_confidence: float = 0.35,
+        min_presence_confidence: float = 0.35,
+        min_tracking_confidence: float = 0.40,
         roi_area_threshold: float = 0.08,
         roi_expand_factor: float = 2.2,
-        roi_padding_ratio: float = 0.45,
-        roi_target_size: int = 384,
+        roi_padding_ratio: float = 0.35,
+        roi_target_size: int = 256,
         pinch_enter_ratio: float = 0.28,
         pinch_exit_ratio: float = 0.42,
         palm_facing_min_z: float = 0.20,
         grace_period_sec: float = 0.160,
         voting_window_size: int = 7,
-        voting_min_votes: int = 5,
-        one_euro_min_cutoff: float = 1.35,
-        one_euro_beta: float = 0.015,
+        voting_min_votes: int = 3,
+        one_euro_min_cutoff: float = 1.45,
+        one_euro_beta: float = 0.020,
+        one_euro_d_cutoff: float = 1.0,
+        roi_unsharp_strength: float = 0.65,
+        min_hold_frames: int = 3,
+        min_hold_sec: float = 0.080,
     ) -> None:
+        self.num_hands = max(1, min(2, int(num_hands)))
         self.min_detection_confidence = float(min_detection_confidence)
         self.min_presence_confidence = float(min_presence_confidence)
         self.min_tracking_confidence = float(min_tracking_confidence)
         self.ROI_AREA_THRESHOLD = float(roi_area_threshold)
         self.roi_expand_factor = float(roi_expand_factor)
-        self.ROI_PADDING_RATIO = float(roi_padding_ratio)
+        self.ROI_PADDING_RATIO = max(0.35, float(roi_padding_ratio))
         self.ROI_TARGET_SIZE = int(roi_target_size)
+        self.roi_unsharp_strength = float(roi_unsharp_strength)
         self.pinch_enter_ratio = float(pinch_enter_ratio)
         self.pinch_exit_ratio = float(pinch_exit_ratio)
         self.palm_facing_min_z = float(palm_facing_min_z)
@@ -930,12 +996,15 @@ class HandGestureEngine:
         self.model_complexity = 1
         self.solutions_hands = None
         self.tasks_detector = None
+        self.backend_mode: str = "NONE"
+        self.init_error: str = ""
         self.left_fsm = GestureFsmEngine(
-            min_hold_frames=5,
-            min_hold_sec=0.150,
+            min_hold_frames=min_hold_frames,
+            min_hold_sec=min_hold_sec,
             grace_period_sec=grace_period_sec,
             min_cutoff=one_euro_min_cutoff,
             beta=one_euro_beta,
+            d_cutoff=one_euro_d_cutoff,
             voting_window_size=voting_window_size,
             voting_min_votes=voting_min_votes,
             pinch_enter_ratio=pinch_enter_ratio,
@@ -943,11 +1012,12 @@ class HandGestureEngine:
             palm_facing_min_z=palm_facing_min_z,
         )
         self.right_fsm = GestureFsmEngine(
-            min_hold_frames=5,
-            min_hold_sec=0.150,
+            min_hold_frames=min_hold_frames,
+            min_hold_sec=min_hold_sec,
             grace_period_sec=grace_period_sec,
             min_cutoff=one_euro_min_cutoff,
             beta=one_euro_beta,
+            d_cutoff=one_euro_d_cutoff,
             voting_window_size=voting_window_size,
             voting_min_votes=voting_min_votes,
             pinch_enter_ratio=pinch_enter_ratio,
@@ -957,29 +1027,100 @@ class HandGestureEngine:
         self.frame_skip_lock = FrameSkipLock()
         self._last_hand_roi_boxes: List[List[float]] = []
         self._last_hand_seen_ts: float = 0.0
-        self.last_tracking_mode: str = "SEARCH_LOWRES"
+        self._last_valid_left: Optional[Dict[str, object]] = None
+        self._last_valid_right: Optional[Dict[str, object]] = None
+        self._detect_tick: int = 0
+        self.last_tracking_mode: str = "FULL_SCAN"
+        self.last_raw_hands: List[Dict[str, object]] = []
+        self.last_rejected_by_teacher_lock: int = 0
 
-        if HAS_MEDIAPIPE and ensure_hand_model(model_path, HAND_MODEL_URL):
+        if not HAS_MEDIAPIPE:
+            self.init_error = "MediaPipe library is not installed"
+            _LOGGER.error(self.init_error)
+            return
+
+        if ensure_hand_model(model_path, HAND_MODEL_URL):
             try:
+                from cv_engine.app_paths import ensure_concurrent_futures_eager
+
+                ensure_concurrent_futures_eager()
                 opts = mp_vision.HandLandmarkerOptions(
                     base_options=mp_python.BaseOptions(model_asset_path=str(model_path)),
                     running_mode=mp_vision.RunningMode.IMAGE,
-                    num_hands=2,
+                    num_hands=self.num_hands,
                     min_hand_detection_confidence=self.min_detection_confidence,
                     min_hand_presence_confidence=self.min_presence_confidence,
                     min_tracking_confidence=self.min_tracking_confidence,
                 )
                 self.tasks_detector = mp_vision.HandLandmarker.create_from_options(opts)
-            except RuntimeError as exc:
-                _ = exc
+                self.backend_mode = "TASKS_LANDMARKER"
+                _LOGGER.info(
+                    "HandLandmarker initialized (num_hands=%d, det=%.2f, pres=%.2f, track=%.2f, model=%s)",
+                    self.num_hands,
+                    self.min_detection_confidence,
+                    self.min_presence_confidence,
+                    self.min_tracking_confidence,
+                    model_path,
+                )
+            except Exception as exc:
+                self.init_error = f"HandLandmarker init failed: {exc}"
+                _LOGGER.exception(self.init_error)
                 self.tasks_detector = None
+        else:
+            self.init_error = f"HandLandmarker model missing/unreadable: {model_path}"
+            _LOGGER.warning(self.init_error)
+
+        if self.tasks_detector is None and mp is not None and hasattr(mp, "solutions") and hasattr(mp.solutions, "hands"):
+            try:
+                self.solutions_hands = mp.solutions.hands.Hands(
+                    static_image_mode=True,
+                    max_num_hands=self.num_hands,
+                    model_complexity=1,
+                    min_detection_confidence=self.min_detection_confidence,
+                    min_tracking_confidence=self.min_tracking_confidence,
+                )
+                self.backend_mode = "SOLUTIONS_HANDS"
+                self.init_error = ""
+                _LOGGER.info("HandGestureEngine fallback to mp.solutions.hands initialized cleanly.")
+            except Exception as exc:
+                self.init_error = f"{self.init_error}; solutions.hands fallback failed: {exc}"
+                _LOGGER.error(self.init_error)
+                self.solutions_hands = None
+
+    def _has_detector(self) -> bool:
+        return (self.tasks_detector is not None) or (self.solutions_hands is not None)
+
+    def _detect_raw_hands(self, rgb_img: np.ndarray) -> List[Tuple[Any, float, str]]:
+        out: List[Tuple[Any, float, str]] = []
+        if self.tasks_detector is not None:
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_img)
+            res = self.tasks_detector.detect(mp_img)
+            if res and res.hand_landmarks and res.handedness:
+                for lms, handed_list in zip(res.hand_landmarks, res.handedness):
+                    if not handed_list:
+                        continue
+                    top_cat = handed_list[0]
+                    out.append((lms, float(top_cat.score), (top_cat.category_name or "").lower()))
+        elif self.solutions_hands is not None:
+            res = self.solutions_hands.process(rgb_img)
+            lms_list = getattr(res, "multi_hand_landmarks", None) or []
+            hd_list = getattr(res, "multi_handedness", None) or []
+            for idx, hand_lms in enumerate(lms_list):
+                score = 0.85
+                cat_name = "right"
+                if idx < len(hd_list) and getattr(hd_list[idx], "classification", None):
+                    cls0 = hd_list[idx].classification[0]
+                    score = float(getattr(cls0, "score", 0.85))
+                    cat_name = str(getattr(cls0, "label", "right") or "right").lower()
+                out.append((hand_lms.landmark, score, cat_name))
+        return out
 
     @staticmethod
     def validate_real_hand(
         lm_list: Sequence[Sequence[float]],
         score: float,
         face_boxes: Sequence[Sequence[float]],
-        min_score: float = 0.42,
+        min_score: float = 0.25,
     ) -> bool:
         if score < min_score or len(lm_list) < 21:
             return False
@@ -988,20 +1129,24 @@ class HandGestureEngine:
         ys = [float(p[1]) for p in lm_list]
         bbox_w = max(xs) - min(xs)
         bbox_h = max(ys) - min(ys)
-        # Allow tiny distant hands (~1.5m-3m, e.g. 3.5%x3.5% = 0.0012) to enter Stage-2 ROI Zoom!
-        if (bbox_w * bbox_h) <= 0.0012:
+        area = bbox_w * bbox_h
+        # Allow tiny distant hands (~2.5m-3m, e.g. 2.6%x2.8% = 0.0007) to enter Stage-2 ROI Zoom!
+        if area <= 0.0007:
             return False
 
-        px, py = float(lm_list[MIDDLE_MCP][0]), float(lm_list[MIDDLE_MCP][1])
-        for fb in face_boxes:
-            if len(fb) < 4:
-                continue
-            fx, fy, fw, fh = float(fb[0]), float(fb[1]), float(fb[2]), float(fb[3])
-            face_cx = fx + fw * 0.5
-            face_cy = fy + fh * 0.5
-            radius = max(fw, fh) * 0.42
-            if math.hypot(px - face_cx, py - face_cy) < radius:
-                return False
+        # Only reject tiny low-confidence phantom skeletons right inside a face center;
+        # close-up hands (area >= 0.015) or high-confidence hands held near chin/face pass!
+        if area < 0.015 and score < 0.55:
+            px, py = float(lm_list[MIDDLE_MCP][0]), float(lm_list[MIDDLE_MCP][1])
+            for fb in face_boxes:
+                if len(fb) < 4:
+                    continue
+                fx, fy, fw, fh = float(fb[0]), float(fb[1]), float(fb[2]), float(fb[3])
+                face_cx = fx + fw * 0.5
+                face_cy = fy + fh * 0.5
+                radius = max(fw, fh) * 0.34
+                if math.hypot(px - face_cx, py - face_cy) < radius:
+                    return False
 
         return True
 
@@ -1046,7 +1191,7 @@ class HandGestureEngine:
         apply ROI-only Fast Unsharp Masking + Adaptive Contrast Stretch, run HandLandmarker ONCE,
         and map 21 landmarks back into `[0..1]` full-frame coordinates.
         """
-        if self.tasks_detector is None or rgb_frame is None or rgb_frame.size == 0:
+        if not self._has_detector() or rgb_frame is None or rgb_frame.size == 0:
             return []
         h, w = rgb_frame.shape[:2]
         rx, ry, rw, rh = (
@@ -1068,26 +1213,27 @@ class HandGestureEngine:
         target_sz = max(160, min(384, target_sz))
         roi = rgb_frame[y0:y1, x0:x1]
         interp = cv2.INTER_CUBIC if (cw < target_sz or ch < target_sz) else cv2.INTER_LINEAR
-        roi_resized = cv2.resize(roi, (target_sz, target_sz), interpolation=interp)
+        roi_resized = np.ascontiguousarray(cv2.resize(roi, (target_sz, target_sz), interpolation=interp), dtype=np.uint8)
         if enable_roi_sharpen:
-            roi_resized = sharpen_and_contrast_roi(roi_resized, is_rgb=True)
+            roi_resized = np.ascontiguousarray(
+                sharpen_and_contrast_roi(
+                    roi_resized,
+                    is_rgb=True,
+                    unsharp_strength=self.roi_unsharp_strength,
+                    contrast_stretch=True,
+                ),
+                dtype=np.uint8,
+            )
 
         results: List[Tuple[List[List[float]], float, str]] = []
         try:
-            roi_mp = mp.Image(image_format=mp.ImageFormat.SRGB, data=roi_resized)
-            roi_res = self.tasks_detector.detect(roi_mp)
-            if not roi_res or not roi_res.hand_landmarks or not roi_res.handedness:
-                return []
-            for lms, handed_list in zip(roi_res.hand_landmarks, roi_res.handedness):
-                if not handed_list:
-                    continue
-                top_cat = handed_list[0]
-                r_score = float(top_cat.score)
-                r_cat = (top_cat.category_name or "").lower()
+            raw_hits = self._detect_raw_hands(roi_resized)
+            for lms, r_score, r_cat in raw_hits:
                 mapped = self.map_roi_landmarks_to_full_frame(lms, (x0, y0, cw, ch), (w, h))
                 if self.validate_real_hand(mapped, r_score, face_boxes):
                     results.append((mapped, r_score, r_cat))
-        except RuntimeError:
+        except Exception as exc:
+            _LOGGER.warning("ROI HandLandmarker inference error: %s", exc)
             return []
         return results
 
@@ -1104,11 +1250,11 @@ class HandGestureEngine:
     ) -> Tuple[List[List[float]], float, str, bool]:
         """
         Stage-2 ROI Dynamic Zoom Crop:
-        When hand bbox area `< 8%` (`< 0.08`), crop expanded square ROI (`2.2x` around hand)
-        from high-res frame, apply ROI-only sharpening, resize to `224x224`/`256x256`,
+        When hand bbox area `< 8%` (`< 0.08`), crop expanded square ROI (`>= 35%` padding around hand)
+        from high-res frame, apply ROI-only unsharp masking, resize to `224x224`/`256x256`,
         and re-extract 21 landmarks.
         """
-        if self.tasks_detector is None:
+        if not self._has_detector():
             return lm_coords, orig_score, orig_cat, False
 
         xs = [float(p[0]) for p in lm_coords]
@@ -1122,8 +1268,8 @@ class HandGestureEngine:
         if bbox_area >= self.ROI_AREA_THRESHOLD or bw <= 0.008 or bh <= 0.008:
             return lm_coords, orig_score, orig_cat, False
 
-        pad_x = max(bw, bh) * max(self.ROI_PADDING_RATIO, (self.roi_expand_factor - 1.0) * 0.5)
-        pad_y = max(bw, bh) * max(self.ROI_PADDING_RATIO, (self.roi_expand_factor - 1.0) * 0.5)
+        pad_x = max(bw, bh) * max(0.35, self.ROI_PADDING_RATIO, (self.roi_expand_factor - 1.0) * 0.5)
+        pad_y = max(bw, bh) * max(0.35, self.ROI_PADDING_RATIO, (self.roi_expand_factor - 1.0) * 0.5)
         roi_norm = [
             max(0.0, min_x - pad_x),
             max(0.0, min_y - pad_y),
@@ -1158,6 +1304,72 @@ class HandGestureEngine:
             return best_candidate[0], best_candidate[1], best_candidate[2], True
         return lm_coords, orig_score, orig_cat, False
 
+    @staticmethod
+    def _hand_center_norm(lm_coords: Sequence[Sequence[float]]) -> Tuple[float, float]:
+        return (float(lm_coords[MIDDLE_MCP][0]), float(lm_coords[MIDDLE_MCP][1]))
+
+    @classmethod
+    def _merge_unique_hand_candidates(
+        cls,
+        target: List[Tuple[List[List[float]], float, str, bool]],
+        incoming: Sequence[Tuple[List[List[float]], float, str, bool]],
+        min_center_dist: float = 0.08,
+    ) -> None:
+        """Merge hand detections while suppressing duplicate detections of the same physical hand."""
+        for lm_coords, score, cat_name, zoomed in incoming:
+            cx, cy = cls._hand_center_norm(lm_coords)
+            dup_idx: Optional[int] = None
+            for idx, (ex_lm, ex_sc, _, _) in enumerate(target):
+                ecx, ecy = cls._hand_center_norm(ex_lm)
+                if math.hypot(cx - ecx, cy - ecy) < min_center_dist:
+                    dup_idx = idx
+                    break
+            if dup_idx is None:
+                target.append((lm_coords, score, cat_name, zoomed))
+            elif score > target[dup_idx][1]:
+                target[dup_idx] = (lm_coords, score, cat_name, zoomed)
+
+    def _run_frame_scan(
+        self,
+        rgb_frame: np.ndarray,
+        target_wh: Tuple[int, int],
+        face_boxes: Sequence[Sequence[float]],
+        *,
+        roi_target_size: Optional[int],
+        enable_roi_sharpen: bool,
+    ) -> List[Tuple[List[List[float]], float, str, bool]]:
+        fh, fw = rgb_frame.shape[:2]
+        sw, sh = max(160, int(target_wh[0])), max(120, int(target_wh[1]))
+        if fw > sw or fh > sh:
+            scan_rgb = np.ascontiguousarray(cv2.resize(rgb_frame, (sw, sh), interpolation=cv2.INTER_AREA), dtype=np.uint8)
+        else:
+            scan_rgb = np.ascontiguousarray(rgb_frame, dtype=np.uint8)
+
+        found: List[Tuple[List[List[float]], float, str, bool]] = []
+        raw_hits = self._detect_raw_hands(scan_rgb)
+        for lms, score, cat_name in raw_hits:
+            lm_coords = [
+                [
+                    round(float(p.x if hasattr(p, "x") else p[0]), 4),
+                    round(float(p.y if hasattr(p, "y") else p[1]), 4),
+                    round(float(p.z if hasattr(p, "z") else p[2]), 4),
+                ]
+                for p in lms
+            ]
+            if not self.validate_real_hand(lm_coords, score, face_boxes):
+                continue
+            lm_coords, score, cat_name, zoomed = self.refine_hand_roi_zoom(
+                rgb_frame,
+                lm_coords,
+                score,
+                cat_name,
+                face_boxes,
+                roi_target_size=roi_target_size,
+                enable_roi_sharpen=enable_roi_sharpen,
+            )
+            found.append((lm_coords, score, cat_name, zoomed))
+        return found
+
     def detect_hands(
         self,
         rgb_frame: np.ndarray,
@@ -1166,86 +1378,91 @@ class HandGestureEngine:
         teacher_snapshot: Any = None,
         wrist_roi_hints: Optional[Sequence[Sequence[float]]] = None,
         *,
-        search_size: Tuple[int, int] = (320, 180),
+        search_size: Tuple[int, int] = (426, 240),
         roi_target_size: Optional[int] = None,
         enable_roi_sharpen: bool = True,
     ) -> Tuple[Optional[Dict[str, object]], Optional[Dict[str, object]]]:
         """
-        Tracking-First Dual-Resolution ROI Pipeline (Potato-PC + 2.5m-3m Long-Range):
-        - Tracking Stage: When `_last_hand_roi_boxes` exists, crop `2.2x` square ROI from `rgb_frame`
-          (720p), sharpen ONLY the ROI (`224x224`/`256x256`), and run HandLandmarker ONCE.
-        - Search Stage (on initial acquisition or loss): Downscale `rgb_frame` to `search_size`
-          (`320x180` / `426x240`) for `<5ms` fast hand/wrist discovery, then refine small hands
-          via high-res ROI crop + local sharpening.
+        Fail-Open 2-Hand Dual-Resolution Pipeline (30cm–3m & Intel i3 Optimized):
+        1. Stage A (ROI Tracking): When `_last_hand_roi_boxes` exists, crop `2.2x` ROI from full-res
+           frame and sharpen ONLY the ROI (`224x224`/`256x256`).
+           - **Immediate 1-Frame Fallback:** If Stage A misses (0 hands), IMMEDIATELY clear ROI cache
+             and execute Full-Frame Scan right away so ROI never gets stuck on an empty box.
+           - **2-Hand Discovery:** If tracking only 1 hand (`< num_hands`), periodically run a fast
+             frame scan every 4 ticks so raising a 2nd hand is always detected immediately.
+        2. Stage B (Full-Frame / Low-Res Search + Higher-Res Fallback): Runs `search_size`, and if
+           nothing is found on a larger frame (`>= 480p`), immediately falls back to `640x480` full scan.
+        3. Stage C (Proactive Wrist ROI): Checks Teacher Pose wrist hints when still empty.
+        4. **Fail-Open Teacher Lock:** Only filters when `teacher_tracker` confirms multi-person gating;
+           always saves `self.last_raw_hands` (pre-filter) for camera debug verification.
         """
         left_out: Optional[Dict[str, object]] = None
         right_out: Optional[Dict[str, object]] = None
+        self.last_raw_hands = []
+        self.last_rejected_by_teacher_lock = 0
 
-        if self.tasks_detector is None or rgb_frame is None or rgb_frame.size == 0:
+        if not self._has_detector() or rgb_frame is None or rgb_frame.size == 0:
             return None, None
 
         try:
-            raw_candidates: List[Tuple[List[List[float]], float, str, bool]] = []
+            rgb_contig = np.ascontiguousarray(rgb_frame, dtype=np.uint8)
+            fh, fw = rgb_contig.shape[:2]
             now_mono = time.monotonic()
+            self._detect_tick += 1
 
-            # Stage A: Fast Tracking-First ROI Crop from full-res frame (skips full-frame inference!)
+            unfiltered_candidates: List[Tuple[List[List[float]], float, str, bool]] = []
+            roi_missed = False
+
+            # Stage A: Fast Tracking-First ROI Crop
             if self._last_hand_roi_boxes:
                 self.last_tracking_mode = "TRACK_ROI"
-                for roi_box in self._last_hand_roi_boxes[:2]:
-                    for mapped, r_score, r_cat in self.detect_hand_in_roi_box(
-                        rgb_frame,
-                        roi_box,
-                        face_boxes,
-                        roi_target_size=roi_target_size,
-                        enable_roi_sharpen=enable_roi_sharpen,
-                    ):
-                        if teacher_tracker is not None and not teacher_tracker.is_hand_owned_by_locked_teacher(
-                            mapped, teacher_snapshot
-                        ):
-                            continue
-                        raw_candidates.append((mapped, r_score, r_cat, True))
-
-            # Stage B: Low-Res Search Stage (320x180 / 426x240) when no tracked ROI succeeded
-            if not raw_candidates:
-                self.last_tracking_mode = "SEARCH_LOWRES"
-                fh, fw = rgb_frame.shape[:2]
-                sw, sh = max(160, int(search_size[0])), max(120, int(search_size[1]))
-                if fw > sw or fh > sh:
-                    search_rgb = cv2.resize(rgb_frame, (sw, sh), interpolation=cv2.INTER_AREA)
-                else:
-                    search_rgb = rgb_frame
-                mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=search_rgb)
-                h_res = self.tasks_detector.detect(mp_img)
-                if h_res and h_res.hand_landmarks and h_res.handedness:
-                    for lms, handed_list in zip(h_res.hand_landmarks, h_res.handedness):
-                        if not handed_list:
-                            continue
-                        top_cat = handed_list[0]
-                        score = float(top_cat.score)
-                        cat_name = (top_cat.category_name or "").lower()
-                        lm_coords = [
-                            [round(float(p.x), 4), round(float(p.y), 4), round(float(p.z), 4)]
-                            for p in lms
-                        ]
-                        if not self.validate_real_hand(lm_coords, score, face_boxes):
-                            continue
-                        if teacher_tracker is not None and not teacher_tracker.is_hand_owned_by_locked_teacher(
-                            lm_coords, teacher_snapshot
-                        ):
-                            continue
-                        lm_coords, score, cat_name, zoomed = self.refine_hand_roi_zoom(
-                            rgb_frame,
-                            lm_coords,
-                            score,
-                            cat_name,
+                for roi_box in self._last_hand_roi_boxes[: self.num_hands]:
+                    roi_hits = [
+                        (mapped, r_score, r_cat, True)
+                        for mapped, r_score, r_cat in self.detect_hand_in_roi_box(
+                            rgb_contig,
+                            roi_box,
                             face_boxes,
                             roi_target_size=roi_target_size,
                             enable_roi_sharpen=enable_roi_sharpen,
                         )
-                        raw_candidates.append((lm_coords, score, cat_name, zoomed))
+                    ]
+                    self._merge_unique_hand_candidates(unfiltered_candidates, roi_hits)
+
+                if not unfiltered_candidates:
+                    # Immediate 1-Frame Fallback: clear stale ROI boxes immediately!
+                    self._last_hand_roi_boxes = []
+                    roi_missed = True
+
+            # Stage B: Full-Frame Scan on initial acquisition, 1-frame ROI miss, OR 2nd-hand discovery
+            need_full_scan = (not unfiltered_candidates) or (
+                self.num_hands > 1 and len(unfiltered_candidates) < self.num_hands and (self._detect_tick % 4 == 0)
+            )
+            if need_full_scan:
+                self.last_tracking_mode = "FALLBACK_FULL" if roi_missed else "FULL_SCAN"
+                scan_hits = self._run_frame_scan(
+                    rgb_contig,
+                    search_size,
+                    face_boxes,
+                    roi_target_size=roi_target_size,
+                    enable_roi_sharpen=enable_roi_sharpen,
+                )
+                self._merge_unique_hand_candidates(unfiltered_candidates, scan_hits)
+
+                # If low-res scan found 0 hands on a high-res input, do an immediate 640x360 full-frame pass
+                if not unfiltered_candidates and (fw > max(480, int(search_size[0])) or fh > max(340, int(search_size[1]))):
+                    self.last_tracking_mode = "FULL_FRAME_HD"
+                    hd_hits = self._run_frame_scan(
+                        rgb_contig,
+                        (min(fw, 640), min(fh, 360)),
+                        face_boxes,
+                        roi_target_size=roi_target_size,
+                        enable_roi_sharpen=enable_roi_sharpen,
+                    )
+                    self._merge_unique_hand_candidates(unfiltered_candidates, hd_hits)
 
             # Stage C: Proactive Long-Range Recovery via Teacher Pose Wrist Hints
-            if not raw_candidates:
+            if not unfiltered_candidates:
                 probe_rois: List[List[float]] = []
                 if wrist_roi_hints:
                     probe_rois.extend([list(b) for b in wrist_roi_hints])
@@ -1256,22 +1473,40 @@ class HandGestureEngine:
                         )
                     )
                 for roi_box in probe_rois[:2]:
-                    for mapped, r_score, r_cat in self.detect_hand_in_roi_box(
-                        rgb_frame,
-                        roi_box,
-                        face_boxes,
-                        roi_target_size=roi_target_size,
-                        enable_roi_sharpen=enable_roi_sharpen,
-                    ):
-                        if teacher_tracker is not None and not teacher_tracker.is_hand_owned_by_locked_teacher(
-                            mapped, teacher_snapshot
-                        ):
-                            continue
-                        raw_candidates.append((mapped, r_score, r_cat, True))
+                    hint_hits = [
+                        (mapped, r_score, r_cat, True)
+                        for mapped, r_score, r_cat in self.detect_hand_in_roi_box(
+                            rgb_contig,
+                            roi_box,
+                            face_boxes,
+                            roi_target_size=roi_target_size,
+                            enable_roi_sharpen=enable_roi_sharpen,
+                        )
+                    ]
+                    self._merge_unique_hand_candidates(unfiltered_candidates, hint_hits)
+
+            # Apply Teacher Lock (Fail-Open) while preserving raw_hands for visual verification
+            raw_candidates: List[Tuple[List[List[float]], float, str, bool]] = []
+            for lm_coords, score, cat_name, stage2_used in unfiltered_candidates:
+                owned = True
+                if teacher_tracker is not None:
+                    owned = bool(teacher_tracker.is_hand_owned_by_locked_teacher(lm_coords, teacher_snapshot))
+                self.last_raw_hands.append(
+                    {
+                        "score": round(score, 4),
+                        "handedness": cat_name or "unknown",
+                        "lm": lm_coords,
+                        "accepted": owned,
+                    }
+                )
+                if owned:
+                    raw_candidates.append((lm_coords, score, cat_name, stage2_used))
+                else:
+                    self.last_rejected_by_teacher_lock += 1
 
             new_roi_cache: List[List[float]] = []
             valid_hands: List[Tuple[str, Dict[str, object]]] = []
-            for lm_coords, score, cat_name, stage2_used in raw_candidates:
+            for lm_coords, score, cat_name, stage2_used in raw_candidates[: self.num_hands]:
                 xs = [float(p[0]) for p in lm_coords]
                 ys = [float(p[1]) for p in lm_coords]
                 bw = max(0.06, max(xs) - min(xs))
@@ -1300,10 +1535,13 @@ class HandGestureEngine:
                 )
                 hand_obj: Dict[str, object] = {
                     "score": round(score, 4),
+                    "handedness": cat_name or "right",
+                    "center_x": round(float(lm_coords[MIDDLE_MCP][0]), 4),
                     "lm": lm_coords,
                     "gesture_3d": vec_info["gesture"],
                     "pose_tag": vec_info.get("pose_tag", vec_info["gesture"]),
                     "pinch_ratio": vec_info["pinch_ratio"],
+                    "hand_span": vec_info.get("hand_span", 0.20),
                     "finger_states": vec_info["finger_states"],
                     "finger_angles_deg": vec_info["finger_angles_deg"],
                     "palm_normal": vec_info["palm_normal"],
@@ -1317,20 +1555,40 @@ class HandGestureEngine:
             if new_roi_cache:
                 self._last_hand_roi_boxes = new_roi_cache
                 self._last_hand_seen_ts = now_mono
-            elif (now_mono - self._last_hand_seen_ts) > 0.150:
+            else:
+                # Clear immediately on 1-frame miss so next frame always scans full frame
                 self._last_hand_roi_boxes = []
 
             if valid_hands:
                 if len(valid_hands) == 1:
-                    right_out = valid_hands[0][1]
+                    cat_0, obj_0 = valid_hands[0]
+                    if cat_0 == "left":
+                        left_out = obj_0
+                    else:
+                        right_out = obj_0
                 else:
-                    for cat_name, hand_obj in valid_hands:
+                    # Assign distinct Left/Right slots cleanly, never overwriting a 2nd hand!
+                    unassigned: List[Dict[str, object]] = []
+                    for cat_name, hand_obj in valid_hands[:2]:
                         if cat_name == "left" and left_out is None:
                             left_out = hand_obj
-                        else:
+                        elif cat_name == "right" and right_out is None:
                             right_out = hand_obj
+                        else:
+                            unassigned.append(hand_obj)
+                    for hand_obj in unassigned:
+                        if left_out is None and right_out is not None:
+                            if float(hand_obj.get("center_x", 0.5)) <= float(right_out.get("center_x", 0.5)):
+                                left_out = hand_obj
+                            else:
+                                left_out = right_out
+                                right_out = hand_obj
+                        elif right_out is None:
+                            right_out = hand_obj
+                        elif left_out is None:
+                            left_out = hand_obj
 
-            h_px, w_px = rgb_frame.shape[:2]
+            h_px, w_px = rgb_contig.shape[:2]
             self.left_fsm.frame_size = (max(1, int(w_px)), max(1, int(h_px)))
             self.right_fsm.frame_size = (max(1, int(w_px)), max(1, int(h_px)))
             now_sec = time.perf_counter()
@@ -1345,12 +1603,36 @@ class HandGestureEngine:
                 handedness="right",
             )
 
-            for hand_obj, snap, fsm in (
-                (left_out, left_snap, self.left_fsm),
-                (right_out, right_snap, self.right_fsm),
+            for hand_obj, snap, fsm, side_lbl in (
+                (left_out, left_snap, self.left_fsm, "left"),
+                (right_out, right_snap, self.right_fsm, "right"),
             ):
                 if hand_obj is None:
+                    # Hysteretic lock-on across brief 120-180ms motion-blur dropouts
+                    cached_prev = self._last_valid_left if side_lbl == "left" else self._last_valid_right
+                    if snap.in_grace_period and snap.cursor_norm is not None and cached_prev is not None:
+                        synth = dict(cached_prev)
+                        synth["slot"] = side_lbl
+                        synth["fsm_state"] = snap.fsm_state.value
+                        synth["active_gesture"] = snap.active_gesture
+                        synth["gesture"] = snap.active_gesture if snap.active_gesture != "IDLE" else synth.get("gesture", "HOVER")
+                        synth["in_grace_period"] = True
+                        synth["kalman_predicted"] = snap.kalman_predicted
+                        synth["cursor_norm"] = [
+                            round(snap.cursor_norm[0], 4),
+                            round(snap.cursor_norm[1], 4),
+                        ]
+                        if side_lbl == "left":
+                            left_out = synth
+                        else:
+                            right_out = synth
+                    else:
+                        if side_lbl == "left":
+                            self._last_valid_left = None
+                        else:
+                            self._last_valid_right = None
                     continue
+                hand_obj["slot"] = side_lbl
                 hand_obj["fsm_state"] = snap.fsm_state.value
                 hand_obj["active_gesture"] = snap.active_gesture
                 hand_obj["gesture"] = (
@@ -1358,6 +1640,7 @@ class HandGestureEngine:
                     if snap.active_gesture != "IDLE"
                     else str(hand_obj.get("gesture_3d", "HOVER"))
                 )
+                hand_obj["in_grace_period"] = False
                 hand_obj["kalman_predicted"] = snap.kalman_predicted
                 if fsm.last_smoothed_pinch_ratio is not None:
                     hand_obj["pinch_ratio"] = round(fsm.last_smoothed_pinch_ratio, 4)
@@ -1367,6 +1650,12 @@ class HandGestureEngine:
                         round(snap.cursor_norm[1], 4),
                     ]
                 if fsm.last_classify_meta:
+                    hand_obj["pose_tag"] = fsm.last_classify_meta.get(
+                        "pose_tag", hand_obj.get("pose_tag", "HOVER")
+                    )
+                    hand_obj["hand_span"] = fsm.last_classify_meta.get(
+                        "hand_span", hand_obj.get("hand_span", 0.20)
+                    )
                     hand_obj["finger_states"] = fsm.last_classify_meta.get(
                         "finger_states", hand_obj["finger_states"]
                     )
@@ -1379,8 +1668,13 @@ class HandGestureEngine:
                     hand_obj["palm_facing_score"] = fsm.last_classify_meta.get(
                         "palm_facing_score", hand_obj["palm_facing_score"]
                     )
-        except RuntimeError as exc:
-            _ = exc
+                if side_lbl == "left":
+                    self._last_valid_left = dict(hand_obj)
+                else:
+                    self._last_valid_right = dict(hand_obj)
+        except Exception as exc:
+            _LOGGER.exception("HandGestureEngine.detect_hands failed: %s", exc)
+            self._last_hand_roi_boxes = []
 
         return left_out, right_out
 
@@ -1390,14 +1684,221 @@ class HandGestureEngine:
             try:
                 self.tasks_detector.close()
             except Exception as exc:
-                _ = exc
+                _LOGGER.warning("Failed closing HandLandmarker: %s", exc)
             self.tasks_detector = None
         if self.solutions_hands is not None and hasattr(self.solutions_hands, "close"):
             try:
                 self.solutions_hands.close()
             except Exception as exc:
-                _ = exc
+                _LOGGER.warning("Failed closing solutions hands: %s", exc)
             self.solutions_hands = None
+
+
+@dataclass
+class DualHandActionState:
+    primary_side: str = "none"  # "left" | "right" | "none"
+    primary_hand: Optional[Dict[str, object]] = None
+    secondary_hand: Optional[Dict[str, object]] = None
+    two_hand_mode: str = "NONE"  # "NONE" | "DUAL_PINCH_ZOOM" | "DUAL_PALM_PAN" | "OFFHAND_COMMAND"
+    zoom_factor: float = 1.0
+    zoom_center_norm: Optional[Tuple[float, float]] = None
+    pan_delta_norm: Tuple[float, float] = (0.0, 0.0)
+    offhand_command: Optional[str] = None  # "TOGGLE_PEN_ERASER" | "CYCLE_COLOR" | "UNDO" | "SET_PEN"
+    suppress_primary_drawing: bool = False
+    status_label_vi: str = "Chờ tay"
+
+
+class DualHandGestureCoordinator:
+    """
+    Coordinates 1-hand primary interaction and 2-hand collaborative gestures:
+    - Dual Pinch (`PINCH` + `PINCH`) -> smooth Zoom In / Zoom Out around midpoint.
+    - Dual Open Palm (`OPEN_PALM` + `OPEN_PALM`) -> smooth Canvas Pan.
+    - Off-hand quick command while Primary hand holds position:
+      * Off-hand `FIST` -> Toggle Pen / Eraser
+      * Off-hand `TWO_FINGERS` -> Cycle Ink Color
+      * Off-hand `THREE_FINGERS` -> Undo
+      * Off-hand `PINCH` (when primary not pinching) -> Switch back to Pen
+    """
+
+    def __init__(self, primary_pref: str = "auto") -> None:
+        self.primary_pref = primary_pref if primary_pref in ("auto", "left", "right") else "auto"
+        self._sticky_primary: Optional[str] = None
+        self._prev_pinch_dist: Optional[float] = None
+        self._prev_pan_center: Optional[Tuple[float, float]] = None
+        self._offhand_cand: str = ""
+        self._offhand_cand_count: int = 0
+        self._last_offhand_cmd_ts: float = -1e9
+
+    def set_primary_preference(self, pref: str) -> None:
+        if pref in ("auto", "left", "right"):
+            self.primary_pref = pref
+            self._sticky_primary = None
+
+    def reset(self) -> None:
+        self._sticky_primary = None
+        self._prev_pinch_dist = None
+        self._prev_pan_center = None
+        self._offhand_cand = ""
+        self._offhand_cand_count = 0
+
+    @staticmethod
+    def _hand_xy(hand: Dict[str, object]) -> Tuple[float, float]:
+        for key in ("cursor_norm", "cursor"):
+            cn = hand.get(key)
+            if isinstance(cn, (list, tuple)) and len(cn) >= 2:
+                return (float(cn[0]), float(cn[1]))
+        lm = hand.get("lm")
+        if isinstance(lm, (list, tuple)) and len(lm) > MIDDLE_MCP:
+            return (float(lm[MIDDLE_MCP][0]), float(lm[MIDDLE_MCP][1]))
+        return (0.5, 0.5)
+
+    @staticmethod
+    def _norm_pose(hand: Dict[str, object]) -> str:
+        raw = str(hand.get("pose_tag") or hand.get("gesture") or "HOVER").upper()
+        if raw in ("ERASE_PALM", "FIVE_FINGERS"):
+            return "OPEN_PALM"
+        if raw in ("FIST_CANCEL",):
+            return "FIST"
+        if raw in ("DRAW",):
+            return "PINCH"
+        if raw in ("UNDO_THREE",):
+            return "THREE_FINGERS"
+        if raw in ("IDLE", "NONE", ""):
+            return "HOVER"
+        return raw
+
+    def update(
+        self,
+        left_hand: Optional[Dict[str, object]],
+        right_hand: Optional[Dict[str, object]],
+        t_sec: Optional[float] = None,
+    ) -> DualHandActionState:
+        now = time.monotonic() if t_sec is None else float(t_sec)
+
+        if left_hand is None and right_hand is None:
+            self.reset()
+            return DualHandActionState(status_label_vi="Chờ tay")
+
+        # Select primary vs secondary hand deterministically without stealing cursor
+        if left_hand is not None and right_hand is not None:
+            if self.primary_pref == "left":
+                p_side, primary, secondary = "left", left_hand, right_hand
+            elif self.primary_pref == "right":
+                p_side, primary, secondary = "right", right_hand, left_hand
+            elif self._sticky_primary == "left":
+                p_side, primary, secondary = "left", left_hand, right_hand
+            else:
+                p_side, primary, secondary = "right", right_hand, left_hand
+        elif right_hand is not None:
+            p_side, primary, secondary = "right", right_hand, None
+        else:
+            p_side, primary, secondary = "left", left_hand, None
+
+        self._sticky_primary = p_side
+
+        if secondary is None:
+            self._prev_pinch_dist = None
+            self._prev_pan_center = None
+            self._offhand_cand = ""
+            self._offhand_cand_count = 0
+            pose = str(primary.get("pose_tag", "HOVER"))
+            return DualHandActionState(
+                primary_side=p_side,
+                primary_hand=primary,
+                secondary_hand=None,
+                two_hand_mode="NONE",
+                status_label_vi=f"1 Tay ({p_side.upper()}): {pose}",
+            )
+
+        # Both hands active!
+        p_pose = self._norm_pose(primary)
+        s_pose = self._norm_pose(secondary)
+        p_pr = float(primary.get("pinch_ratio") or 1.0)
+        s_pr = float(secondary.get("pinch_ratio") or 1.0)
+        p_xy = self._hand_xy(primary)
+        s_xy = self._hand_xy(secondary)
+
+        # 1. Dual Pinch Zoom (both hands pinching)
+        both_pinch = (p_pose == "PINCH" or p_pr < 0.33) and (s_pose == "PINCH" or s_pr < 0.33)
+        if both_pinch:
+            self._prev_pan_center = None
+            self._offhand_cand = ""
+            self._offhand_cand_count = 0
+            dist = max(0.03, math.hypot(p_xy[0] - s_xy[0], p_xy[1] - s_xy[1]))
+            mid = (0.5 * (p_xy[0] + s_xy[0]), 0.5 * (p_xy[1] + s_xy[1]))
+            zoom_factor = 1.0
+            if self._prev_pinch_dist is not None and abs(dist - self._prev_pinch_dist) > 0.005:
+                raw_ratio = dist / max(0.03, self._prev_pinch_dist)
+                zoom_factor = max(0.85, min(1.15, raw_ratio))
+            self._prev_pinch_dist = dist
+            return DualHandActionState(
+                primary_side=p_side,
+                primary_hand=primary,
+                secondary_hand=secondary,
+                two_hand_mode="DUAL_PINCH_ZOOM",
+                zoom_factor=round(zoom_factor, 4),
+                zoom_center_norm=mid,
+                suppress_primary_drawing=True,
+                status_label_vi="2 Tay: Thu/Phóng bảng (Dual Pinch)",
+            )
+        self._prev_pinch_dist = None
+
+        # 2. Dual Open Palm Pan (both hands open palm)
+        if p_pose == "OPEN_PALM" and s_pose == "OPEN_PALM":
+            self._offhand_cand = ""
+            self._offhand_cand_count = 0
+            mid = (0.5 * (p_xy[0] + s_xy[0]), 0.5 * (p_xy[1] + s_xy[1]))
+            dx, dy = 0.0, 0.0
+            if self._prev_pan_center is not None:
+                raw_dx = mid[0] - self._prev_pan_center[0]
+                raw_dy = mid[1] - self._prev_pan_center[1]
+                if math.hypot(raw_dx, raw_dy) > 0.003:
+                    dx, dy = max(-0.15, min(0.15, raw_dx)), max(-0.15, min(0.15, raw_dy))
+            self._prev_pan_center = mid
+            return DualHandActionState(
+                primary_side=p_side,
+                primary_hand=primary,
+                secondary_hand=secondary,
+                two_hand_mode="DUAL_PALM_PAN",
+                pan_delta_norm=(round(dx, 5), round(dy, 5)),
+                suppress_primary_drawing=True,
+                status_label_vi="2 Tay: Kéo trượt bảng (Dual Pan)",
+            )
+        self._prev_pan_center = None
+
+        # 3. Off-hand quick tool command while primary hand keeps its position/drawing
+        cmd_map = {
+            "FIST": "TOGGLE_PEN_ERASER",
+            "TWO_FINGERS": "CYCLE_COLOR",
+            "THREE_FINGERS": "UNDO",
+            "PINCH": "SET_PEN",
+        }
+        mapped_cmd = cmd_map.get(s_pose, "")
+        triggered_cmd: Optional[str] = None
+        if mapped_cmd:
+            if mapped_cmd == self._offhand_cand:
+                self._offhand_cand_count += 1
+            else:
+                self._offhand_cand = mapped_cmd
+                self._offhand_cand_count = 1
+            if self._offhand_cand_count >= 2 and (now - self._last_offhand_cmd_ts) >= 0.70:
+                self._last_offhand_cmd_ts = now
+                triggered_cmd = mapped_cmd
+                self._offhand_cand_count = 0
+        else:
+            self._offhand_cand = ""
+            self._offhand_cand_count = 0
+
+        return DualHandActionState(
+            primary_side=p_side,
+            primary_hand=primary,
+            secondary_hand=secondary,
+            two_hand_mode="OFFHAND_COMMAND" if triggered_cmd else "NONE",
+            offhand_command=triggered_cmd,
+            suppress_primary_drawing=False,
+            status_label_vi=f"2 Tay: Chính={p_pose} | Phụ={s_pose}"
+            + (f" -> {triggered_cmd}" if triggered_cmd else ""),
+        )
 
 
 def catmull_rom_spline(
@@ -1449,3 +1950,182 @@ def catmull_rom_spline(
             out.append((cx, cy))
 
     return out
+
+
+class SlideNavigationGestureDetector:
+    """
+    Detects non-drawing classroom presentation air gestures:
+    1. Horizontal Air-Swipe (`SLIDE_NEXT` / `SLIDE_PREV`) with velocity threshold + `600ms` cooldown
+       to prevent double-skipping slides.
+    2. Two-Finger Peace-Sign Hold (`TWO_FINGERS` held steady for `800ms`) -> `SLIDE_NEXT`.
+    3. Pinky Question Hold (`QUESTION_HOLD` held steady for `900ms`) -> `ASK_SLIDE_AI`.
+    """
+
+    def __init__(
+        self,
+        swipe_cooldown_sec: float = 0.60,
+        swipe_min_dx: float = 0.16,
+        swipe_min_vel: float = 0.85,
+        swipe_window_sec: float = 0.28,
+        peace_hold_sec: float = 0.80,
+        question_hold_sec: float = 0.90,
+    ) -> None:
+        self.swipe_cooldown_sec = max(0.35, float(swipe_cooldown_sec))
+        self.swipe_min_dx = max(0.08, float(swipe_min_dx))
+        self.swipe_min_vel = max(0.35, float(swipe_min_vel))
+        self.swipe_window_sec = max(0.12, float(swipe_window_sec))
+        self.peace_hold_sec = max(0.40, float(peace_hold_sec))
+        self.question_hold_sec = max(0.45, float(question_hold_sec))
+
+        self._trail: Deque[Tuple[float, float, float]] = deque(maxlen=24)
+        self._last_trigger_ts: float = -1e9
+        self._peace_since_ts: Optional[float] = None
+        self._peace_anchor: Optional[Tuple[float, float]] = None
+        self._peace_fired: bool = False
+        self._question_since_ts: Optional[float] = None
+        self._question_anchor: Optional[Tuple[float, float]] = None
+        self._question_fired: bool = False
+
+    def reset(self) -> None:
+        self._trail.clear()
+        self._peace_since_ts = None
+        self._peace_anchor = None
+        self._peace_fired = False
+        self._question_since_ts = None
+        self._question_anchor = None
+        self._question_fired = False
+
+    def update(
+        self,
+        primary_hand: Optional[Dict[str, object]],
+        *,
+        suppress: bool = False,
+        is_drawing: bool = False,
+        t_sec: Optional[float] = None,
+    ) -> Dict[str, object]:
+        now = time.monotonic() if t_sec is None else float(t_sec)
+        cooldown_rem_ms = max(0.0, (self.swipe_cooldown_sec - (now - self._last_trigger_ts)) * 1000.0)
+
+        if primary_hand is None or suppress or is_drawing:
+            self.reset()
+            return {
+                "nav_event": None,
+                "peace_hold_progress": 0.0,
+                "question_hold_progress": 0.0,
+                "cooldown_remaining_ms": round(cooldown_rem_ms, 1),
+            }
+
+        pose_tag = str(primary_hand.get("pose_tag") or primary_hand.get("gesture") or "HOVER").upper()
+        pinch_ratio = float(primary_hand.get("pinch_ratio") or 1.0)
+        cn = primary_hand.get("cursor_norm")
+        if isinstance(cn, (list, tuple)) and len(cn) >= 2:
+            xy = (float(cn[0]), float(cn[1]))
+        else:
+            lm = primary_hand.get("lm")
+            if isinstance(lm, (list, tuple)) and len(lm) > MIDDLE_MCP:
+                xy = (float(lm[MIDDLE_MCP][0]), float(lm[MIDDLE_MCP][1]))
+            else:
+                xy = (0.5, 0.5)
+
+        if pose_tag == "PINCH" or pinch_ratio < 0.34:
+            self.reset()
+            return {
+                "nav_event": None,
+                "peace_hold_progress": 0.0,
+                "question_hold_progress": 0.0,
+                "cooldown_remaining_ms": round(cooldown_rem_ms, 1),
+            }
+
+        # 1. Two-Finger Peace-Sign Hold (800ms -> SLIDE_NEXT)
+        peace_prog = 0.0
+        if pose_tag == "TWO_FINGERS":
+            if self._peace_since_ts is None or self._peace_anchor is None:
+                self._peace_since_ts = now
+                self._peace_anchor = xy
+                self._peace_fired = False
+            else:
+                drift = math.hypot(xy[0] - self._peace_anchor[0], xy[1] - self._peace_anchor[1])
+                if drift > 0.075:
+                    self._peace_since_ts = now
+                    self._peace_anchor = xy
+                    self._peace_fired = False
+            held = now - (self._peace_since_ts or now)
+            peace_prog = min(1.0, max(0.0, held / self.peace_hold_sec))
+            if held >= self.peace_hold_sec and not self._peace_fired and cooldown_rem_ms <= 0.0:
+                self._peace_fired = True
+                self._last_trigger_ts = now
+                self._trail.clear()
+                return {
+                    "nav_event": "SLIDE_NEXT",
+                    "peace_hold_progress": 1.0,
+                    "question_hold_progress": 0.0,
+                    "cooldown_remaining_ms": round(self.swipe_cooldown_sec * 1000.0, 1),
+                }
+        else:
+            self._peace_since_ts = None
+            self._peace_anchor = None
+            self._peace_fired = False
+
+        # 2. Pinky Question Hold (900ms -> ASK_SLIDE_AI)
+        question_prog = 0.0
+        if pose_tag == "QUESTION_HOLD":
+            if self._question_since_ts is None or self._question_anchor is None:
+                self._question_since_ts = now
+                self._question_anchor = xy
+                self._question_fired = False
+            else:
+                drift = math.hypot(xy[0] - self._question_anchor[0], xy[1] - self._question_anchor[1])
+                if drift > 0.08:
+                    self._question_since_ts = now
+                    self._question_anchor = xy
+                    self._question_fired = False
+            held_q = now - (self._question_since_ts or now)
+            question_prog = min(1.0, max(0.0, held_q / self.question_hold_sec))
+            if held_q >= self.question_hold_sec and not self._question_fired and cooldown_rem_ms <= 0.0:
+                self._question_fired = True
+                self._last_trigger_ts = now
+                self._trail.clear()
+                return {
+                    "nav_event": "ASK_SLIDE_AI",
+                    "peace_hold_progress": round(peace_prog, 3),
+                    "question_hold_progress": 1.0,
+                    "cooldown_remaining_ms": round(self.swipe_cooldown_sec * 1000.0, 1),
+                }
+        else:
+            self._question_since_ts = None
+            self._question_anchor = None
+            self._question_fired = False
+
+        # 3. Horizontal Air-Swipe (OPEN_PALM / HOVER / TWO_FINGERS / INDEX) with 600ms cooldown
+        if pose_tag in ("OPEN_PALM", "HOVER", "TWO_FINGERS", "INDEX"):
+            self._trail.append((xy[0], xy[1], now))
+            while self._trail and (now - self._trail[0][2]) > self.swipe_window_sec:
+                self._trail.popleft()
+            if cooldown_rem_ms <= 0.0 and len(self._trail) >= 3:
+                for ox, oy, ot in self._trail:
+                    dt = now - ot
+                    if dt < 0.04 or dt > self.swipe_window_sec:
+                        continue
+                    dx = xy[0] - ox
+                    dy = xy[1] - oy
+                    vel_x = abs(dx) / dt
+                    if abs(dx) >= self.swipe_min_dx and vel_x >= self.swipe_min_vel and abs(dx) >= 2.0 * abs(dy):
+                        ev = "SLIDE_NEXT" if dx < 0.0 else "SLIDE_PREV"
+                        self._last_trigger_ts = now
+                        self._trail.clear()
+                        self._peace_since_ts = None
+                        return {
+                            "nav_event": ev,
+                            "peace_hold_progress": 0.0,
+                            "question_hold_progress": round(question_prog, 3),
+                            "cooldown_remaining_ms": round(self.swipe_cooldown_sec * 1000.0, 1),
+                        }
+        else:
+            self._trail.clear()
+
+        return {
+            "nav_event": None,
+            "peace_hold_progress": round(peace_prog, 3),
+            "question_hold_progress": round(question_prog, 3),
+            "cooldown_remaining_ms": round(cooldown_rem_ms, 1),
+        }
