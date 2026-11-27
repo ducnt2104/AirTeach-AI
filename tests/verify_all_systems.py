@@ -391,28 +391,32 @@ def test_synthetic_1hand_swipe_and_dual_hand_gestures() -> None:
 # 3. RIGHT-CLICK RADIAL PIE MENU (ALL 8 SECTORS + 20PX DEADZONE + SIGNAL)
 # =============================================================================
 def test_radial_pie_menu_angles_deadzone_and_canvas_mouse() -> None:
-    """Verify Blender-style Right-Click Radial Pie Menu across all 8 sectors, 20px deadzone & Qt signals."""
+    """Verify Right-Click Radial Pie Menu across all 8 sectors, 22px deadzone, outer sub-ring & Qt signals."""
     _ensure_qapp()
     import main
-    from cv_engine.radial_pie_menu import PIE_MENU_SLICES, resolve_pie_slice
+    from cv_engine.radial_pie_menu import PIE_MENU_SLICES, resolve_pie_slice, resolve_pie_sub_item
 
-    assert resolve_pie_slice(0.0, 0.0, deadzone_px=20.0) is None
-    assert resolve_pie_slice(12.0, -14.0, deadzone_px=20.0) is None
+    assert resolve_pie_slice(0.0, 0.0, deadzone_px=22.0) is None
+    assert resolve_pie_slice(12.0, -14.0, deadzone_px=22.0) is None
 
     expected_dirs = [
-        (0.0, -75.0, "PEN"),
-        (55.0, -55.0, "HIGHLIGHTER"),
-        (75.0, 0.0, "PAN"),
-        (55.0, 55.0, "ASK_AI_REGION"),
-        (0.0, 75.0, "ERASER"),
-        (-55.0, 55.0, "UNDO"),
-        (-75.0, 0.0, "LASER"),
-        (-55.0, -55.0, "TOGGLE_SMART_SHAPE"),
+        (0.0, -85.0, "PEN"),
+        (62.0, -62.0, "ERASER"),
+        (85.0, 0.0, "SELECT"),
+        (62.0, 62.0, "PAN"),
+        (0.0, 85.0, "TEXT"),
+        (-62.0, 62.0, "SHAPES"),
+        (-85.0, 0.0, "UNDO"),
+        (-62.0, -62.0, "CLEAR_OR_NEW"),
     ]
     for exp_idx, (dx, dy, exp_action) in enumerate(expected_dirs):
-        idx = resolve_pie_slice(dx, dy, deadzone_px=20.0)
+        idx = resolve_pie_slice(dx, dy, deadzone_px=22.0)
         assert idx == exp_idx
         assert PIE_MENU_SLICES[idx].action_id == exp_action
+
+    # Verify outer sub-ring resolution (e.g., PEN -> center color #F43F5E at North, r=170px)
+    sub_pen = resolve_pie_sub_item(0.0, -170.0, 0)
+    assert sub_pen is not None and sub_pen.action_id.startswith("COLOR:")
 
     canvas = main.SmartboardCanvas()
     canvas.resize(1000, 700)
@@ -430,7 +434,6 @@ def test_radial_pie_menu_angles_deadzone_and_canvas_mouse() -> None:
     # Test ALL 8 directional sectors end-to-end through Qt mouse Press -> Move -> Release
     for dx, dy, exp_action in expected_dirs:
         emitted_actions.clear()
-        prev_ss = canvas.smart_shape_enabled
         target_pt = QPointF(center.x() + dx, center.y() + dy)
         canvas.mousePressEvent(_mouse_ev(QMouseEvent.Type.MouseButtonPress, center, Qt.RightButton, Qt.RightButton))
         assert canvas.pie_menu.isVisible() is True
@@ -438,16 +441,22 @@ def test_radial_pie_menu_angles_deadzone_and_canvas_mouse() -> None:
         canvas.mouseReleaseEvent(_mouse_ev(QMouseEvent.Type.MouseButtonRelease, target_pt, Qt.RightButton, Qt.NoButton))
         assert canvas.pie_menu.isVisible() is False
         assert emitted_actions == [exp_action], f"Sector ({dx},{dy}) expected {exp_action}, got {emitted_actions}"
-        if exp_action in ("PEN", "HIGHLIGHTER", "PAN", "ERASER", "LASER"):
+        if exp_action in ("PEN", "ERASER", "SELECT", "PAN", "TEXT"):
             assert canvas.active_tool == exp_action
-        elif exp_action == "ASK_AI_REGION":
-            assert canvas.active_tool == "SELECT_REGION"
-        elif exp_action == "TOGGLE_SMART_SHAPE":
-            assert canvas.smart_shape_enabled is (not prev_ss)
+        elif exp_action == "SHAPES":
+            assert canvas.active_tool == "SHAPE"
 
     assert len(emitted_canvas_tools) == 8
 
-    # Deadzone cancel (< 20px move) emits NOTHING and preserves active tool
+    # Test outer sub-ring trigger via mouse drag (North -> r=172px -> quick color change)
+    emitted_actions.clear()
+    canvas.mousePressEvent(_mouse_ev(QMouseEvent.Type.MouseButtonPress, center, Qt.RightButton, Qt.RightButton))
+    canvas.mouseMoveEvent(_mouse_ev(QMouseEvent.Type.MouseMove, QPointF(center.x(), center.y() - 90.0), Qt.NoButton, Qt.RightButton))
+    canvas.mouseMoveEvent(_mouse_ev(QMouseEvent.Type.MouseMove, QPointF(center.x(), center.y() - 172.0), Qt.NoButton, Qt.RightButton))
+    canvas.mouseReleaseEvent(_mouse_ev(QMouseEvent.Type.MouseButtonRelease, QPointF(center.x(), center.y() - 172.0), Qt.RightButton, Qt.NoButton))
+    assert emitted_actions and emitted_actions[0].startswith("COLOR:")
+
+    # Deadzone cancel (< 22px move) emits NOTHING and preserves active tool
     canvas.active_tool = "ERASER"
     emitted_actions.clear()
     canvas.mousePressEvent(_mouse_ev(QMouseEvent.Type.MouseButtonPress, center, Qt.RightButton, Qt.RightButton))
@@ -1013,16 +1022,17 @@ assert win.canvas.mini_hud.isVisible() is False
 win._on_toggle_mini_hud()
 assert win.canvas.mini_hud.isVisible() is True
 
-# Open [? Hướng Dẫn] 4-tab visual guide dialog
+# Open [? Hướng Dẫn] 5-tab visual guide dialog (including Live Gesture Sandbox)
 guide = UserGuideDialog(win)
 guide.show()
 app.processEvents()
-assert guide.tabs.count() == 4
-tab_titles = [guide.tabs.tabText(i) for i in range(4)]
+assert guide.tabs.count() == 5
+tab_titles = [guide.tabs.tabText(i) for i in range(5)]
 assert any("1 Tay" in t for t in tab_titles)
 assert any("2 Tay" in t for t in tab_titles)
 assert any("Bảng Tròn" in t for t in tab_titles)
 assert any("AI Local" in t for t in tab_titles)
+assert any("Sandbox" in t or "Thử Cử Chỉ" in t for t in tab_titles)
 guide.close()
 
 # Open [Quản Lý AI Local] dialog

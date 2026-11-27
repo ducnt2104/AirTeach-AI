@@ -86,11 +86,12 @@ class LocalAiRunResult:
 
 # Rich pedagogical System Prompt prefix maximizing explanation depth & KV-Cache reuse
 IMMUTABLE_SYSTEM_PROMPT_PREFIX = (
-    "Bạn là Trợ lý Sư phạm AirTeach AI (chuyên gia giáo dục & khoa học kỹ thuật). "
-    "Hãy trả lời toàn diện, có cấu trúc mạch lạc, chuyên sâu và dễ hiểu bằng tiếng Việt: "
-    "dùng tiêu đề Markdown rõ ràng, phân tích từng bước (step-by-step), nêu ví dụ minh họa, bảng so sánh (nếu phù hợp), "
-    "và lưu ý lỗi sai thường gặp. Không cắt ngắn câu trả lời. "
-    "Không dùng thẻ giả <arrow> hay $$$ vỡ; dùng mũi tên chuẩn →, ⇒, ⇔ và công thức LaTeX $...$ hoặc $$...$$ hợp lệ."
+    "Bạn là Trợ lý Giảng dạy chuyên sâu của AirTeach AI (chuyên gia sư phạm, khoa học và kỹ thuật). "
+    "Nguyên tắc trả lời bắt buộc bằng tiếng Việt:\n"
+    "1. Trình bày đầy đủ, sâu sắc, mạch lạc — TUYỆT ĐỐI không trả lời cụt lủn hoặc cắt ngang ý.\n"
+    "2. Tổ chức câu trả lời rõ ràng bằng tiêu đề Markdown (##, ###), danh sách có cấu trúc, bảng so sánh Markdown khi cần đối chiếu, và ví dụ minh họa cụ thể.\n"
+    "3. Với bài toán / lý / hóa / kỹ thuật: giải chi tiết từng bước (Step-by-step), giải thích bản chất công thức, chỉ rõ lỗi sai học sinh thường gặp và tóm tắt kết luận.\n"
+    "4. Sử dụng công thức LaTeX chuẩn ($...$ cho công thức nội dòng, $$...$$ cho công thức khối) và mũi tên chuẩn (→, ⇒, ⇔); không dùng thẻ giả <arrow> hay $$$."
 )
 
 RECOMMENDED_LOCAL_MODELS: Tuple[str, ...] = (
@@ -432,7 +433,7 @@ class LocalAIManager:
                 "messages": messages,
                 "stream": True,
                 "keep_alive": "15m",
-                "options": {"temperature": 0.25, "num_ctx": 8192, "num_predict": 4096},
+                "options": {"temperature": 0.25, "num_ctx": 8192, "num_predict": 8192},
             }
         else:
             url = f"{base_url}/v1/chat/completions"
@@ -440,7 +441,7 @@ class LocalAIManager:
                 "model": model_id,
                 "messages": messages,
                 "temperature": 0.25,
-                "max_tokens": 4096,
+                "max_tokens": 8192,
                 "stream": True,
             }
 
@@ -597,7 +598,7 @@ class LocalAIManager:
                     ok_g, text_g, err_g = backend.stream_chat(
                         gguf_path=gguf_file,
                         messages=msgs_txt,
-                        max_tokens=4096,
+                        max_tokens=6144,
                         on_token=_gguf_tok if on_token is not None else None,
                     )
                     total_g_ms = (time.perf_counter() - t_gguf0) * 1000.0
@@ -700,7 +701,7 @@ class LocalAIManager:
             on_token=_cloud_token if (on_token is not None and not structured_json) else None,
             system_instruction=system_prompt,
             history=history,
-            max_output_tokens=4096,
+            max_output_tokens=8192,
         )
         total_ms = (time.perf_counter() - t0) * 1000.0
         if res.ok:

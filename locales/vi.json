@@ -1,0 +1,25 @@
+{
+  "app_name": "AirTeach AI",
+  "organization": "DNT - Victer",
+  "tagline": "Bảng Trắng Thông Minh Không Chạm • Rust Core & AI Cloud/Local",
+  "tools": {
+    "select": "Chọn Object (V)",
+    "pen": "Bút Vẽ",
+    "highlighter": "Bút Dạ Quang",
+    "eraser": "Tẩy Nét",
+    "shape": "Hình Khối (S)",
+    "text": "Thêm Chữ (T)",
+    "sticky": "Ghi Chú (N)",
+    "pan": "Di Chuyển Bảng (Space)",
+    "laser": "Con Trỏ Laser",
+    "lasso": "Khoanh Vùng AI"
+  },
+  "gestures": {
+    "one_hand_draw": "1 Ngón Trỏ: Đang Vẽ",
+    "one_hand_hover": "2 Ngón (Chữ V): Con Trỏ / Hover",
+    "one_hand_grab": "Chụm Cái + Trỏ: Đang Kéo Object",
+    "one_hand_erase": "Xòe 5 Ngón: Đang Tẩy",
+    "two_hand_zoom": "2 Tay: Đang Zoom",
+    "two_hand_pan": "2 Tay: Đang Di Chuyển Bảng"
+  }
+}

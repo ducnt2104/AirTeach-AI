@@ -525,6 +525,146 @@ class OutputSanitizer:
         return s.strip()
 
     @classmethod
+    def _split_fenced_code_blocks(cls, raw: str) -> List[Tuple[str, str, str]]:
+        """
+        Split raw Markdown into `("text", "", payload)` and `("code", lang, code_body)` segments
+        BEFORE LaTeX/tag normalization so code syntax (`->`, `=>`, `_`, `&`, indentation, `<tags>`)
+        inside fenced blocks is preserved verbatim.
+        """
+        normalized_nl = str(raw).replace("\r\n", "\n").replace("\r", "\n")
+        lines = normalized_nl.split("\n")
+        segments: List[Tuple[str, str, str]] = []
+        text_buf: List[str] = []
+        i = 0
+        n = len(lines)
+        while i < n:
+            stripped = lines[i].strip()
+            if stripped.startswith("```"):
+                if text_buf:
+                    segments.append(("text", "", "\n".join(text_buf)))
+                    text_buf = []
+                lang = stripped[3:].strip()
+                code_lines: List[str] = []
+                i += 1
+                while i < n and not lines[i].strip().startswith("```"):
+                    code_lines.append(lines[i])
+                    i += 1
+                if i < n:
+                    i += 1
+                segments.append(("code", lang, "\n".join(code_lines)))
+                continue
+            text_buf.append(lines[i])
+            i += 1
+        if text_buf:
+            segments.append(("text", "", "\n".join(text_buf)))
+        return segments
+
+    @classmethod
+    def _render_code_block_html(
+        cls,
+        lang: str,
+        code_body: str,
+        *,
+        code_bg: str,
+        code_color: str,
+        border_col: str,
+        lang_color: str,
+    ) -> str:
+        lang_hdr = (
+            f'<div style="color:{lang_color};font-size:10px;font-weight:700;'
+            f'text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">'
+            f'{html.escape(lang)}</div>'
+            if lang
+            else ""
+        )
+        code_esc = html.escape(code_body)
+        return (
+            f'<div style="margin:6px 0;padding:8px 10px;background:{code_bg};'
+            f'border:1px solid {border_col};border-radius:8px;">'
+            f'{lang_hdr}<pre style="margin:0;white-space:pre-wrap;'
+            f'font-family:Consolas,monospace;font-size:12px;color:{code_color};">'
+            f'<code style="font-family:Consolas,monospace;color:{code_color};'
+            f'background:transparent;">{code_esc}</code></pre></div>'
+        )
+
+    @classmethod
+    def _render_inline_with_math(
+        cls,
+        raw_line: str,
+        *,
+        accent_color: str,
+        arrow_color: str,
+        code_bg: str,
+        render_math_images: bool = True,
+    ) -> str:
+        """Render a single Markdown line/cell supporting inline code, inline `$...$` math, and arrows."""
+        if not raw_line:
+            return ""
+        inline_pattern = re.compile(r"`([^`\n]+?)`|\$([^$\n]+?)\$")
+        out: List[str] = []
+        pos = 0
+        for m in inline_pattern.finditer(raw_line):
+            if m.start() > pos:
+                chunk = raw_line[pos : m.start()]
+                lead = " " if chunk[:1].isspace() else ""
+                trail = " " if chunk[-1:].isspace() else ""
+                cleaned = cls.strip_all_stray_dollars(cls.latex_expr_to_unicode(chunk))
+                if cleaned:
+                    out.append(
+                        lead
+                        + cls._inline_markdown_to_html(cleaned, accent_color, arrow_color)
+                        + trail
+                    )
+                elif chunk:
+                    out.append(" ")
+
+            if m.group(1) is not None:
+                code_esc = html.escape(m.group(1))
+                out.append(
+                    f'<code style="background:{code_bg};color:{accent_color};'
+                    f'font-family:Consolas,monospace;font-weight:700;padding:1px 4px;'
+                    f'border-radius:4px;">{code_esc}</code>'
+                )
+            else:
+                payload = m.group(2) or ""
+                needs_raster = any(
+                    k in payload for k in (r"\frac", r"\dfrac", r"\sqrt", r"\int", r"\sum", r"\lim")
+                )
+                rendered_png = (
+                    render_latex_to_png_bytes(payload, color_hex=accent_color, fontsize=11, dpi=120)
+                    if (render_math_images and needs_raster)
+                    else None
+                )
+                if rendered_png:
+                    b64 = base64.b64encode(rendered_png).decode("ascii")
+                    alt = html.escape(cls.latex_expr_to_unicode(payload))
+                    out.append(
+                        f'<img style="vertical-align:middle;" src="data:image/png;base64,{b64}" alt="{alt}"/>'
+                    )
+                else:
+                    uni = html.escape(cls.latex_expr_to_unicode(payload))
+                    out.append(
+                        f'<span style="color:{accent_color}; font-weight:700;">{uni}</span>'
+                    )
+            pos = m.end()
+
+        if pos < len(raw_line):
+            chunk = raw_line[pos:]
+            lead = " " if (pos > 0 and chunk[:1].isspace()) else ""
+            trail = " " if chunk[-1:].isspace() else ""
+            cleaned = cls.strip_all_stray_dollars(cls.latex_expr_to_unicode(chunk))
+            if cleaned:
+                out.append(
+                    lead
+                    + cls._inline_markdown_to_html(cleaned, accent_color, arrow_color)
+                    + (trail if pos > 0 else "")
+                )
+            elif chunk and pos > 0:
+                out.append(" ")
+
+        return "".join(out)
+
+    @classmethod
     def to_rich_html(
         cls,
         raw: str,
@@ -533,39 +673,71 @@ class OutputSanitizer:
     ) -> str:
         """
         Sanitize AI text into crisp Qt-ready Rich HTML:
+        - Fenced code blocks (` ```lang ... ``` `) rendered verbatim in styled `<pre><code>` blocks
+        - Markdown tables (`| Header | ... |`) rendered as clean bordered HTML `<table>`s
+          (preserving inline math inside cells) in both Dark and Light mode
         - `$$...$$` rendered to crisp offline `matplotlib.mathtext` PNG `<img>` (with Unicode fallback)
-        - Inline complex math (`$...$` containing `\\frac`, `\\sqrt`, `\\int`, `\\sum`, `^`, `_`)
-          also rendered or formatted sharply in Unicode
+        - Inline complex math (`$...$`) rendered sharply via PNG or Unicode
         - `<arrow>`, `->`, `=>`, `<=>` rendered with crisp inline SVG vector arrows
-        - Zero literal `$`, `$$$`, or raw HTML tags ever displayed.
+        - Zero literal `$`, `$$$`, or raw HTML tags ever displayed outside code blocks.
         """
         text_color = "#F8FAFC" if dark_mode else "#0F172A"
         accent_color = "#00F5D4" if dark_mode else "#4F46E5"
         arrow_color = "#06B6D4" if dark_mode else "#2563EB"
         card_bg = "rgba(30, 41, 59, 0.72)" if dark_mode else "rgba(238, 242, 255, 0.9)"
+        code_bg = "#0F172A" if dark_mode else "#F1F5F9"
+        code_color = "#E2E8F0" if dark_mode else "#0F172A"
+        table_hdr_bg = "#1E293B" if dark_mode else "#E2E8F0"
+        table_alt_bg = "rgba(15, 23, 42, 0.45)" if dark_mode else "#F8FAFC"
+        lang_color = "#94A3B8" if dark_mode else "#64748B"
         border_col = "#334155" if dark_mode else "#CBD5E1"
 
-        s = cls.normalize_delimiters_and_tags(raw)
-        if not s:
+        if not raw or not str(raw).strip():
             return ""
 
-        tokens: List[Tuple[str, str]] = []  # ("math_block" | "math_inline" | "text", payload)
-        pos = 0
-        pattern = re.compile(r"\$\$(.+?)\$\$|\$([^$\n]+?)\$", re.DOTALL)
-        for m in pattern.finditer(s):
-            if m.start() > pos:
-                tokens.append(("text", s[pos : m.start()]))
-            if m.group(1) is not None:
-                tokens.append(("math_block", m.group(1)))
-            else:
-                tokens.append(("math_inline", m.group(2) or ""))
-            pos = m.end()
-        if pos < len(s):
-            tokens.append(("text", s[pos:]))
-
+        top_segments = cls._split_fenced_code_blocks(raw)
         html_parts: List[str] = []
-        for kind, payload in tokens:
-            if kind == "math_block":
+
+        block_math_re = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
+
+        for seg_kind, seg_lang, seg_payload in top_segments:
+            if seg_kind == "code":
+                html_parts.append(
+                    cls._render_code_block_html(
+                        seg_lang,
+                        seg_payload,
+                        code_bg=code_bg,
+                        code_color=code_color,
+                        border_col=border_col,
+                        lang_color=lang_color,
+                    )
+                )
+                continue
+
+            s = cls.normalize_delimiters_and_tags(seg_payload)
+            if not s:
+                continue
+
+            pos = 0
+            for m in block_math_re.finditer(s):
+                if m.start() > pos:
+                    html_parts.append(
+                        cls._format_markdown_segment_html(
+                            s[pos : m.start()],
+                            text_color=text_color,
+                            accent_color=accent_color,
+                            arrow_color=arrow_color,
+                            card_bg=card_bg,
+                            border_col=border_col,
+                            code_bg=code_bg,
+                            code_color=code_color,
+                            table_hdr_bg=table_hdr_bg,
+                            table_alt_bg=table_alt_bg,
+                            lang_color=lang_color,
+                            render_math_images=render_math_images,
+                        )
+                    )
+                payload = m.group(1)
                 rendered_png = (
                     render_latex_to_png_bytes(payload, color_hex=accent_color, fontsize=14, dpi=140)
                     if render_math_images
@@ -586,36 +758,23 @@ class OutputSanitizer:
                         f'border:1px solid {border_col}; border-radius:8px; color:{accent_color}; '
                         f'font-weight:700; text-align:center;">{uni}</div>'
                     )
-            elif kind == "math_inline":
-                needs_raster = any(
-                    k in payload for k in (r"\frac", r"\dfrac", r"\sqrt", r"\int", r"\sum", r"\lim")
-                )
-                rendered_png = (
-                    render_latex_to_png_bytes(payload, color_hex=accent_color, fontsize=11, dpi=120)
-                    if (render_math_images and needs_raster)
-                    else None
-                )
-                if rendered_png:
-                    b64 = base64.b64encode(rendered_png).decode("ascii")
-                    alt = html.escape(cls.latex_expr_to_unicode(payload))
-                    html_parts.append(
-                        f'<img style="vertical-align:middle;" src="data:image/png;base64,{b64}" alt="{alt}"/>'
-                    )
-                else:
-                    uni = html.escape(cls.latex_expr_to_unicode(payload))
-                    html_parts.append(
-                        f'<span style="color:{accent_color}; font-weight:700;">{uni}</span>'
-                    )
-            else:
-                cleaned = cls.strip_all_stray_dollars(cls.latex_expr_to_unicode(payload))
+                pos = m.end()
+
+            if pos < len(s):
                 html_parts.append(
                     cls._format_markdown_segment_html(
-                        cleaned,
+                        s[pos:],
                         text_color=text_color,
                         accent_color=accent_color,
                         arrow_color=arrow_color,
                         card_bg=card_bg,
                         border_col=border_col,
+                        code_bg=code_bg,
+                        code_color=code_color,
+                        table_hdr_bg=table_hdr_bg,
+                        table_alt_bg=table_alt_bg,
+                        lang_color=lang_color,
+                        render_math_images=render_math_images,
                     )
                 )
 
@@ -655,9 +814,20 @@ class OutputSanitizer:
         arrow_color: str,
         card_bg: str,
         border_col: str,
+        code_bg: Optional[str] = None,
+        code_color: Optional[str] = None,
+        table_hdr_bg: Optional[str] = None,
+        table_alt_bg: Optional[str] = None,
+        lang_color: str = "#94A3B8",
+        render_math_images: bool = True,
     ) -> str:
         if not segment:
             return ""
+        eff_code_bg = code_bg or card_bg
+        eff_code_color = code_color or text_color
+        eff_tbl_hdr = table_hdr_bg or card_bg
+        eff_tbl_alt = table_alt_bg or "transparent"
+
         lines = segment.splitlines()
         out: List[str] = []
         i = 0
@@ -665,13 +835,30 @@ class OutputSanitizer:
 
         def _is_table_sep(line: str) -> bool:
             s = line.strip()
-            return bool(s.startswith("|") and re.fullmatch(r"[\|\s:\-]+", s) and "-" in s)
+            return bool("|" in s and "-" in s and re.fullmatch(r"[\|\s:\-]+", s))
+
+        def _split_table_cells(line: str) -> List[str]:
+            s = line.strip()
+            if s.startswith("|"):
+                s = s[1:]
+            if s.endswith("|"):
+                s = s[:-1]
+            return [c.strip() for c in s.split("|")]
+
+        def _render_inline(text: str) -> str:
+            return cls._render_inline_with_math(
+                text,
+                accent_color=accent_color,
+                arrow_color=arrow_color,
+                code_bg=eff_code_bg,
+                render_math_images=render_math_images,
+            )
 
         while i < n:
             line = lines[i]
             stripped = line.strip()
 
-            # Fenced code block ```
+            # Fenced code block ``` (fallback if called directly)
             if stripped.startswith("```"):
                 lang = stripped[3:].strip()
                 code_lines: List[str] = []
@@ -681,42 +868,52 @@ class OutputSanitizer:
                     i += 1
                 if i < n:
                     i += 1
-                lang_hdr = f'<div style="color:#94A3B8;font-size:10px;margin-bottom:3px;">{html.escape(lang)}</div>' if lang else ""
-                code_esc = html.escape("\n".join(code_lines))
                 out.append(
-                    f'<div style="margin:6px 0;padding:8px 10px;background:{card_bg};border:1px solid {border_col};'
-                    f'border-radius:8px;">{lang_hdr}<pre style="margin:0;white-space:pre-wrap;'
-                    f'font-family:Consolas,monospace;font-size:12px;color:{text_color};">{code_esc}</pre></div>'
+                    cls._render_code_block_html(
+                        lang,
+                        "\n".join(code_lines),
+                        code_bg=eff_code_bg,
+                        code_color=eff_code_color,
+                        border_col=border_col,
+                        lang_color=lang_color,
+                    )
                 )
                 continue
 
-            # Markdown table | col1 | col2 |
-            if stripped.startswith("|") and stripped.endswith("|") and i + 1 < n and _is_table_sep(lines[i + 1]):
-                header_cells = [c.strip() for c in stripped.strip("|").split("|")]
+            # Markdown table | col1 | col2 | (supports both piped and pipe-separated GFM rows)
+            if "|" in stripped and i + 1 < n and _is_table_sep(lines[i + 1]):
+                header_cells = _split_table_cells(stripped)
+                col_count = max(1, len(header_cells))
                 i += 2
                 body_rows: List[List[str]] = []
                 while i < n:
                     row_s = lines[i].strip()
-                    if not (row_s.startswith("|") and row_s.endswith("|")):
+                    if not row_s or "|" not in row_s or row_s.startswith("```"):
                         break
-                    body_rows.append([c.strip() for c in row_s.strip("|").split("|")])
+                    cells = _split_table_cells(row_s)
+                    while len(cells) < col_count:
+                        cells.append("")
+                    body_rows.append(cells[:col_count])
                     i += 1
                 ths = "".join(
-                    f'<th style="padding:5px 8px;border:1px solid {border_col};background:{card_bg};'
+                    f'<th style="padding:6px 8px;border:1px solid {border_col};background:{eff_tbl_hdr};'
                     f'color:{accent_color};text-align:left;font-weight:700;">'
-                    f'{cls._inline_markdown_to_html(c, accent_color, arrow_color)}</th>'
+                    f'{_render_inline(c)}</th>'
                     for c in header_cells
                 )
                 trs = []
-                for r in body_rows:
+                for r_idx, r in enumerate(body_rows):
+                    row_bg = eff_tbl_alt if (r_idx % 2 == 1) else "transparent"
                     tds = "".join(
-                        f'<td style="padding:4px 8px;border:1px solid {border_col};color:{text_color};">'
-                        f'{cls._inline_markdown_to_html(c, accent_color, arrow_color)}</td>'
+                        f'<td style="padding:5px 8px;border:1px solid {border_col};'
+                        f'background:{row_bg};color:{text_color};">'
+                        f'{_render_inline(c)}</td>'
                         for c in r
                     )
                     trs.append(f"<tr>{tds}</tr>")
                 out.append(
-                    f'<table style="border-collapse:collapse;margin:6px 0;width:100%;font-size:12px;">'
+                    f'<table border="1" cellspacing="0" style="border-collapse:collapse;margin:8px 0;'
+                    f'width:100%;font-size:12px;border:1px solid {border_col};">'
                     f'<thead><tr>{ths}</tr></thead><tbody>{"".join(trs)}</tbody></table>'
                 )
                 continue
@@ -726,7 +923,7 @@ class OutputSanitizer:
             if h_match:
                 lvl = len(h_match.group(1))
                 fsize = {1: 16, 2: 15, 3: 14, 4: 13}.get(lvl, 13)
-                txt_html = cls._inline_markdown_to_html(h_match.group(2), accent_color, arrow_color)
+                txt_html = _render_inline(h_match.group(2))
                 out.append(
                     f'<div style="font-size:{fsize}px;font-weight:700;color:{accent_color};margin:8px 0 3px 0;">{txt_html}</div>'
                 )
@@ -743,13 +940,13 @@ class OutputSanitizer:
             b_match = re.match(r"^[-*•]\s+(.+)$", stripped)
             n_match = re.match(r"^(\d+[\.\)])\s+(.+)$", stripped)
             if b_match:
-                txt_html = cls._inline_markdown_to_html(b_match.group(1), accent_color, arrow_color)
+                txt_html = _render_inline(b_match.group(1))
                 out.append(f'<div style="margin:2px 0 2px 10px;"><span style="color:{accent_color};font-weight:700;">•</span> {txt_html}</div>')
                 i += 1
                 continue
             if n_match:
                 num_lbl = html.escape(n_match.group(1))
-                txt_html = cls._inline_markdown_to_html(n_match.group(2), accent_color, arrow_color)
+                txt_html = _render_inline(n_match.group(2))
                 out.append(f'<div style="margin:2px 0 2px 10px;"><span style="color:{accent_color};font-weight:700;">{num_lbl}</span> {txt_html}</div>')
                 i += 1
                 continue
@@ -757,7 +954,7 @@ class OutputSanitizer:
             if not stripped:
                 out.append("<br/>")
             else:
-                out.append(cls._inline_markdown_to_html(line, accent_color, arrow_color) + ("<br/>" if i < n - 1 else ""))
+                out.append(_render_inline(line) + ("<br/>" if i < n - 1 else ""))
             i += 1
 
         return "".join(out)

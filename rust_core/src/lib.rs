@@ -1,6 +1,7 @@
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 const WRIST: usize = 0;
 const THUMB_CMC: usize = 1;
@@ -918,6 +919,127 @@ fn snap_geometric_shape_rs(
         let l1 = 0.5 * (trace + disc);
         let l2 = (0.5 * (trace - disc)).max(0.0);
         let eig_ratio = l2 / l1.max(1e-9);
+
+        // 1A. Detect Arrow (straight shaft + sharp hook barb near tip) BEFORE plain LINE
+        if resampled.len() >= 10 && bbox_diag >= 24.0 {
+            let split_idx = ((resampled.len() as f64) * 0.65).floor() as usize;
+            let split_idx = split_idx.clamp(5, resampled.len() - 3);
+            let shaft = &resampled[..split_idx];
+            let sn = shaft.len() as f64;
+            let smx = shaft.iter().map(|p| p.0).sum::<f64>() / sn;
+            let smy = shaft.iter().map(|p| p.1).sum::<f64>() / sn;
+            let mut ssxx = 0.0_f64;
+            let mut ssyy = 0.0_f64;
+            let mut ssxy = 0.0_f64;
+            for &(x, y) in shaft {
+                let dx = x - smx;
+                let dy = y - smy;
+                ssxx += dx * dx;
+                ssyy += dy * dy;
+                ssxy += dx * dy;
+            }
+            ssxx /= sn;
+            ssyy /= sn;
+            ssxy /= sn;
+            let strace = ssxx + ssyy;
+            let sdisc = ((ssxx - ssyy).powi(2) + 4.0 * ssxy * ssxy).sqrt();
+            let sl1 = 0.5 * (strace + sdisc);
+            let sl2 = (0.5 * (strace - sdisc)).max(0.0);
+            let shaft_ratio = sl2 / sl1.max(1e-9);
+            if shaft_ratio < 0.045 {
+                let (mut sux, mut suy) = if ssxy.abs() > 1e-12 {
+                    let vx = sl1 - ssyy;
+                    let vy = ssxy;
+                    let nrm = vx.hypot(vy).max(1e-12);
+                    (vx / nrm, vy / nrm)
+                } else if ssxx >= ssyy {
+                    (1.0, 0.0)
+                } else {
+                    (0.0, 1.0)
+                };
+                let p0 = resampled[0];
+                if (resampled[split_idx - 1].0 - p0.0) * sux
+                    + (resampled[split_idx - 1].1 - p0.1) * suy
+                    < 0.0
+                {
+                    sux = -sux;
+                    suy = -suy;
+                }
+                let aprojs: Vec<f64> = resampled
+                    .iter()
+                    .map(|p| (p.0 - p0.0) * sux + (p.1 - p0.1) * suy)
+                    .collect();
+                let mut tip_idx = 0usize;
+                let mut tip_proj = f64::NEG_INFINITY;
+                for (i, &val) in aprojs.iter().enumerate() {
+                    if val > tip_proj {
+                        tip_proj = val;
+                        tip_idx = i;
+                    }
+                }
+                if tip_idx >= 3 && tip_idx + 2 < resampled.len() {
+                    let min_before = aprojs[..=tip_idx]
+                        .iter()
+                        .copied()
+                        .fold(f64::INFINITY, f64::min);
+                    let shaft_len = tip_proj - min_before;
+                    let tip_pt = resampled[tip_idx];
+                    let max_perp = resampled[tip_idx..]
+                        .iter()
+                        .map(|p| ((p.0 - tip_pt.0) * (-suy) + (p.1 - tip_pt.1) * sux).abs())
+                        .fold(0.0_f64, f64::max);
+                    let min_tail_proj = aprojs[tip_idx..]
+                        .iter()
+                        .copied()
+                        .fold(f64::INFINITY, f64::min);
+                    let backtrack = tip_proj - min_tail_proj;
+                    if shaft_len >= 22.0
+                        && max_perp >= (0.06 * shaft_len).max(6.0)
+                        && max_perp <= 0.45 * shaft_len
+                        && backtrack >= (0.05 * shaft_len).max(5.0)
+                    {
+                        let raw_ang = (tip_pt.1 - p0.1).atan2(tip_pt.0 - p0.0).to_degrees();
+                        let mut snap_ang = raw_ang;
+                        for &anchor in
+                            &[-180.0_f64, -135.0, -90.0, -45.0, 0.0, 45.0, 90.0, 135.0, 180.0]
+                        {
+                            if (raw_ang - anchor).abs() <= 6.0 {
+                                snap_ang = anchor;
+                                break;
+                            }
+                        }
+                        let rad = snap_ang.to_radians();
+                        let len = (tip_pt.0 - p0.0).hypot(tip_pt.1 - p0.1);
+                        let mid = (0.5 * (p0.0 + tip_pt.0), 0.5 * (p0.1 + tip_pt.1));
+                        let (ux, uy) = (rad.cos(), rad.sin());
+                        let s_snap = (mid.0 - 0.5 * len * ux, mid.1 - 0.5 * len * uy);
+                        let e_snap = (mid.0 + 0.5 * len * ux, mid.1 + 0.5 * len * uy);
+                        let wing = (0.14 * len).clamp(14.0, 34.0);
+                        let barb = 28.0_f64.to_radians();
+                        let (ca, sa) = (barb.cos(), barb.sin());
+                        let (bx, by) = (-ux, -uy);
+                        let left_w = (
+                            e_snap.0 + wing * (bx * ca - by * sa),
+                            e_snap.1 + wing * (bx * sa + by * ca),
+                        );
+                        let right_w = (
+                            e_snap.0 + wing * (bx * ca + by * sa),
+                            e_snap.1 + wing * (-bx * sa + by * ca),
+                        );
+                        let arrow_conf = (0.96 - shaft_ratio * 2.5).clamp(0.80, 0.97);
+                        if arrow_conf >= confidence_gate {
+                            return (
+                                "ARROW".to_string(),
+                                arrow_conf,
+                                false,
+                                vec![s_snap, e_snap, left_w, e_snap, right_w],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         let simplified = rdp_simplify_rs(clean.clone(), (bbox_diag * 0.025).max(3.0));
         if eig_ratio < 0.035 && simplified.len() <= 6 {
             let (mut ux, mut uy) = if sxy.abs() > 1e-12 {
@@ -1001,7 +1123,7 @@ fn snap_geometric_shape_rs(
     if r > 4.0 {
         let var_r = radii.iter().map(|rv| (rv - r) * (rv - r)).sum::<f64>() / (n as f64);
         let radial_cv = var_r.sqrt() / r.max(1e-6);
-        if radial_cv < 0.14 && circularity >= 0.76 {
+        if radial_cv < 0.088 && circularity >= 0.855 {
             let conf = (1.0 - (radial_cv / 0.14) * 0.22).clamp(0.80, 0.99);
             if conf >= confidence_gate {
                 let circle_pts = (0..=64)
@@ -1011,6 +1133,155 @@ fn snap_geometric_shape_rs(
                     })
                     .collect();
                 return ("CIRCLE".to_string(), conf, true, circle_pts);
+            }
+        }
+    }
+
+    // Closed Polygon Recognition in Rust: TRIANGLE, SQUARE, RECTANGLE
+    let mut closed_loop = clean.clone();
+    if let (Some(&first), Some(&last)) = (closed_loop.first(), closed_loop.last()) {
+        if (first.0 - last.0).hypot(first.1 - last.1) > 1.0 {
+            closed_loop.push(first);
+        }
+    }
+    let mut best_poly: Option<Vec<(f64, f64)>> = None;
+    let mut best_rms = f64::INFINITY;
+    for &frac in &[0.032_f64, 0.045, 0.058, 0.072] {
+        let simp = rdp_simplify_rs(closed_loop.clone(), (peri * frac).max(5.0));
+        let mut verts = simp;
+        if verts.len() >= 2 {
+            let f = verts[0];
+            let l = *verts.last().unwrap();
+            if (f.0 - l.0).hypot(f.1 - l.1) < (bbox_diag * 0.12).max(8.0) {
+                verts.pop();
+            }
+        }
+        // Prune near-collinear or tiny edges
+        let mut changed = true;
+        while changed && verts.len() > 3 {
+            changed = false;
+            for i in 0..verts.len() {
+                let j = (i + 1) % verts.len();
+                if (verts[i].0 - verts[j].0).hypot(verts[i].1 - verts[j].1)
+                    < (bbox_diag * 0.08).max(8.0)
+                {
+                    verts[i] = (
+                        0.5 * (verts[i].0 + verts[j].0),
+                        0.5 * (verts[i].1 + verts[j].1),
+                    );
+                    verts.remove(j);
+                    changed = true;
+                    break;
+                }
+            }
+            if changed {
+                continue;
+            }
+            let vn = verts.len();
+            for i in 0..vn {
+                let prev = verts[(i + vn - 1) % vn];
+                let cur = verts[i];
+                let nxt = verts[(i + 1) % vn];
+                let ang = vec_angle_deg(
+                    (prev.0 - cur.0, prev.1 - cur.1, 0.0),
+                    (nxt.0 - cur.0, nxt.1 - cur.1, 0.0),
+                );
+                if ang > 160.0 {
+                    verts.remove(i);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if verts.len() == 3 || verts.len() == 4 {
+            // Order CCW around centroid
+            let vcx = verts.iter().map(|p| p.0).sum::<f64>() / (verts.len() as f64);
+            let vcy = verts.iter().map(|p| p.1).sum::<f64>() / (verts.len() as f64);
+            verts.sort_by(|a, b| {
+                let aa = (a.1 - vcy).atan2(a.0 - vcx);
+                let ba = (b.1 - vcy).atan2(b.0 - vcx);
+                aa.partial_cmp(&ba).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let mut sum_sq = 0.0_f64;
+            for &p in &resampled {
+                let mut md = f64::INFINITY;
+                for i in 0..verts.len() {
+                    let d = perpendicular_distance(p, verts[i], verts[(i + 1) % verts.len()]);
+                    md = md.min(d);
+                }
+                sum_sq += md * md;
+            }
+            let rms = (sum_sq / (resampled.len() as f64)).sqrt() / bbox_diag.max(1.0);
+            if rms < best_rms {
+                best_rms = rms;
+                best_poly = Some(verts);
+            }
+        }
+    }
+
+    if let Some(verts) = best_poly {
+        if best_rms <= 0.055 {
+            if verts.len() == 3 {
+                let conf = (0.97 - best_rms * 2.8).clamp(0.80, 0.97);
+                if conf >= confidence_gate {
+                    let mut out = verts.clone();
+                    out.push(verts[0]);
+                    return ("TRIANGLE".to_string(), conf, true, out);
+                }
+            } else if verts.len() == 4 {
+                let mut angles = [0.0_f64; 4];
+                let mut edges = [0.0_f64; 4];
+                for i in 0..4 {
+                    let prev = verts[(i + 3) % 4];
+                    let cur = verts[i];
+                    let nxt = verts[(i + 1) % 4];
+                    angles[i] = vec_angle_deg(
+                        (prev.0 - cur.0, prev.1 - cur.1, 0.0),
+                        (nxt.0 - cur.0, nxt.1 - cur.1, 0.0),
+                    );
+                    edges[i] = (nxt.0 - cur.0).hypot(nxt.1 - cur.1);
+                }
+                let right_cnt = angles.iter().filter(|&&a| (78.0..=102.0).contains(&a)).count();
+                if right_cnt >= 3 {
+                    let min_e = edges.iter().copied().fold(f64::INFINITY, f64::min);
+                    let max_e = edges.iter().copied().fold(0.0_f64, f64::max);
+                    let uniformity = min_e / max_e.max(1e-6);
+                    // Reconstruct exact orthogonal rectangle/square along edge[0] orientation
+                    let e0 = (verts[1].0 - verts[0].0, verts[1].1 - verts[0].1);
+                    let mut ang_deg = e0.1.atan2(e0.0).to_degrees();
+                    for &anchor in
+                        &[-180.0_f64, -135.0, -90.0, -45.0, 0.0, 45.0, 90.0, 135.0, 180.0]
+                    {
+                        if (ang_deg - anchor).abs() <= 6.0 {
+                            ang_deg = anchor;
+                            break;
+                        }
+                    }
+                    let rad = ang_deg.to_radians();
+                    let (ux, uy) = (rad.cos(), rad.sin());
+                    let (vx, vy) = (-uy, ux);
+                    let qcx = verts.iter().map(|p| p.0).sum::<f64>() * 0.25;
+                    let qcy = verts.iter().map(|p| p.1).sum::<f64>() * 0.25;
+                    let mut w_avg = 0.5 * (edges[0] + edges[2]);
+                    let mut h_avg = 0.5 * (edges[1] + edges[3]);
+                    let is_square = uniformity >= 0.82
+                        && (w_avg.min(h_avg) / w_avg.max(h_avg).max(1e-6)) >= 0.83;
+                    if is_square {
+                        let s = 0.5 * (w_avg + h_avg);
+                        w_avg = s;
+                        h_avg = s;
+                    }
+                    let (hw, hh) = (0.5 * w_avg, 0.5 * h_avg);
+                    let c0 = (qcx - hw * ux - hh * vx, qcy - hw * uy - hh * vy);
+                    let c1 = (qcx + hw * ux - hh * vx, qcy + hw * uy - hh * vy);
+                    let c2 = (qcx + hw * ux + hh * vx, qcy + hw * uy + hh * vy);
+                    let c3 = (qcx - hw * ux + hh * vx, qcy - hw * uy + hh * vy);
+                    let conf = (0.96 - best_rms * 2.5).clamp(0.80, 0.96);
+                    if conf >= confidence_gate {
+                        let label = if is_square { "SQUARE" } else { "RECTANGLE" };
+                        return (label.to_string(), conf, true, vec![c0, c1, c2, c3, c0]);
+                    }
+                }
             }
         }
     }
@@ -1196,6 +1467,1536 @@ fn cosine_similarity_vec(a: Vec<f32>, b: Vec<f32>) -> f32 {
     (dot / denom).clamp(-1.0, 1.0) as f32
 }
 
+// =============================================================================
+// KALMAN 2D VELOCITY PREDICTOR, 1-HAND & 2-HAND GESTURE FSM, & HIT-TESTING ENGINE
+// =============================================================================
+
+#[pyclass]
+pub struct RustKalmanVelocityPredictor2D {
+    q: f64,
+    r: f64,
+    #[pyo3(get)]
+    pub initialized: bool,
+    #[pyo3(get)]
+    pub x: f64,
+    #[pyo3(get)]
+    pub y: f64,
+    #[pyo3(get)]
+    pub vx: f64,
+    #[pyo3(get)]
+    pub vy: f64,
+    p_pos: f64,
+    p_vel: f64,
+    last_t: Option<f64>,
+    last_meas: Option<(f64, f64)>,
+}
+
+#[pymethods]
+impl RustKalmanVelocityPredictor2D {
+    #[new]
+    #[pyo3(signature = (process_noise = 0.04, meas_noise = 0.0015))]
+    fn new(process_noise: f64, meas_noise: f64) -> Self {
+        Self {
+            q: process_noise,
+            r: meas_noise,
+            initialized: false,
+            x: 0.5,
+            y: 0.5,
+            vx: 0.0,
+            vy: 0.0,
+            p_pos: 1.0,
+            p_vel: 1.0,
+            last_t: None,
+            last_meas: None,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.initialized = false;
+        self.vx = 0.0;
+        self.vy = 0.0;
+        self.p_pos = 1.0;
+        self.p_vel = 1.0;
+        self.last_t = None;
+        self.last_meas = None;
+    }
+
+    fn update(&mut self, meas_x: f64, meas_y: f64, t_sec: f64) -> (f64, f64) {
+        if !self.initialized || self.last_t.is_none() {
+            self.initialized = true;
+            self.x = meas_x;
+            self.y = meas_y;
+            self.vx = 0.0;
+            self.vy = 0.0;
+            self.p_pos = 0.02;
+            self.p_vel = 0.1;
+            self.last_t = Some(t_sec);
+            self.last_meas = Some((meas_x, meas_y));
+            return (meas_x, meas_y);
+        }
+        let dt = (t_sec - self.last_t.unwrap()).clamp(1e-3, 0.25);
+        self.last_t = Some(t_sec);
+        let (prev_mx, prev_my) = self.last_meas.unwrap_or((self.x, self.y));
+        self.last_meas = Some((meas_x, meas_y));
+
+        let px = self.x + self.vx * dt;
+        let py = self.y + self.vy * dt;
+        self.p_pos = self.p_pos + self.p_vel * (dt * dt) + self.q * dt;
+        self.p_vel += self.q;
+
+        let k_pos = self.p_pos / (self.p_pos + self.r).max(1e-6);
+        self.x = px + k_pos * (meas_x - px);
+        self.y = py + k_pos * (meas_y - py);
+        let raw_vx = (meas_x - prev_mx) / dt;
+        let raw_vy = (meas_y - prev_my) / dt;
+        self.vx = (0.35 * self.vx + 0.65 * raw_vx).clamp(-2.5, 2.5);
+        self.vy = (0.35 * self.vy + 0.65 * raw_vy).clamp(-2.5, 2.5);
+        self.p_pos = (1.0 - k_pos) * self.p_pos;
+
+        (self.x.clamp(0.0, 1.0), self.y.clamp(0.0, 1.0))
+    }
+
+    #[pyo3(signature = (t_sec, damping = 0.86))]
+    fn predict_dropout(&mut self, t_sec: f64, damping: f64) -> Option<(f64, f64)> {
+        if !self.initialized {
+            return None;
+        }
+        let last_t = self.last_t?;
+        let dt = (t_sec - last_t).clamp(0.0, 0.12);
+        self.last_t = Some(t_sec);
+        self.x = (self.x + self.vx * dt).clamp(0.0, 1.0);
+        self.y = (self.y + self.vy * dt).clamp(0.0, 1.0);
+        self.vx *= damping;
+        self.vy *= damping;
+        Some((self.x, self.y))
+    }
+}
+
+#[pyclass]
+pub struct RustGestureStateMachine {
+    min_hold_frames: usize,
+    min_hold_sec: f64,
+    grace_period_sec: f64,
+    frame_w: usize,
+    frame_h: usize,
+    deadzone_px: f64,
+    voting_window_size: usize,
+    voting_min_votes: usize,
+    pinch_enter_ratio: f64,
+    pinch_exit_ratio: f64,
+    palm_facing_min_z: f64,
+    cursor_filter: RustOneEuroFilter2D,
+    thumb_tip_filter: RustOneEuroFilter3D,
+    index_tip_filter: RustOneEuroFilter3D,
+    pinch_filter: RustOneEuroFilter1D,
+    kalman: RustKalmanVelocityPredictor2D,
+    fsm_state: String,
+    active_gesture: String,
+    candidate_gesture: String,
+    candidate_count: usize,
+    candidate_since_sec: Option<f64>,
+    last_seen_sec: Option<f64>,
+    last_cursor: Option<(f64, f64)>,
+    deadzone_cursor: Option<(f64, f64)>,
+    prev_fingers: [bool; 5],
+    vote_window: VecDeque<String>,
+    raw_first_seen: HashMap<String, f64>,
+}
+
+#[pymethods]
+impl RustGestureStateMachine {
+    #[new]
+    #[pyo3(signature = (
+        min_hold_frames = 3,
+        min_hold_sec = 0.080,
+        grace_period_sec = 0.160,
+        min_cutoff = 1.45,
+        beta = 0.020,
+        d_cutoff = 1.0,
+        frame_w = 640,
+        frame_h = 480,
+        deadzone_px = 2.0,
+        voting_window_size = 7,
+        voting_min_votes = 3,
+        pinch_enter_ratio = 0.28,
+        pinch_exit_ratio = 0.42,
+        palm_facing_min_z = 0.20
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        min_hold_frames: usize,
+        min_hold_sec: f64,
+        grace_period_sec: f64,
+        min_cutoff: f64,
+        beta: f64,
+        d_cutoff: f64,
+        frame_w: usize,
+        frame_h: usize,
+        deadzone_px: f64,
+        voting_window_size: usize,
+        voting_min_votes: usize,
+        pinch_enter_ratio: f64,
+        pinch_exit_ratio: f64,
+        palm_facing_min_z: f64,
+    ) -> Self {
+        let win = voting_window_size.max(3);
+        Self {
+            min_hold_frames: min_hold_frames.max(1),
+            min_hold_sec: min_hold_sec.max(0.050),
+            grace_period_sec: grace_period_sec.max(0.080),
+            frame_w: frame_w.max(1),
+            frame_h: frame_h.max(1),
+            deadzone_px: deadzone_px.max(0.0),
+            voting_window_size: win,
+            voting_min_votes: voting_min_votes.clamp(2, win),
+            pinch_enter_ratio,
+            pinch_exit_ratio,
+            palm_facing_min_z,
+            cursor_filter: RustOneEuroFilter2D::new(min_cutoff, beta, d_cutoff),
+            thumb_tip_filter: RustOneEuroFilter3D::new(min_cutoff, beta, d_cutoff),
+            index_tip_filter: RustOneEuroFilter3D::new(min_cutoff, beta, d_cutoff),
+            pinch_filter: RustOneEuroFilter1D::new(min_cutoff, beta, d_cutoff),
+            kalman: RustKalmanVelocityPredictor2D::new(0.04, 0.0015),
+            fsm_state: "IDLE".to_string(),
+            active_gesture: "IDLE".to_string(),
+            candidate_gesture: "IDLE".to_string(),
+            candidate_count: 0,
+            candidate_since_sec: None,
+            last_seen_sec: None,
+            last_cursor: None,
+            deadzone_cursor: None,
+            prev_fingers: [false; 5],
+            vote_window: VecDeque::with_capacity(win + 1),
+            raw_first_seen: HashMap::new(),
+        }
+    }
+
+    fn set_frame_size(&mut self, w: usize, h: usize) {
+        self.frame_w = w.max(1);
+        self.frame_h = h.max(1);
+    }
+
+    fn reset(&mut self) {
+        self.fsm_state = "IDLE".to_string();
+        self.active_gesture = "IDLE".to_string();
+        self.candidate_gesture = "IDLE".to_string();
+        self.candidate_count = 0;
+        self.candidate_since_sec = None;
+        self.last_seen_sec = None;
+        self.last_cursor = None;
+        self.deadzone_cursor = None;
+        self.prev_fingers = [false; 5];
+        self.vote_window.clear();
+        self.raw_first_seen.clear();
+        self.cursor_filter.reset();
+        self.thumb_tip_filter.reset();
+        self.index_tip_filter.reset();
+        self.pinch_filter.reset();
+        self.kalman.reset();
+    }
+
+    #[pyo3(signature = (landmarks, t_sec, handedness = "right"))]
+    fn update<'py>(
+        &mut self,
+        py: Python<'py>,
+        landmarks: Option<Vec<Vec<f64>>>,
+        t_sec: f64,
+        handedness: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        if let Some(mut lm) = landmarks {
+            if lm.len() >= 21 && !lm.iter().any(|p| p.len() < 3) {
+                self.last_seen_sec = Some(t_sec);
+                let t_filt = self.thumb_tip_filter.filter(
+                    lm[THUMB_TIP][0],
+                    lm[THUMB_TIP][1],
+                    lm[THUMB_TIP][2],
+                    t_sec,
+                );
+                let i_filt = self.index_tip_filter.filter(
+                    lm[INDEX_TIP][0],
+                    lm[INDEX_TIP][1],
+                    lm[INDEX_TIP][2],
+                    t_sec,
+                );
+                lm[THUMB_TIP] = vec![t_filt.0, t_filt.1, t_filt.2];
+                lm[INDEX_TIP] = vec![i_filt.0, i_filt.1, i_filt.2];
+
+                let was_pinched = self.active_gesture == "CLICK";
+                let palm_scale = dist3(pt3(&lm, WRIST), pt3(&lm, MIDDLE_MCP)).max(1e-4);
+                let raw_pr = dist3(pt3(&lm, THUMB_TIP), pt3(&lm, INDEX_TIP)) / palm_scale;
+                let smoothed_pr = self.pinch_filter.filter(raw_pr, t_sec).clamp(0.01, 3.0);
+
+                let cls = classify_hand_3d_rs(
+                    py,
+                    lm,
+                    Some(self.prev_fingers.to_vec()),
+                    was_pinched,
+                    self.pinch_enter_ratio,
+                    self.pinch_exit_ratio,
+                    handedness,
+                    self.palm_facing_min_z,
+                )?;
+
+                let mut raw_gesture: String = cls.get_item("gesture")?.unwrap().extract()?;
+                let mut pose_tag: String = cls.get_item("pose_tag")?.unwrap().extract()?;
+                let raw_cursor: (f64, f64) = cls.get_item("cursor_norm")?.unwrap().extract()?;
+                let fingers: Vec<bool> = cls.get_item("fingers")?.unwrap().extract()?;
+                if fingers.len() == 5 {
+                    self.prev_fingers = [fingers[0], fingers[1], fingers[2], fingers[3], fingers[4]];
+                }
+
+                let pinch_thresh = if was_pinched {
+                    self.pinch_exit_ratio
+                } else {
+                    self.pinch_enter_ratio
+                };
+                if smoothed_pr < pinch_thresh
+                    && pose_tag != "OPEN_PALM"
+                    && pose_tag != "FIST"
+                    && pose_tag != "THREE_FINGERS"
+                    && pose_tag != "QUESTION_HOLD"
+                {
+                    raw_gesture = "CLICK".to_string();
+                    pose_tag = "PINCH".to_string();
+                    cls.set_item("gesture", "CLICK")?;
+                    cls.set_item("pose_tag", "PINCH")?;
+                }
+                cls.set_item("pinch_ratio", round4(smoothed_pr))?;
+
+                if self.vote_window.len() >= self.voting_window_size {
+                    self.vote_window.pop_front();
+                }
+                self.vote_window.push_back(raw_gesture.clone());
+                if raw_gesture != self.active_gesture {
+                    self.raw_first_seen.entry(raw_gesture.clone()).or_insert(t_sec);
+                }
+
+                let mut counts: HashMap<String, usize> = HashMap::new();
+                for g in &self.vote_window {
+                    *counts.entry(g.clone()).or_insert(0) += 1;
+                }
+                let mut voted_gesture = raw_gesture.clone();
+                let mut voted_count = 0usize;
+                for (k, &v) in &counts {
+                    if v > voted_count || (v == voted_count && k == &raw_gesture) {
+                        voted_count = v;
+                        voted_gesture = k.clone();
+                    }
+                }
+
+                let filt_2d = self.cursor_filter.filter(raw_cursor.0, raw_cursor.1, t_sec);
+                let kal_2d = self.kalman.update(filt_2d.0, filt_2d.1, t_sec);
+
+                // Deadzone suppression
+                let px_thresh = self.deadzone_px / (self.frame_w.max(self.frame_h) as f64);
+                let palm_thresh = (palm_scale * 0.022).clamp(0.002, 0.009);
+                let thresh = px_thresh.max(palm_thresh);
+                let smoothed_cursor = match self.deadzone_cursor {
+                    Some(prev) if (kal_2d.0 - prev.0).hypot(kal_2d.1 - prev.1) < thresh => prev,
+                    _ => {
+                        self.deadzone_cursor = Some(kal_2d);
+                        kal_2d
+                    }
+                };
+                self.last_cursor = Some(smoothed_cursor);
+
+                if voted_gesture == self.active_gesture {
+                    self.candidate_gesture = voted_gesture.clone();
+                    self.candidate_count = voted_count;
+                    self.candidate_since_sec = None;
+                    self.fsm_state = if self.active_gesture == "IDLE" {
+                        "IDLE".to_string()
+                    } else {
+                        "ACTIVE".to_string()
+                    };
+                } else {
+                    if voted_gesture == self.candidate_gesture {
+                        self.candidate_count += 1;
+                    } else {
+                        self.candidate_gesture = voted_gesture.clone();
+                        self.candidate_count = voted_count;
+                        self.candidate_since_sec =
+                            Some(*self.raw_first_seen.get(&voted_gesture).unwrap_or(&t_sec));
+                    }
+                    let since = *self
+                        .raw_first_seen
+                        .get(&voted_gesture)
+                        .unwrap_or(&self.candidate_since_sec.unwrap_or(t_sec));
+                    let elapsed = t_sec - since;
+                    self.fsm_state = "CANDIDATE".to_string();
+                    let frames_ok = if self.min_hold_frames <= self.voting_window_size {
+                        voted_count >= self.min_hold_frames
+                    } else {
+                        self.candidate_count >= self.min_hold_frames
+                    };
+                    if voted_count >= self.voting_min_votes
+                        && frames_ok
+                        && elapsed >= self.min_hold_sec
+                    {
+                        self.active_gesture = voted_gesture.clone();
+                        self.candidate_count = 0;
+                        self.candidate_since_sec = None;
+                        self.raw_first_seen.clear();
+                        self.fsm_state = if voted_gesture == "IDLE" {
+                            "IDLE".to_string()
+                        } else {
+                            "ACTIVE".to_string()
+                        };
+                    }
+                }
+
+                let counts_py = PyDict::new(py);
+                for (k, v) in counts {
+                    counts_py.set_item(k, v)?;
+                }
+                out.set_item("fsm_state", self.fsm_state.as_str())?;
+                out.set_item("active_gesture", self.active_gesture.as_str())?;
+                out.set_item("candidate_gesture", self.candidate_gesture.as_str())?;
+                out.set_item("cursor_norm", smoothed_cursor)?;
+                out.set_item("hold_frames", self.candidate_count)?;
+                out.set_item("in_grace_period", false)?;
+                out.set_item("kalman_predicted", false)?;
+                out.set_item("voting_counts", counts_py)?;
+                out.set_item("pinch_ratio", round4(smoothed_pr))?;
+                out.set_item("pose_tag", pose_tag)?;
+                out.set_item("classify_meta", cls)?;
+                return Ok(out);
+            }
+        }
+
+        if let Some(last_seen) = self.last_seen_sec {
+            if self.active_gesture != "IDLE" && (t_sec - last_seen) <= self.grace_period_sec {
+                self.fsm_state = "GRACE_PERIOD".to_string();
+                let predicted = self.kalman.predict_dropout(t_sec, 0.86);
+                let pred_cursor = predicted.or(self.last_cursor);
+                self.last_cursor = pred_cursor;
+                let counts_py = PyDict::new(py);
+                let mut counts: HashMap<String, usize> = HashMap::new();
+                for g in &self.vote_window {
+                    *counts.entry(g.clone()).or_insert(0) += 1;
+                }
+                for (k, v) in counts {
+                    counts_py.set_item(k, v)?;
+                }
+                out.set_item("fsm_state", "GRACE_PERIOD")?;
+                out.set_item("active_gesture", self.active_gesture.as_str())?;
+                out.set_item("candidate_gesture", self.candidate_gesture.as_str())?;
+                out.set_item("cursor_norm", pred_cursor)?;
+                out.set_item("hold_frames", self.candidate_count)?;
+                out.set_item("in_grace_period", true)?;
+                out.set_item("kalman_predicted", predicted.is_some())?;
+                out.set_item("voting_counts", counts_py)?;
+                return Ok(out);
+            }
+        }
+
+        self.reset();
+        out.set_item("fsm_state", "IDLE")?;
+        out.set_item("active_gesture", "IDLE")?;
+        out.set_item("candidate_gesture", "IDLE")?;
+        out.set_item("cursor_norm", py.None())?;
+        out.set_item("hold_frames", 0usize)?;
+        out.set_item("in_grace_period", false)?;
+        out.set_item("kalman_predicted", false)?;
+        out.set_item("voting_counts", PyDict::new(py))?;
+        Ok(out)
+    }
+}
+
+#[pyclass]
+pub struct RustDualHandStateMachine {
+    prev_pinch_dist: Option<f64>,
+    smoothed_dist: Option<f64>,
+    prev_pan_center: Option<(f64, f64)>,
+    prev_fist_pan_xy: Option<(f64, f64)>,
+    fist_pan_until: f64,
+    offhand_cand: String,
+    offhand_cand_count: usize,
+    last_offhand_cmd_ts: f64,
+}
+
+#[pymethods]
+impl RustDualHandStateMachine {
+    #[new]
+    fn new() -> Self {
+        Self {
+            prev_pinch_dist: None,
+            smoothed_dist: None,
+            prev_pan_center: None,
+            prev_fist_pan_xy: None,
+            fist_pan_until: 0.0,
+            offhand_cand: String::new(),
+            offhand_cand_count: 0,
+            last_offhand_cmd_ts: -1e9,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.prev_pinch_dist = None;
+        self.smoothed_dist = None;
+        self.prev_pan_center = None;
+        self.prev_fist_pan_xy = None;
+        self.fist_pan_until = 0.0;
+        self.offhand_cand.clear();
+        self.offhand_cand_count = 0;
+    }
+
+    #[pyo3(signature = (p_pose, p_pr, p_xy, s_pose, s_pr, s_xy, now_sec))]
+    #[allow(clippy::too_many_arguments)]
+    fn step<'py>(
+        &mut self,
+        py: Python<'py>,
+        p_pose: &str,
+        p_pr: f64,
+        p_xy: (f64, f64),
+        s_pose: &str,
+        s_pr: f64,
+        s_xy: (f64, f64),
+        now_sec: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        let p_up = p_pose.to_ascii_uppercase();
+        let s_up = s_pose.to_ascii_uppercase();
+
+        // 1. Dual Pinch Zoom with smooth EMA distance filter
+        let both_pinch = (p_up == "PINCH" || p_pr < 0.33) && (s_up == "PINCH" || s_pr < 0.33);
+        if both_pinch {
+            self.prev_pan_center = None;
+            self.prev_fist_pan_xy = None;
+            self.offhand_cand.clear();
+            self.offhand_cand_count = 0;
+
+            let raw_dist = (p_xy.0 - s_xy.0).hypot(p_xy.1 - s_xy.1).max(0.03);
+            let dist = match self.smoothed_dist {
+                Some(sd) => 0.45 * sd + 0.55 * raw_dist,
+                None => raw_dist,
+            };
+            self.smoothed_dist = Some(dist);
+            let mid = (0.5 * (p_xy.0 + s_xy.0), 0.5 * (p_xy.1 + s_xy.1));
+            let mut zf = 1.0_f64;
+            if let Some(prev_d) = self.prev_pinch_dist {
+                if (dist - prev_d).abs() > 0.004 {
+                    zf = (dist / prev_d.max(0.03)).clamp(0.84, 1.18);
+                }
+            }
+            self.prev_pinch_dist = Some(dist);
+
+            out.set_item("two_hand_mode", "DUAL_PINCH_ZOOM")?;
+            out.set_item("modifier_mode", "NONE")?;
+            out.set_item("zoom_factor", round4(zf))?;
+            out.set_item("zoom_center_norm", mid)?;
+            out.set_item("pan_delta_norm", (0.0_f64, 0.0_f64))?;
+            out.set_item("offhand_command", py.None())?;
+            out.set_item("suppress_primary_drawing", true)?;
+            out.set_item("status_label_vi", "2 Tay: Thu/Phóng bảng (Dual Pinch)")?;
+            return Ok(out);
+        }
+        self.prev_pinch_dist = None;
+        self.smoothed_dist = None;
+
+        // 2. Dual Open Palm Pan OR Dual Fist Pan (both hands moving in parallel)
+        if (p_up == "OPEN_PALM" && s_up == "OPEN_PALM") || (p_up == "FIST" && s_up == "FIST") {
+            self.prev_fist_pan_xy = None;
+            self.offhand_cand.clear();
+            self.offhand_cand_count = 0;
+            let mid = (0.5 * (p_xy.0 + s_xy.0), 0.5 * (p_xy.1 + s_xy.1));
+            let mut dx = 0.0_f64;
+            let mut dy = 0.0_f64;
+            if let Some(prev_mid) = self.prev_pan_center {
+                let rdx = mid.0 - prev_mid.0;
+                let rdy = mid.1 - prev_mid.1;
+                if rdx.hypot(rdy) > 0.0025 {
+                    dx = rdx.clamp(-0.15, 0.15);
+                    dy = rdy.clamp(-0.15, 0.15);
+                }
+            }
+            self.prev_pan_center = Some(mid);
+            let lbl = if p_up == "FIST" {
+                "2 Tay: Kéo trượt bảng (2 Tay Nắm)"
+            } else {
+                "2 Tay: Kéo trượt bảng (2 Tay Xòe)"
+            };
+            out.set_item("two_hand_mode", "DUAL_PALM_PAN")?;
+            out.set_item("modifier_mode", "NONE")?;
+            out.set_item("zoom_factor", 1.0_f64)?;
+            out.set_item("zoom_center_norm", py.None())?;
+            out.set_item(
+                "pan_delta_norm",
+                (
+                    (dx * 100_000.0).round() / 100_000.0,
+                    (dy * 100_000.0).round() / 100_000.0,
+                ),
+            )?;
+            out.set_item("offhand_command", py.None())?;
+            out.set_item("suppress_primary_drawing", true)?;
+            out.set_item("status_label_vi", lbl)?;
+            return Ok(out);
+        }
+        self.prev_pan_center = None;
+
+        // 2A. Off-Hand Fist + Primary Hand Move (non-pinching) -> Dual Pan
+        let p_is_drawing = p_up == "PINCH" || p_pr < 0.34;
+        if s_up == "FIST" && !p_is_drawing {
+            if let Some(prev_xy) = self.prev_fist_pan_xy {
+                let fdx = p_xy.0 - prev_xy.0;
+                let fdy = p_xy.1 - prev_xy.1;
+                let fstep = fdx.hypot(fdy);
+                let is_moving =
+                    fstep > 0.010 || (now_sec <= self.fist_pan_until && fstep > 0.002);
+                if is_moving {
+                    self.prev_fist_pan_xy = Some(p_xy);
+                    self.fist_pan_until = now_sec + 0.28;
+                    self.offhand_cand.clear();
+                    self.offhand_cand_count = 0;
+                    out.set_item("two_hand_mode", "DUAL_PALM_PAN")?;
+                    out.set_item("modifier_mode", "NONE")?;
+                    out.set_item("zoom_factor", 1.0_f64)?;
+                    out.set_item("zoom_center_norm", py.None())?;
+                    out.set_item(
+                        "pan_delta_norm",
+                        (
+                            (fdx.clamp(-0.15, 0.15) * 100_000.0).round() / 100_000.0,
+                            (fdy.clamp(-0.15, 0.15) * 100_000.0).round() / 100_000.0,
+                        ),
+                    )?;
+                    out.set_item("offhand_command", py.None())?;
+                    out.set_item("suppress_primary_drawing", true)?;
+                    out.set_item("status_label_vi", "2 Tay: Kéo trượt bảng (Tay phụ Nắm + Kéo)")?;
+                    return Ok(out);
+                }
+            }
+            self.prev_fist_pan_xy = Some(p_xy);
+        } else {
+            self.prev_fist_pan_xy = None;
+            self.fist_pan_until = 0.0;
+        }
+
+        // 2B. Modifier draw lock
+        if p_is_drawing && (s_up == "FIST" || s_up == "TWO_FINGERS") {
+            self.offhand_cand.clear();
+            self.offhand_cand_count = 0;
+            let (mod_str, lbl) = if s_up == "FIST" {
+                ("LINE_LOCK", "2 Tay: Khóa Nét Thẳng (Tay phụ Nắm + Tay chính Vẽ)")
+            } else {
+                (
+                    "SHAPE_LOCK",
+                    "2 Tay: Khóa Hình Học Chuẩn (Tay phụ 2 Ngón + Tay chính Vẽ)",
+                )
+            };
+            out.set_item("two_hand_mode", "MODIFIER_DRAW")?;
+            out.set_item("modifier_mode", mod_str)?;
+            out.set_item("zoom_factor", 1.0_f64)?;
+            out.set_item("zoom_center_norm", py.None())?;
+            out.set_item("pan_delta_norm", (0.0_f64, 0.0_f64))?;
+            out.set_item("offhand_command", py.None())?;
+            out.set_item("suppress_primary_drawing", false)?;
+            out.set_item("status_label_vi", lbl)?;
+            return Ok(out);
+        }
+
+        // 3. Off-hand quick tool command
+        let mapped_cmd = match s_up.as_str() {
+            "FIST" => Some("TOGGLE_PEN_ERASER"),
+            "TWO_FINGERS" => Some("CYCLE_COLOR"),
+            "THREE_FINGERS" => Some("UNDO"),
+            "PINCH" => Some("SET_PEN"),
+            _ => None,
+        };
+        let mut triggered_cmd: Option<&'static str> = None;
+        if let Some(cmd) = mapped_cmd {
+            if self.offhand_cand == cmd {
+                self.offhand_cand_count += 1;
+            } else {
+                self.offhand_cand = cmd.to_string();
+                self.offhand_cand_count = 1;
+            }
+            if self.offhand_cand_count >= 2 && (now_sec - self.last_offhand_cmd_ts) >= 0.70 {
+                self.last_offhand_cmd_ts = now_sec;
+                triggered_cmd = Some(cmd);
+                self.offhand_cand_count = 0;
+            }
+        } else {
+            self.offhand_cand.clear();
+            self.offhand_cand_count = 0;
+        }
+
+        let mode_str = if triggered_cmd.is_some() {
+            "OFFHAND_COMMAND"
+        } else {
+            "NONE"
+        };
+        let status = match triggered_cmd {
+            Some(c) => format!("2 Tay: Chính={} | Phụ={} -> {}", p_up, s_up, c),
+            None => format!("2 Tay: Chính={} | Phụ={}", p_up, s_up),
+        };
+        out.set_item("two_hand_mode", mode_str)?;
+        out.set_item("modifier_mode", "NONE")?;
+        out.set_item("zoom_factor", 1.0_f64)?;
+        out.set_item("zoom_center_norm", py.None())?;
+        out.set_item("pan_delta_norm", (0.0_f64, 0.0_f64))?;
+        out.set_item("offhand_command", triggered_cmd)?;
+        out.set_item("suppress_primary_drawing", false)?;
+        out.set_item("status_label_vi", status)?;
+        Ok(out)
+    }
+}
+
+#[inline]
+fn world_to_local_rotated(
+    px: f64,
+    py: f64,
+    cx: f64,
+    cy: f64,
+    rotation_deg: f64,
+) -> (f64, f64) {
+    if rotation_deg.abs() < 1e-4 {
+        return (px, py);
+    }
+    let rad = (-rotation_deg).to_radians();
+    let (c, s) = (rad.cos(), rad.sin());
+    let dx = px - cx;
+    let dy = py - cy;
+    (cx + dx * c - dy * s, cy + dx * s + dy * c)
+}
+
+#[pyfunction]
+#[pyo3(signature = (px, py, pts, radius = 10.0))]
+fn hit_test_polyline_rs(px: f64, py: f64, pts: Vec<(f64, f64)>, radius: f64) -> bool {
+    if pts.is_empty() {
+        return false;
+    }
+    let r = radius.max(1.0);
+    if pts.len() == 1 {
+        return (px - pts[0].0).hypot(py - pts[0].1) <= r;
+    }
+    for w in pts.windows(2) {
+        if perpendicular_distance((px, py), w[0], w[1]) <= r {
+            return true;
+        }
+    }
+    false
+}
+
+/// Fast O(N) Canvas Object hit-testing sorted by descending z_index.
+/// Each object tuple: `(id, obj_type, x, y, w, h, rotation_deg, z_index, polyline_pts)`.
+#[pyfunction]
+#[pyo3(signature = (px, py, objects, tolerance = 10.0))]
+fn hit_test_objects_rs(
+    px: f64,
+    py: f64,
+    objects: Vec<(String, String, f64, f64, f64, f64, f64, i64, Vec<(f64, f64)>)>,
+    tolerance: f64,
+) -> Option<String> {
+    let tol = tolerance.max(2.0);
+    let mut order: Vec<usize> = (0..objects.len()).collect();
+    order.sort_by(|&a, &b| objects[b].7.cmp(&objects[a].7).then_with(|| b.cmp(&a)));
+
+    for idx in order {
+        let (ref id, ref obj_type, x, y, w, h, rot_deg, _, ref pts) = objects[idx];
+        let bw = w.max(4.0);
+        let bh = h.max(4.0);
+        let cx = x + 0.5 * bw;
+        let cy = y + 0.5 * bh;
+        let (lx, ly) = world_to_local_rotated(px, py, cx, cy, rot_deg);
+
+        // Quick local AABB reject
+        if lx < x - tol || lx > x + bw + tol || ly < y - tol || ly > y + bh + tol {
+            continue;
+        }
+
+        if (obj_type == "stroke" || obj_type == "shape") && !pts.is_empty() {
+            if hit_test_polyline_rs(lx, ly, pts.clone(), tol) {
+                return Some(id.clone());
+            }
+            // For closed shapes, also allow clicking inside interior when reasonable
+            if obj_type == "shape" && pts.len() >= 4 {
+                let first = pts[0];
+                let last = *pts.last().unwrap();
+                if (first.0 - last.0).hypot(first.1 - last.1) <= 12.0 {
+                    // Ray-casting point-in-polygon
+                    let mut inside = false;
+                    let mut j = pts.len() - 1;
+                    for i in 0..pts.len() {
+                        let (xi, yi) = pts[i];
+                        let (xj, yj) = pts[j];
+                        if ((yi > ly) != (yj > ly))
+                            && (lx < (xj - xi) * (ly - yi) / ((yj - yi) + 1e-12) + xi)
+                        {
+                            inside = !inside;
+                        }
+                        j = i;
+                    }
+                    if inside {
+                        return Some(id.clone());
+                    }
+                }
+            }
+        } else {
+            return Some(id.clone());
+        }
+    }
+    None
+}
+
+/// Fast marquee rectangle selection returning all object IDs whose rotated AABB intersects `(rx, ry, rw, rh)`.
+/// Each object tuple: `(id, x, y, w, h, rotation_deg)`.
+#[pyfunction]
+fn marquee_select_objects_rs(
+    rx: f64,
+    ry: f64,
+    rw: f64,
+    rh: f64,
+    objects: Vec<(String, f64, f64, f64, f64, f64)>,
+) -> Vec<String> {
+    let mx0 = rx.min(rx + rw);
+    let my0 = ry.min(ry + rh);
+    let mx1 = rx.max(rx + rw);
+    let my1 = ry.max(ry + rh);
+    let mut hits = Vec::new();
+    for (id, x, y, w, h, rot_deg) in objects {
+        let bw = w.max(2.0);
+        let bh = h.max(2.0);
+        let (ox0, oy0, ox1, oy1) = if rot_deg.abs() < 1e-4 {
+            (x, y, x + bw, y + bh)
+        } else {
+            let cx = x + 0.5 * bw;
+            let cy = y + 0.5 * bh;
+            let rad = rot_deg.to_radians();
+            let (c, s) = (rad.cos(), rad.sin());
+            let corners = [(x, y), (x + bw, y), (x + bw, y + bh), (x, y + bh)];
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for (px, py) in corners {
+                let dx = px - cx;
+                let dy = py - cy;
+                let wx = cx + dx * c - dy * s;
+                let wy = cy + dx * s + dy * c;
+                min_x = min_x.min(wx);
+                min_y = min_y.min(wy);
+                max_x = max_x.max(wx);
+                max_y = max_y.max(wy);
+            }
+            (min_x, min_y, max_x, max_y)
+        };
+        if ox1 >= mx0 && ox0 <= mx1 && oy1 >= my0 && oy0 <= my1 {
+            hits.push(id);
+        }
+    }
+    hits
+}
+
+// =============================================================================
+// 2D QUADTREE SPATIAL INDEXING ENGINE (RustSpatialIndex)
+// =============================================================================
+
+#[derive(Clone, Debug)]
+struct SpatialEntry {
+    id: String,
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+    z_index: i64,
+    order: u64,
+    node_idx: usize,
+    alive: bool,
+}
+
+#[derive(Clone, Debug)]
+struct QuadNode {
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+    depth: usize,
+    items: Vec<usize>,
+    children: Option<[usize; 4]>,
+}
+
+impl QuadNode {
+    fn new(min_x: f64, min_y: f64, max_x: f64, max_y: f64, depth: usize) -> Self {
+        Self {
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+            depth,
+            items: Vec::new(),
+            children: None,
+        }
+    }
+
+    #[inline]
+    fn child_quadrant(&self, x0: f64, y0: f64, x1: f64, y1: f64) -> Option<usize> {
+        if x0 < self.min_x || x1 > self.max_x || y0 < self.min_y || y1 > self.max_y {
+            return None;
+        }
+        let mid_x = 0.5 * (self.min_x + self.max_x);
+        let mid_y = 0.5 * (self.min_y + self.max_y);
+        let col = if x1 <= mid_x {
+            0
+        } else if x0 >= mid_x {
+            1
+        } else {
+            return None;
+        };
+        let row = if y1 <= mid_y {
+            0
+        } else if y0 >= mid_y {
+            2
+        } else {
+            return None;
+        };
+        Some(row + col)
+    }
+}
+
+#[inline]
+fn normalize_bounds(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> (f64, f64, f64, f64) {
+    let (x0, x1) = if min_x <= max_x {
+        (min_x, max_x)
+    } else {
+        (max_x, min_x)
+    };
+    let (y0, y1) = if min_y <= max_y {
+        (min_y, max_y)
+    } else {
+        (max_y, min_y)
+    };
+    (x0, y0, x1, y1)
+}
+
+#[pyclass]
+pub struct RustSpatialIndex {
+    default_bounds: (f64, f64, f64, f64),
+    max_items: usize,
+    max_depth: usize,
+    nodes: Vec<QuadNode>,
+    entries: Vec<SpatialEntry>,
+    free_slots: Vec<usize>,
+    id_to_slot: HashMap<String, usize>,
+    next_order: u64,
+}
+
+impl RustSpatialIndex {
+    fn reset_tree_with_bounds(&mut self, min_x: f64, min_y: f64, max_x: f64, max_y: f64) {
+        self.nodes.clear();
+        self.entries.clear();
+        self.free_slots.clear();
+        self.id_to_slot.clear();
+        self.next_order = 0;
+        self.nodes.push(QuadNode::new(min_x, min_y, max_x, max_y, 0));
+    }
+
+    fn split_node(&mut self, node_idx: usize) {
+        let (min_x, min_y, max_x, max_y, depth) = {
+            let n = &self.nodes[node_idx];
+            if n.children.is_some() || n.depth >= self.max_depth {
+                return;
+            }
+            (n.min_x, n.min_y, n.max_x, n.max_y, n.depth)
+        };
+        let mid_x = 0.5 * (min_x + max_x);
+        let mid_y = 0.5 * (min_y + max_y);
+        let child_depth = depth + 1;
+        let base = self.nodes.len();
+        self.nodes
+            .push(QuadNode::new(min_x, min_y, mid_x, mid_y, child_depth));
+        self.nodes
+            .push(QuadNode::new(mid_x, min_y, max_x, mid_y, child_depth));
+        self.nodes
+            .push(QuadNode::new(min_x, mid_y, mid_x, max_y, child_depth));
+        self.nodes
+            .push(QuadNode::new(mid_x, mid_y, max_x, max_y, child_depth));
+        let children = [base, base + 1, base + 2, base + 3];
+        self.nodes[node_idx].children = Some(children);
+
+        let old_items = std::mem::take(&mut self.nodes[node_idx].items);
+        let mut keep_here = Vec::new();
+        for slot in old_items {
+            let (alive, x0, y0, x1, y1) = {
+                let e = &self.entries[slot];
+                (e.alive, e.min_x, e.min_y, e.max_x, e.max_y)
+            };
+            if !alive {
+                continue;
+            }
+            if let Some(q) = self.nodes[node_idx].child_quadrant(x0, y0, x1, y1) {
+                let child_idx = children[q];
+                self.entries[slot].node_idx = child_idx;
+                self.nodes[child_idx].items.push(slot);
+            } else {
+                self.entries[slot].node_idx = node_idx;
+                keep_here.push(slot);
+            }
+        }
+        self.nodes[node_idx].items = keep_here;
+    }
+
+    fn insert_slot(&mut self, slot: usize) {
+        let (x0, y0, x1, y1) = {
+            let e = &self.entries[slot];
+            (e.min_x, e.min_y, e.max_x, e.max_y)
+        };
+        let mut cur = 0usize;
+        loop {
+            if let Some(children) = self.nodes[cur].children {
+                if let Some(q) = self.nodes[cur].child_quadrant(x0, y0, x1, y1) {
+                    cur = children[q];
+                    continue;
+                }
+                self.entries[slot].node_idx = cur;
+                self.nodes[cur].items.push(slot);
+                return;
+            }
+            self.entries[slot].node_idx = cur;
+            self.nodes[cur].items.push(slot);
+            if self.nodes[cur].items.len() > self.max_items
+                && self.nodes[cur].depth < self.max_depth
+            {
+                self.split_node(cur);
+            }
+            return;
+        }
+    }
+
+    fn remove_by_key(&mut self, id: &str) -> bool {
+        let Some(slot) = self.id_to_slot.remove(id) else {
+            return false;
+        };
+        let node_idx = self.entries[slot].node_idx;
+        self.entries[slot].alive = false;
+        if let Some(node) = self.nodes.get_mut(node_idx) {
+            if let Some(pos) = node.items.iter().position(|&idx| idx == slot) {
+                node.items.swap_remove(pos);
+            }
+        }
+        self.free_slots.push(slot);
+        true
+    }
+
+    fn query_aabb_slots(&self, qx0: f64, qy0: f64, qx1: f64, qy1: f64) -> Vec<usize> {
+        if self.nodes.is_empty() || self.id_to_slot.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut stack = Vec::with_capacity(self.max_depth * 3 + 4);
+        stack.push(0usize);
+        while let Some(node_idx) = stack.pop() {
+            let node = &self.nodes[node_idx];
+            for &slot in &node.items {
+                let e = &self.entries[slot];
+                if e.alive
+                    && e.max_x >= qx0
+                    && e.min_x <= qx1
+                    && e.max_y >= qy0
+                    && e.min_y <= qy1
+                {
+                    out.push(slot);
+                }
+            }
+            if let Some(children) = node.children {
+                for &c_idx in &children {
+                    let c = &self.nodes[c_idx];
+                    if c.max_x >= qx0 && c.min_x <= qx1 && c.max_y >= qy0 && c.min_y <= qy1 {
+                        stack.push(c_idx);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+#[pymethods]
+impl RustSpatialIndex {
+    #[new]
+    #[pyo3(signature = (
+        min_x = -50000.0,
+        min_y = -50000.0,
+        max_x = 50000.0,
+        max_y = 50000.0,
+        max_items = 12,
+        max_depth = 8
+    ))]
+    fn new(
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+        max_items: usize,
+        max_depth: usize,
+    ) -> Self {
+        let (x0, y0, mut x1, mut y1) = normalize_bounds(min_x, min_y, max_x, max_y);
+        if (x1 - x0).abs() < 1.0 {
+            x1 = x0 + 1000.0;
+        }
+        if (y1 - y0).abs() < 1.0 {
+            y1 = y0 + 1000.0;
+        }
+        let mut idx = Self {
+            default_bounds: (x0, y0, x1, y1),
+            max_items: max_items.max(2),
+            max_depth: max_depth.clamp(1, 16),
+            nodes: Vec::with_capacity(64),
+            entries: Vec::new(),
+            free_slots: Vec::new(),
+            id_to_slot: HashMap::new(),
+            next_order: 0,
+        };
+        idx.nodes.push(QuadNode::new(x0, y0, x1, y1, 0));
+        idx
+    }
+
+    fn clear(&mut self) {
+        let (x0, y0, x1, y1) = self.default_bounds;
+        self.reset_tree_with_bounds(x0, y0, x1, y1);
+    }
+
+    fn rebuild(&mut self, items: Vec<(String, f64, f64, f64, f64, i64)>) {
+        let (mut rx0, mut ry0, mut rx1, mut ry1) = self.default_bounds;
+        for &(_, min_x, min_y, max_x, max_y, _) in &items {
+            let (x0, y0, x1, y1) = normalize_bounds(min_x, min_y, max_x, max_y);
+            if x0 < rx0 {
+                rx0 = x0 - 64.0;
+            }
+            if y0 < ry0 {
+                ry0 = y0 - 64.0;
+            }
+            if x1 > rx1 {
+                rx1 = x1 + 64.0;
+            }
+            if y1 > ry1 {
+                ry1 = y1 + 64.0;
+            }
+        }
+        self.reset_tree_with_bounds(rx0, ry0, rx1, ry1);
+        self.entries.reserve(items.len());
+        self.id_to_slot.reserve(items.len());
+        for (id, min_x, min_y, max_x, max_y, z_index) in items {
+            self.upsert(id, min_x, min_y, max_x, max_y, z_index);
+        }
+    }
+
+    fn upsert(
+        &mut self,
+        id: String,
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+        z_index: i64,
+    ) {
+        if self.id_to_slot.contains_key(&id) {
+            self.remove_by_key(&id);
+        }
+        let (x0, y0, x1, y1) = normalize_bounds(min_x, min_y, max_x, max_y);
+        let order = self.next_order;
+        self.next_order = self.next_order.wrapping_add(1);
+        let entry = SpatialEntry {
+            id: id.clone(),
+            min_x: x0,
+            min_y: y0,
+            max_x: x1,
+            max_y: y1,
+            z_index,
+            order,
+            node_idx: 0,
+            alive: true,
+        };
+        let slot = if let Some(free) = self.free_slots.pop() {
+            self.entries[free] = entry;
+            free
+        } else {
+            let idx = self.entries.len();
+            self.entries.push(entry);
+            idx
+        };
+        self.id_to_slot.insert(id, slot);
+        self.insert_slot(slot);
+    }
+
+    fn remove(&mut self, id: String) -> bool {
+        self.remove_by_key(&id)
+    }
+
+    #[pyo3(signature = (px, py, tolerance = 10.0))]
+    fn query_point(&self, px: f64, py: f64, tolerance: f64) -> Vec<String> {
+        let tol = tolerance.max(0.0);
+        let mut slots = self.query_aabb_slots(px - tol, py - tol, px + tol, py + tol);
+        slots.sort_by(|&a, &b| {
+            let ea = &self.entries[a];
+            let eb = &self.entries[b];
+            eb.z_index
+                .cmp(&ea.z_index)
+                .then_with(|| eb.order.cmp(&ea.order))
+        });
+        slots
+            .into_iter()
+            .map(|s| self.entries[s].id.clone())
+            .collect()
+    }
+
+    fn query_rect(&self, rx: f64, ry: f64, rw: f64, rh: f64) -> Vec<String> {
+        let qx0 = rx.min(rx + rw);
+        let qx1 = rx.max(rx + rw);
+        let qy0 = ry.min(ry + rh);
+        let qy1 = ry.max(ry + rh);
+        let mut slots = self.query_aabb_slots(qx0, qy0, qx1, qy1);
+        slots.sort_by(|&a, &b| {
+            let ea = &self.entries[a];
+            let eb = &self.entries[b];
+            ea.z_index
+                .cmp(&eb.z_index)
+                .then_with(|| ea.order.cmp(&eb.order))
+        });
+        slots
+            .into_iter()
+            .map(|s| self.entries[s].id.clone())
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.id_to_slot.len()
+    }
+
+    fn __len__(&self) -> usize {
+        self.id_to_slot.len()
+    }
+}
+
+// =============================================================================
+// MULTI-THREADED RGB24 IMAGE RESIZE + 3x3 UNSHARP MASK PREPROCESSOR
+// =============================================================================
+
+#[inline(always)]
+fn round_clamp_u8(v: f32) -> u8 {
+    (v.clamp(0.0, 255.0) + 0.5).min(255.0) as u8
+}
+
+fn resize_band_bilinear(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    x_lut: &[(usize, usize, f32)],
+    band_y0: usize,
+    dst_band: &mut [u8],
+) {
+    let src_stride = src_w * 3;
+    let dst_stride = dst_w * 3;
+    let band_rows = dst_band.len() / dst_stride;
+    let scale_y = (src_h as f32) / (dst_h as f32);
+    let max_sy = (src_h - 1) as f32;
+
+    for local_y in 0..band_rows {
+        let dy = band_y0 + local_y;
+        let (y0, y1, wy) = if src_h == 1 {
+            (0usize, 0usize, 0.0_f32)
+        } else {
+            let sy = (((dy as f32) + 0.5) * scale_y - 0.5).clamp(0.0, max_sy);
+            let iy0 = sy as usize;
+            let iy1 = (iy0 + 1).min(src_h - 1);
+            (iy0, iy1, sy - (iy0 as f32))
+        };
+        let wy0 = 1.0_f32 - wy;
+        let row0 = &src[y0 * src_stride..(y0 + 1) * src_stride];
+        let row1 = &src[y1 * src_stride..(y1 + 1) * src_stride];
+        let out_row = &mut dst_band[local_y * dst_stride..(local_y + 1) * dst_stride];
+
+        for (dx, &(x0, x1, wx)) in x_lut.iter().enumerate() {
+            let wx0 = 1.0_f32 - wx;
+            let w00 = wx0 * wy0;
+            let w10 = wx * wy0;
+            let w01 = wx0 * wy;
+            let w11 = wx * wy;
+            let p0 = x0 * 3;
+            let p1 = x1 * 3;
+            let dst_off = dx * 3;
+            out_row[dst_off] = round_clamp_u8(
+                (row0[p0] as f32) * w00
+                    + (row0[p1] as f32) * w10
+                    + (row1[p0] as f32) * w01
+                    + (row1[p1] as f32) * w11,
+            );
+            out_row[dst_off + 1] = round_clamp_u8(
+                (row0[p0 + 1] as f32) * w00
+                    + (row0[p1 + 1] as f32) * w10
+                    + (row1[p0 + 1] as f32) * w01
+                    + (row1[p1 + 1] as f32) * w11,
+            );
+            out_row[dst_off + 2] = round_clamp_u8(
+                (row0[p0 + 2] as f32) * w00
+                    + (row0[p1 + 2] as f32) * w10
+                    + (row1[p0 + 2] as f32) * w01
+                    + (row1[p1 + 2] as f32) * w11,
+            );
+        }
+    }
+}
+
+fn resize_band_box(
+    src: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    x_spans: &[(usize, usize, f32, f32)],
+    band_y0: usize,
+    dst_band: &mut [u8],
+) {
+    let src_stride = src_w * 3;
+    let dst_stride = dst_w * 3;
+    let band_rows = dst_band.len() / dst_stride;
+    let scale_y = (src_h as f32) / (dst_h as f32);
+
+    for local_y in 0..band_rows {
+        let dy = band_y0 + local_y;
+        let fy0 = (dy as f32) * scale_y;
+        let fy1 = ((dy + 1) as f32) * scale_y;
+        let iy0 = (fy0 as usize).min(src_h - 1);
+        let iy1 = (fy1.ceil() as usize)
+            .saturating_sub(1)
+            .clamp(iy0, src_h - 1);
+        let out_row = &mut dst_band[local_y * dst_stride..(local_y + 1) * dst_stride];
+
+        for (dx, &(ix0, ix1, fx0, fx1)) in x_spans.iter().enumerate() {
+            let mut r_acc = 0.0_f32;
+            let mut g_acc = 0.0_f32;
+            let mut b_acc = 0.0_f32;
+            let mut w_acc = 0.0_f32;
+
+            for sy in iy0..=iy1 {
+                let wy = (fy1.min((sy + 1) as f32) - fy0.max(sy as f32)).max(0.0);
+                if wy <= 0.0 {
+                    continue;
+                }
+                let row = &src[sy * src_stride..(sy + 1) * src_stride];
+                for sx in ix0..=ix1 {
+                    let wx = (fx1.min((sx + 1) as f32) - fx0.max(sx as f32)).max(0.0);
+                    let w = wx * wy;
+                    if w <= 0.0 {
+                        continue;
+                    }
+                    let off = sx * 3;
+                    r_acc += (row[off] as f32) * w;
+                    g_acc += (row[off + 1] as f32) * w;
+                    b_acc += (row[off + 2] as f32) * w;
+                    w_acc += w;
+                }
+            }
+            let inv_w = if w_acc > 1e-6 { 1.0_f32 / w_acc } else { 0.0_f32 };
+            let dst_off = dx * 3;
+            out_row[dst_off] = round_clamp_u8(r_acc * inv_w);
+            out_row[dst_off + 1] = round_clamp_u8(g_acc * inv_w);
+            out_row[dst_off + 2] = round_clamp_u8(b_acc * inv_w);
+        }
+    }
+}
+
+fn unsharp_mask_band(
+    src: &[u8],
+    w: usize,
+    h: usize,
+    amount: f32,
+    band_y0: usize,
+    dst_band: &mut [u8],
+) {
+    let stride = w * 3;
+    let band_rows = dst_band.len() / stride;
+    let last_x = w - 1;
+    let last_y = h - 1;
+    let k_orig = 1.0_f32 + amount;
+    let k_blur = amount * (1.0_f32 / 16.0_f32);
+
+    for local_y in 0..band_rows {
+        let y = band_y0 + local_y;
+        let ym1 = y.saturating_sub(1);
+        let yp1 = (y + 1).min(last_y);
+        let r_top = &src[ym1 * stride..(ym1 + 1) * stride];
+        let r_mid = &src[y * stride..(y + 1) * stride];
+        let r_bot = &src[yp1 * stride..(yp1 + 1) * stride];
+        let out_row = &mut dst_band[local_y * stride..(local_y + 1) * stride];
+
+        for x in 0..w {
+            let xm1 = x.saturating_sub(1) * 3;
+            let x0 = x * 3;
+            let xp1 = (x + 1).min(last_x) * 3;
+            for c in 0..3 {
+                let sum16 = (r_top[xm1 + c] as u32)
+                    + 2 * (r_top[x0 + c] as u32)
+                    + (r_top[xp1 + c] as u32)
+                    + 2 * (r_mid[xm1 + c] as u32)
+                    + 4 * (r_mid[x0 + c] as u32)
+                    + 2 * (r_mid[xp1 + c] as u32)
+                    + (r_bot[xm1 + c] as u32)
+                    + 2 * (r_bot[x0 + c] as u32)
+                    + (r_bot[xp1 + c] as u32);
+                let orig = r_mid[x0 + c] as f32;
+                out_row[x0 + c] = round_clamp_u8(orig * k_orig - (sum16 as f32) * k_blur);
+            }
+        }
+    }
+}
+
+/// GIL-free, zero-dependency multi-threaded RGB24 image resize (bilinear / area box)
+/// + crisp 3x3 Gaussian unsharp mask preprocessing.
+#[pyfunction]
+#[pyo3(signature = (rgb_bytes, src_w, src_h, dst_w, dst_h, sharpen_amount = 0.35))]
+fn preprocess_image_resize_sharpen_rs(
+    py: Python<'_>,
+    rgb_bytes: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    sharpen_amount: f32,
+) -> PyResult<Py<PyBytes>> {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return Err(PyValueError::new_err(
+            "src_w, src_h, dst_w, and dst_h must all be > 0",
+        ));
+    }
+    let expected_src = src_w
+        .checked_mul(src_h)
+        .and_then(|v| v.checked_mul(3))
+        .ok_or_else(|| PyValueError::new_err("source image dimensions overflow"))?;
+    if rgb_bytes.len() < expected_src {
+        return Err(PyValueError::new_err(format!(
+            "rgb_bytes too short: expected at least {} bytes for {}x{} RGB24, got {}",
+            expected_src,
+            src_w,
+            src_h,
+            rgb_bytes.len()
+        )));
+    }
+    let dst_len = dst_w
+        .checked_mul(dst_h)
+        .and_then(|v| v.checked_mul(3))
+        .ok_or_else(|| PyValueError::new_err("destination image dimensions overflow"))?;
+
+    let src = &rgb_bytes[..expected_src];
+
+    let result_buf = py.allow_threads(|| {
+        let dst_pixels = dst_w.saturating_mul(dst_h);
+        let use_parallel = dst_pixels >= 65_536 && dst_h >= 16;
+        let num_threads = if use_parallel {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .clamp(2, 8)
+                .min(dst_h)
+        } else {
+            1
+        };
+        let dst_stride = dst_w * 3;
+        let rows_per_band = (dst_h + num_threads - 1) / num_threads;
+
+        // 1. Resize (identity copy / box area downscale / bilinear)
+        let mut resized = vec![0u8; dst_len];
+        if src_w == dst_w && src_h == dst_h {
+            resized.copy_from_slice(src);
+        } else if src_w > dst_w * 2 || src_h > dst_h * 2 {
+            let scale_x = (src_w as f32) / (dst_w as f32);
+            let x_spans: Vec<(usize, usize, f32, f32)> = (0..dst_w)
+                .map(|dx| {
+                    let fx0 = (dx as f32) * scale_x;
+                    let fx1 = ((dx + 1) as f32) * scale_x;
+                    let ix0 = (fx0.floor() as usize).min(src_w - 1);
+                    let ix1 = (fx1.ceil() as usize)
+                        .saturating_sub(1)
+                        .clamp(ix0, src_w - 1);
+                    (ix0, ix1, fx0, fx1)
+                })
+                .collect();
+            if use_parallel {
+                let x_spans_ref = &x_spans;
+                std::thread::scope(|s| {
+                    for (band_idx, band) in resized.chunks_mut(rows_per_band * dst_stride).enumerate()
+                    {
+                        let band_y0 = band_idx * rows_per_band;
+                        s.spawn(move || {
+                            resize_band_box(
+                                src,
+                                src_w,
+                                src_h,
+                                dst_w,
+                                dst_h,
+                                x_spans_ref,
+                                band_y0,
+                                band,
+                            );
+                        });
+                    }
+                });
+            } else {
+                resize_band_box(src, src_w, src_h, dst_w, dst_h, &x_spans, 0, &mut resized);
+            }
+        } else {
+            let scale_x = (src_w as f32) / (dst_w as f32);
+            let max_sx = (src_w - 1) as f32;
+            let x_lut: Vec<(usize, usize, f32)> = (0..dst_w)
+                .map(|dx| {
+                    if src_w == 1 {
+                        (0usize, 0usize, 0.0_f32)
+                    } else {
+                        let sx = (((dx as f32) + 0.5) * scale_x - 0.5).clamp(0.0, max_sx);
+                        let ix0 = sx.floor() as usize;
+                        let ix1 = (ix0 + 1).min(src_w - 1);
+                        (ix0, ix1, sx - (ix0 as f32))
+                    }
+                })
+                .collect();
+            if use_parallel {
+                let x_lut_ref = &x_lut;
+                std::thread::scope(|s| {
+                    for (band_idx, band) in resized.chunks_mut(rows_per_band * dst_stride).enumerate()
+                    {
+                        let band_y0 = band_idx * rows_per_band;
+                        s.spawn(move || {
+                            resize_band_bilinear(
+                                src, src_w, src_h, dst_w, dst_h, x_lut_ref, band_y0, band,
+                            );
+                        });
+                    }
+                });
+            } else {
+                resize_band_bilinear(src, src_w, src_h, dst_w, dst_h, &x_lut, 0, &mut resized);
+            }
+        }
+
+        // 2. Crisp 3x3 Unsharp Mask when sharpen_amount > 0.01
+        if sharpen_amount > 0.01 {
+            let amount = sharpen_amount.clamp(0.0, 3.0);
+            let mut sharpened = vec![0u8; dst_len];
+            if use_parallel {
+                let resized_ref = &resized;
+                std::thread::scope(|s| {
+                    for (band_idx, band) in
+                        sharpened.chunks_mut(rows_per_band * dst_stride).enumerate()
+                    {
+                        let band_y0 = band_idx * rows_per_band;
+                        s.spawn(move || {
+                            unsharp_mask_band(resized_ref, dst_w, dst_h, amount, band_y0, band);
+                        });
+                    }
+                });
+            } else {
+                unsharp_mask_band(&resized, dst_w, dst_h, amount, 0, &mut sharpened);
+            }
+            sharpened
+        } else {
+            resized
+        }
+    });
+
+    Ok(PyBytes::new(py, &result_buf).unbind())
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     "airteach_core_rs 2.0.0"
@@ -1203,7 +3004,7 @@ fn version() -> &'static str {
 
 #[pyfunction]
 fn backend_info() -> &'static str {
-    "airteach_core_rs 2.0.0 (Rust PyO3 native)"
+    "airteach_core_rs 2.0.0 (Rust PyO3 native: One-Euro + Kalman + GestureFSM + Geometry + Quadtree + HitTest + ImagePreprocess)"
 }
 
 #[pymodule]
@@ -1213,6 +3014,10 @@ fn airteach_core_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustOneEuroFilter3D>()?;
     m.add_class::<RustKinematic60HzExtrapolator>()?;
     m.add_class::<RustSwipeDetector>()?;
+    m.add_class::<RustKalmanVelocityPredictor2D>()?;
+    m.add_class::<RustGestureStateMachine>()?;
+    m.add_class::<RustDualHandStateMachine>()?;
+    m.add_class::<RustSpatialIndex>()?;
     m.add_function(wrap_pyfunction!(classify_hand_3d_rs, m)?)?;
     m.add_function(wrap_pyfunction!(rdp_simplify_rs, m)?)?;
     m.add_function(wrap_pyfunction!(rdp_simplify_2d, m)?)?;
@@ -1221,8 +3026,12 @@ fn airteach_core_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(snap_geometric_shape_rs, m)?)?;
     m.add_function(wrap_pyfunction!(analyze_frame_luma_rs, m)?)?;
     m.add_function(wrap_pyfunction!(apply_gamma_contrast_rs, m)?)?;
+    m.add_function(wrap_pyfunction!(preprocess_image_resize_sharpen_rs, m)?)?;
     m.add_function(wrap_pyfunction!(compute_dual_hand_kinematics_rs, m)?)?;
     m.add_function(wrap_pyfunction!(compute_roi_crop_box_rs, m)?)?;
+    m.add_function(wrap_pyfunction!(hit_test_polyline_rs, m)?)?;
+    m.add_function(wrap_pyfunction!(hit_test_objects_rs, m)?)?;
+    m.add_function(wrap_pyfunction!(marquee_select_objects_rs, m)?)?;
     m.add_function(wrap_pyfunction!(joint_angle_3d_deg, m)?)?;
     m.add_function(wrap_pyfunction!(cosine_similarity_vec, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;

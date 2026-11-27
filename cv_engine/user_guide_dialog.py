@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Built-in Interactive User Guide & Gesture Cheat-Sheet (`cv_engine/user_guide_dialog.py`)
-for AirTeach AI (DNT - Victer).
+Built-in Interactive User Guide, 4-Step First-Run Onboarding Tour & Live Gesture Sandbox
+(`cv_engine/user_guide_dialog.py`) for AirTeach AI (DNT - Victer).
 
-4 Visual Tabs with custom vector QPainter diagrams:
-  1. Cử Chỉ 1 Tay (Pointer, Pinch Draw, Open-Palm Erase, Horizontal/Vertical Air-Swipe)
-  2. Cử Chỉ 2 Tay (Dual-Pinch Zoom 25%-400%, Dual-Palm Pan, Fist+Move Pan, Off-Hand Modifiers)
-  3. Chuột & Bảng Tròn (8-Slice Right-Click Radial Pie Menu + Mouse/Keyboard Navigation)
-  4. AI Local & Tài Liệu (GGUF Model Manager + Word/PDF/PPTX/Image Folder/Board Images)
+Includes:
+1. `OnboardingTourDialog`: Interactive 4-step first-launch walkthrough with "Không hiện lại" & "Bỏ qua".
+2. `GestureSandboxWidget`: Live webcam testbed where teachers practice 1-hand & 2-hand gestures
+   and receive immediate Green (✓ Đã nhận diện) / Red (✗ Chưa khớp) feedback.
+3. `UserGuideDialog`: 5-Tab visual Cheat-Sheet (`?` button / `F1`):
+   - Tab 1: Cử Chỉ 1 Tay
+   - Tab 2: Cử Chỉ 2 Tay
+   - Tab 3: Chuột, Phím Tắt & Bảng Tròn 8 Hướng
+   - Tab 4: Tài Liệu Đa Định Dạng & AI Local Offline
+   - Tab 5: 🧪 Thử Cử Chỉ Trực Tiếp (Gesture Sandbox)
 """
 
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -26,6 +32,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -42,6 +49,7 @@ SECONDARY_TEAL = "#06B6D4"
 NEON_CYAN = "#00F5D4"
 BRIGHT_YELLOW = "#FEE440"
 ALERT_ROSE = "#F43F5E"
+SUCCESS_GREEN = "#10B981"
 TEXT_LIGHT = "#F8FAFC"
 TEXT_MUTED = "#94A3B8"
 
@@ -53,7 +61,7 @@ class GestureDiagramWidget(QWidget):
         super().__init__(parent)
         self.diagram_kind = diagram_kind
         self.accent = QColor(accent_hex)
-        self.setFixedSize(96, 84)
+        self.setFixedSize(92, 80)
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
@@ -74,90 +82,90 @@ class GestureDiagramWidget(QWidget):
             p.setPen(QPen(QColor(BRIGHT_YELLOW), 2.0))
             p.drawEllipse(QPointF(cx, cy), 5.0, 5.0)
             p.setPen(QPen(self.accent, 2.0, Qt.SolidLine, Qt.RoundCap))
-            p.drawLine(QPointF(cx - 12.0, cy + 24.0), QPointF(cx - 2.0, cy + 8.0))
+            p.drawLine(QPointF(cx - 12.0, cy + 22.0), QPointF(cx - 2.0, cy + 8.0))
         elif k == "PINCH_DRAW":
             p.setPen(QPen(self.accent, 3.0, Qt.SolidLine, Qt.RoundCap))
-            p.drawLine(QPointF(16.0, 56.0), QPointF(38.0, 30.0))
-            p.drawLine(QPointF(38.0, 30.0), QPointF(62.0, 48.0))
-            p.drawLine(QPointF(62.0, 48.0), QPointF(80.0, 24.0))
+            p.drawLine(QPointF(16.0, 54.0), QPointF(38.0, 28.0))
+            p.drawLine(QPointF(38.0, 28.0), QPointF(60.0, 46.0))
+            p.drawLine(QPointF(60.0, 46.0), QPointF(76.0, 22.0))
             p.setBrush(QColor(self.accent))
             p.setPen(Qt.NoPen)
-            p.drawEllipse(QPointF(80.0, 24.0), 5.0, 5.0)
+            p.drawEllipse(QPointF(76.0, 22.0), 5.0, 5.0)
+        elif k == "PINCH_GRAB":
+            p.setBrush(QColor(250, 204, 21, 55))
+            p.setPen(QPen(QColor(BRIGHT_YELLOW), 2.0, Qt.DashLine))
+            p.drawRoundedRect(QRectF(20.0, 18.0, 52.0, 42.0), 6.0, 6.0)
+            p.setPen(QPen(QColor(NEON_CYAN), 2.2))
+            p.drawLine(QPointF(cx - 12.0, cy), QPointF(cx + 12.0, cy))
+            p.drawLine(QPointF(cx, cy - 12.0), QPointF(cx, cy + 12.0))
         elif k == "OPEN_ERASE":
             p.setBrush(QColor(244, 63, 94, 55))
             p.setPen(QPen(QColor(ALERT_ROSE), 2.0, Qt.DashLine))
-            p.drawEllipse(QPointF(cx, cy), 22.0, 22.0)
+            p.drawEllipse(QPointF(cx, cy), 21.0, 21.0)
             p.setPen(QPen(QColor(TEXT_LIGHT), 2.0))
             p.drawLine(QPointF(cx - 8.0, cy - 8.0), QPointF(cx + 8.0, cy + 8.0))
             p.drawLine(QPointF(cx + 8.0, cy - 8.0), QPointF(cx - 8.0, cy + 8.0))
         elif k == "SWIPE_H":
             p.setPen(QPen(self.accent, 2.6, Qt.SolidLine, Qt.RoundCap))
-            p.drawLine(QPointF(18.0, cy), QPointF(78.0, cy))
-            p.drawLine(QPointF(68.0, cy - 9.0), QPointF(78.0, cy))
-            p.drawLine(QPointF(68.0, cy + 9.0), QPointF(78.0, cy))
-            p.drawLine(QPointF(28.0, cy - 9.0), QPointF(18.0, cy))
-            p.drawLine(QPointF(28.0, cy + 9.0), QPointF(18.0, cy))
-        elif k == "SWIPE_V":
-            p.setPen(QPen(self.accent, 2.6, Qt.SolidLine, Qt.RoundCap))
-            p.drawLine(QPointF(cx, 16.0), QPointF(cx, 68.0))
-            p.drawLine(QPointF(cx - 9.0, 26.0), QPointF(cx, 16.0))
-            p.drawLine(QPointF(cx + 9.0, 26.0), QPointF(cx, 16.0))
-            p.drawLine(QPointF(cx - 9.0, 58.0), QPointF(cx, 68.0))
-            p.drawLine(QPointF(cx + 9.0, 58.0), QPointF(cx, 68.0))
+            p.drawLine(QPointF(16.0, cy), QPointF(76.0, cy))
+            p.drawLine(QPointF(66.0, cy - 9.0), QPointF(76.0, cy))
+            p.drawLine(QPointF(66.0, cy + 9.0), QPointF(76.0, cy))
+            p.drawLine(QPointF(26.0, cy - 9.0), QPointF(16.0, cy))
+            p.drawLine(QPointF(26.0, cy + 9.0), QPointF(16.0, cy))
         elif k == "DUAL_ZOOM":
             p.setPen(QPen(self.accent, 2.2))
-            p.drawEllipse(QPointF(24.0, cy), 8.0, 8.0)
-            p.drawEllipse(QPointF(72.0, cy), 8.0, 8.0)
+            p.drawEllipse(QPointF(22.0, cy), 8.0, 8.0)
+            p.drawEllipse(QPointF(70.0, cy), 8.0, 8.0)
             p.setPen(QPen(QColor(BRIGHT_YELLOW), 2.2))
-            p.drawLine(QPointF(34.0, cy), QPointF(62.0, cy))
-            p.drawLine(QPointF(39.0, cy - 6.0), QPointF(33.0, cy))
-            p.drawLine(QPointF(39.0, cy + 6.0), QPointF(33.0, cy))
-            p.drawLine(QPointF(57.0, cy - 6.0), QPointF(63.0, cy))
-            p.drawLine(QPointF(57.0, cy + 6.0), QPointF(63.0, cy))
+            p.drawLine(QPointF(32.0, cy), QPointF(60.0, cy))
+            p.drawLine(QPointF(37.0, cy - 6.0), QPointF(31.0, cy))
+            p.drawLine(QPointF(37.0, cy + 6.0), QPointF(31.0, cy))
+            p.drawLine(QPointF(55.0, cy - 6.0), QPointF(61.0, cy))
+            p.drawLine(QPointF(55.0, cy + 6.0), QPointF(61.0, cy))
         elif k == "DUAL_PAN":
             p.setBrush(QColor(56, 189, 248, 45))
             p.setPen(QPen(self.accent, 1.8))
-            p.drawRoundedRect(QRectF(20.0, 18.0, 56.0, 48.0), 6.0, 6.0)
+            p.drawRoundedRect(QRectF(18.0, 16.0, 56.0, 48.0), 6.0, 6.0)
             p.setPen(QPen(QColor(TEXT_LIGHT), 2.0))
             p.drawLine(QPointF(cx - 14.0, cy), QPointF(cx + 14.0, cy))
             p.drawLine(QPointF(cx, cy - 14.0), QPointF(cx, cy + 14.0))
         elif k == "MOD_LOCK":
             p.setPen(QPen(self.accent, 2.4))
-            p.drawLine(QPointF(20.0, 58.0), QPointF(76.0, 26.0))
+            p.drawLine(QPointF(18.0, 56.0), QPointF(74.0, 24.0))
             p.setPen(QPen(QColor(BRIGHT_YELLOW), 1.8))
-            p.drawRect(QRectF(22.0, 20.0, 20.0, 16.0))
+            p.drawRect(QRectF(20.0, 18.0, 20.0, 16.0))
         elif k == "PIE_MENU":
             p.setPen(QPen(self.accent, 1.8))
-            p.drawEllipse(QPointF(cx, cy), 28.0, 28.0)
+            p.drawEllipse(QPointF(cx, cy), 27.0, 27.0)
             p.drawEllipse(QPointF(cx, cy), 9.0, 9.0)
             for i in range(8):
                 ang = math.radians(i * 45.0 + 22.5)
                 p.drawLine(
                     QPointF(cx + 9.0 * math.cos(ang), cy + 9.0 * math.sin(ang)),
-                    QPointF(cx + 28.0 * math.cos(ang), cy + 28.0 * math.sin(ang)),
+                    QPointF(cx + 27.0 * math.cos(ang), cy + 27.0 * math.sin(ang)),
                 )
         elif k == "MOUSE_NAV":
             p.setPen(QPen(self.accent, 2.0))
-            p.drawRoundedRect(QRectF(30.0, 14.0, 36.0, 56.0), 14.0, 14.0)
-            p.drawLine(QPointF(30.0, 36.0), QPointF(66.0, 36.0))
+            p.drawRoundedRect(QRectF(28.0, 12.0, 36.0, 54.0), 14.0, 14.0)
+            p.drawLine(QPointF(28.0, 34.0), QPointF(64.0, 34.0))
             p.setBrush(QColor(BRIGHT_YELLOW))
-            p.drawRoundedRect(QRectF(45.0, 19.0, 6.0, 12.0), 3.0, 3.0)
+            p.drawRoundedRect(QRectF(43.0, 17.0, 6.0, 12.0), 3.0, 3.0)
         elif k == "DOCS":
             p.setPen(QPen(self.accent, 2.0))
-            p.drawRoundedRect(QRectF(22.0, 14.0, 36.0, 48.0), 5.0, 5.0)
+            p.drawRoundedRect(QRectF(20.0, 12.0, 36.0, 46.0), 5.0, 5.0)
             p.setBrush(QColor(30, 41, 59))
-            p.drawRoundedRect(QRectF(36.0, 24.0, 38.0, 46.0), 5.0, 5.0)
+            p.drawRoundedRect(QRectF(34.0, 22.0, 38.0, 44.0), 5.0, 5.0)
             p.setPen(QPen(QColor(TEXT_LIGHT), 1.6))
-            p.drawLine(QPointF(44.0, 36.0), QPointF(66.0, 36.0))
-            p.drawLine(QPointF(44.0, 45.0), QPointF(66.0, 45.0))
-            p.drawLine(QPointF(44.0, 54.0), QPointF(60.0, 54.0))
+            p.drawLine(QPointF(42.0, 34.0), QPointF(64.0, 34.0))
+            p.drawLine(QPointF(42.0, 43.0), QPointF(64.0, 43.0))
+            p.drawLine(QPointF(42.0, 52.0), QPointF(58.0, 52.0))
         else:  # AI_LOCAL
             p.setPen(QPen(self.accent, 2.0))
-            p.drawRoundedRect(QRectF(22.0, 18.0, 52.0, 48.0), 10.0, 10.0)
+            p.drawRoundedRect(QRectF(20.0, 16.0, 52.0, 46.0), 10.0, 10.0)
             p.setPen(QPen(QColor(BRIGHT_YELLOW), 2.2))
-            p.drawEllipse(QPointF(38.0, 38.0), 4.0, 4.0)
-            p.drawEllipse(QPointF(58.0, 38.0), 4.0, 4.0)
-            p.drawLine(QPointF(38.0, 52.0), QPointF(58.0, 52.0))
+            p.drawEllipse(QPointF(36.0, 36.0), 4.0, 4.0)
+            p.drawEllipse(QPointF(56.0, 36.0), 4.0, 4.0)
+            p.drawLine(QPointF(36.0, 50.0), QPointF(56.0, 50.0))
 
 
 def _make_guide_card(
@@ -211,13 +219,345 @@ def _wrap_scroll(cards: List[QWidget]) -> QScrollArea:
     return area
 
 
+class GestureSandboxWidget(QWidget):
+    """
+    Live Gesture Sandbox testbed (Tab 5 of UserGuideDialog):
+    Receives real-time camera frames & recognized gestures from `VisionInferenceWorker`,
+    turning each 1-hand / 2-hand gesture card GREEN (✓ Đạt) on live detection or showing
+    RED feedback when palm orientation / gesture is not recognized.
+    """
+
+    SANDBOX_TARGETS: Tuple[Tuple[str, str, str], ...] = (
+        ("INDEX", "☝️ 1 Ngón Trỏ", "Vẽ nét (Draw)"),
+        ("TWO_FINGERS", "✌️ 2 Ngón (Chữ V)", "Con trỏ / Hover"),
+        ("PINCH", "🤏 Chụm Cái + Trỏ", "Cầm & kéo Object"),
+        ("OPEN_PALM", "🖐️ Xòe 5 Ngón", "Tẩy nét (Eraser)"),
+        ("SWIPE", "↔ Vẫy Tay Ngang", "Chuyển Slide"),
+        ("DUAL_PINCH_ZOOM", "🔍 2 Tay Chụm", "Phóng to / Thu nhỏ"),
+        ("DUAL_PALM_PAN", "✋ 2 Tay Nắm / Xòe", "Di chuyển bảng / Cuộn"),
+        ("THREE_FINGERS", "🤟 3 Ngón Tay", "Hoàn tác (Undo)"),
+    )
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.passed_gestures: set[str] = set()
+        self._cards: Dict[str, QLabel] = {}
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(10)
+
+        top = QHBoxLayout()
+        top.setSpacing(12)
+
+        self.cam_preview = QLabel("Đang chờ khung hình từ Webcam...\nHãy giơ 1 tay hoặc 2 tay trước camera để thử!")
+        self.cam_preview.setFixedSize(310, 210)
+        self.cam_preview.setAlignment(Qt.AlignCenter)
+        self.cam_preview.setWordWrap(True)
+        self.cam_preview.setStyleSheet(
+            f"background: #020617; color: {TEXT_MUTED}; border: 2px solid {BORDER_SLATE}; border-radius: 10px; font-size: 11.5px; font-weight: 600;"
+        )
+        top.addWidget(self.cam_preview)
+
+        right_col = QVBoxLayout()
+        right_col.setSpacing(8)
+        intro = QLabel("🧪 PHÒNG THỬ CỬ CHỈ TRỰC TIẾP (GESTURE SANDBOX)")
+        intro.setStyleSheet(f"color: {NEON_CYAN}; font-size: 13.5px; font-weight: 800;")
+        right_col.addWidget(intro)
+
+        desc = QLabel(
+            "Thực hiện lần lượt các cử chỉ 1 tay và 2 tay trước Camera. "
+            "Khi máy nhận diện chính xác, ô tương ứng sẽ sáng XANH LÁ (✓ Đạt). "
+            "Nếu tay quay ngang hoặc che khuất, hệ thống sẽ báo ĐỎ để bạn điều chỉnh góc tay."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11.5px;")
+        right_col.addWidget(desc)
+
+        self.live_feedback_lbl = QLabel("Trạng thái trực tiếp: Chưa phát hiện bàn tay")
+        self.live_feedback_lbl.setWordWrap(True)
+        self.live_feedback_lbl.setStyleSheet(
+            f"background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1.5px solid {BORDER_SLATE}; border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: 700;"
+        )
+        right_col.addWidget(self.live_feedback_lbl)
+
+        self.progress_lbl = QLabel("Tiến độ kiểm tra: 0 / 8 cử chỉ đã xác nhận")
+        self.progress_lbl.setStyleSheet(f"color: {BRIGHT_YELLOW}; font-size: 12px; font-weight: 800;")
+        right_col.addWidget(self.progress_lbl)
+
+        btn_row = QHBoxLayout()
+        reset_btn = QPushButton("↺ Thử Lại Từ Đầu")
+        reset_btn.clicked.connect(self.reset_progress)
+        btn_row.addWidget(reset_btn)
+        btn_row.addStretch(1)
+        right_col.addLayout(btn_row)
+        right_col.addStretch(1)
+        top.addLayout(right_col, stretch=1)
+        root.addLayout(top)
+
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        for idx, (gid, title, sub) in enumerate(self.SANDBOX_TARGETS):
+            lbl = QLabel(f"{title}\n{sub}\n[Chờ thực hiện]")
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setFixedHeight(68)
+            lbl.setStyleSheet(
+                f"background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1.5px solid {BORDER_SLATE}; border-radius: 9px; font-size: 11px; font-weight: 700; padding: 4px;"
+            )
+            grid.addWidget(lbl, idx // 4, idx % 4)
+            self._cards[gid] = lbl
+        root.addLayout(grid)
+
+    def reset_progress(self) -> None:
+        self.passed_gestures.clear()
+        for gid, title, sub in self.SANDBOX_TARGETS:
+            lbl = self._cards[gid]
+            lbl.setText(f"{title}\n{sub}\n[Chờ thực hiện]")
+            lbl.setStyleSheet(
+                f"background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1.5px solid {BORDER_SLATE}; border-radius: 9px; font-size: 11px; font-weight: 700; padding: 4px;"
+            )
+        self.progress_lbl.setText(f"Tiến độ kiểm tra: 0 / {len(self.SANDBOX_TARGETS)} cử chỉ đã xác nhận")
+        self.live_feedback_lbl.setText("Trạng thái trực tiếp: Đã đặt lại — Hãy giơ tay trước Camera")
+        self.live_feedback_lbl.setStyleSheet(
+            f"background: {SURFACE_DARK}; color: {TEXT_LIGHT}; border: 1.5px solid {BORDER_SLATE}; border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: 700;"
+        )
+
+    def _mark_passed(self, gid: str) -> None:
+        if gid not in self._cards:
+            return
+        self.passed_gestures.add(gid)
+        for k, title, sub in self.SANDBOX_TARGETS:
+            if k == gid:
+                lbl = self._cards[gid]
+                lbl.setText(f"{title}\n{sub}\n✓ ĐÃ NHẬN DIỆN")
+                lbl.setStyleSheet(
+                    f"background: #064E3B; color: #ECFDF5; border: 2px solid {SUCCESS_GREEN}; border-radius: 9px; font-size: 11px; font-weight: 800; padding: 4px;"
+                )
+                break
+        self.progress_lbl.setText(
+            f"Tiến độ kiểm tra: {len(self.passed_gestures)} / {len(self.SANDBOX_TARGETS)} cử chỉ đã xác nhận"
+        )
+
+    def ingest_camera_packet(self, pkt: Dict[str, Any]) -> str:
+        """Process a live packet from `VisionInferenceWorker` and return recognized gesture key."""
+        qimg = pkt.get("qimage")
+        if isinstance(qimg, QImage) and not qimg.isNull():
+            self.cam_preview.setPixmap(
+                QPixmap.fromImage(qimg.scaled(306, 206, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            )
+
+        pose_tag = str(pkt.get("pose_tag") or pkt.get("gesture") or "IDLE").upper()
+        dual_info = pkt.get("dual_hand") or {}
+        two_mode = str(dual_info.get("two_hand_mode") or "SINGLE").upper()
+        nav_ev = str(pkt.get("nav_event") or "").upper()
+        vt = pkt.get("vision_telemetry") or {}
+        palm_ok = bool(vt.get("palm_facing_ok", True))
+
+        matched = ""
+        if two_mode in ("DUAL_PINCH_ZOOM", "DUAL_PALM_PAN"):
+            matched = two_mode
+        elif nav_ev in ("SLIDE_NEXT", "SLIDE_PREV"):
+            matched = "SWIPE"
+        elif pose_tag in ("INDEX", "TWO_FINGERS", "PINCH", "OPEN_PALM", "THREE_FINGERS"):
+            matched = pose_tag
+
+        if matched:
+            self._mark_passed(matched)
+            self.live_feedback_lbl.setText(f"✓ KHỚP CHÍNH XÁC: {matched} (Xanh lá • Sẵn sàng giảng dạy)")
+            self.live_feedback_lbl.setStyleSheet(
+                f"background: #064E3B; color: #ECFDF5; border: 2px solid {SUCCESS_GREEN}; border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: 800;"
+            )
+        elif pose_tag == "IDLE":
+            self.live_feedback_lbl.setText("Chưa thấy bàn tay trong khung hình Camera (giữ khoảng cách 0.5m–2.5m)")
+            self.live_feedback_lbl.setStyleSheet(
+                f"background: {SURFACE_DARK}; color: {TEXT_MUTED}; border: 1.5px solid {BORDER_SLATE}; border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: 700;"
+            )
+        elif not palm_ok:
+            self.live_feedback_lbl.setText("✗ CHƯA KHỚP: Lòng bàn tay đang quay nghiêng — Hãy hướng lòng bàn tay về Camera")
+            self.live_feedback_lbl.setStyleSheet(
+                f"background: #7F1D1D; color: #FEE2E2; border: 2px solid {ALERT_ROSE}; border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: 800;"
+            )
+        else:
+            self.live_feedback_lbl.setText(f"✗ Tư thế trung gian ({pose_tag}) — Hãy tách rõ ngón tay theo hướng dẫn")
+            self.live_feedback_lbl.setStyleSheet(
+                f"background: #7F1D1D; color: #FEE2E2; border: 1.5px solid {ALERT_ROSE}; border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: 700;"
+            )
+        return matched
+
+
+class OnboardingTourDialog(QDialog):
+    """Interactive 4-step First-Run Onboarding Guide shown on first launch (skippable)."""
+
+    open_sandbox_requested = Signal()
+
+    STEPS: Tuple[Tuple[str, str, str, str, str], ...] = (
+        (
+            "MOUSE_NAV",
+            "Bước 1/4 — Di Chuyển Bảng Mượt & Object Độc Lập",
+            NEON_CYAN,
+            "• Giữ Chuột Giữa, giữ phím Space + Chuột Trái, hoặc chọn công cụ ✥ Kéo Bảng để trượt vô tận ở 60fps.\n"
+            "• Cuộn chuột để Zoom đúng tâm con trỏ (25%–400%), nhấn Ctrl+0 để về 100% hoặc Vừa Nội Dung.\n"
+            "• Mọi Nét vẽ, Hình khối, Văn bản, Ảnh, Sticky Note đều là Object độc lập: chọn (V), kéo 8 góc để co giãn, kéo nút xoay phía trên, nhân bản (Ctrl+D), Ctrl+Z/Ctrl+Y.",
+            "Mẹo: Dùng nút khóa 🔓 Pan góc phải dưới để chống trượt bảng nhầm khi đang viết.",
+        ),
+        (
+            "PIE_MENU",
+            "Bước 2/4 — Bảng Chọn Tròn Chuột Phải Siêu Tốc",
+            "#A855F7",
+            "• Nhấn giữ Chuột Phải tại bất kỳ đâu trên bảng → Vòng tròn 8 công cụ lập tức bung ra ngay tại con trỏ.\n"
+            "• Di chuột về hướng công cụ cần dùng (Bút vẽ, Tẩy, Chọn, Kéo bảng, Thêm chữ, Hình khối, Hoàn tác, Xóa/Trang mới) → Thả chuột phải để kích hoạt!\n"
+            "• Kéo chuột ra vòng ngoài ở mục Bút vẽ / Hình khối / Xóa để chọn nhanh Màu mực, Loại hình hoặc Thêm trang mới.",
+            "Mẹo: Thả chuột trong vùng tâm vòng tròn (< 22px) sẽ hủy thao tác an toàn.",
+        ),
+        (
+            "DUAL_ZOOM",
+            "Bước 3/4 — Cử Chỉ 1 Tay & 2 Tay Không Chạm (Rust Core)",
+            BRIGHT_YELLOW,
+            "• 1 Tay: ☝️ 1 ngón trỏ = Vẽ nét | ✌️ 2 ngón chữ V = Con trỏ Hover | 🤏 Chụm Cái+Trỏ = Cầm & di chuyển Object | 🖐️ Xòe 5 ngón = Tẩy | ↔ Vẫy ngang = Đổi Slide.\n"
+            "• 2 Tay: 🔍 2 tay cùng chụm kéo ra/vào = Zoom mượt | ✋ 2 tay cùng nắm hoặc cùng xòe di chuyển song song = Di chuyển bảng hoặc cuộn tài liệu PDF/DOCX.",
+            "Mẹo: Thanh HUD phía trên bảng luôn hiển thị rõ cử chỉ máy đang nhận diện theo thời gian thực.",
+        ),
+        (
+            "AI_LOCAL",
+            "Bước 4/4 — Trình Chiếu PDF/PPTX/DOCX & AI Cloud / Local Offline",
+            SUCCESS_GREEN,
+            "• Mở trực tiếp PDF, PPTX, DOCX, Ảnh hoặc Thư mục Ảnh; mỗi trang lưu lớp chú thích Object độc lập và xuất ra PDF/PNG.\n"
+            "• Trợ lý AI đọc hiểu ngữ cảnh Slide hiện tại, trả lời chi tiết có Markdown/LaTeX (streaming), nút Sao chép và 'Đưa nội dung lên bảng'.\n"
+            "• Chuyển 1-click giữa Cloud Gemini ↔ Local AI Offline (tải model GGUF ngay trong 🤖 Model Hub từ HuggingFace / GitHub).",
+            "Bạn luôn có thể mở lại hướng dẫn và Phòng Thử Cử Chỉ bất cứ lúc nào bằng phím F1 hoặc nút '?'.",
+        ),
+    )
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Chào mừng đến với AirTeach AI — Hướng Dẫn Nhanh (4 Bước)")
+        self.resize(680, 440)
+        self.setStyleSheet(f"background: {BG_DARK}; color: {TEXT_LIGHT};")
+        self._step_idx = 0
+        self.dont_show_again = True
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 16)
+        root.setSpacing(12)
+
+        hdr = QHBoxLayout()
+        t = QLabel("KHÁM PHÁ AIRTEACH AI TRONG 30 GIÂY")
+        t.setStyleSheet(f"color: {NEON_CYAN}; font-size: 16px; font-weight: 800;")
+        self.step_pill = QLabel("Bước 1 / 4")
+        self.step_pill.setStyleSheet(
+            f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border-radius: 10px; padding: 4px 10px; font-size: 11px; font-weight: 800;"
+        )
+        hdr.addWidget(t)
+        hdr.addStretch(1)
+        hdr.addWidget(self.step_pill)
+        root.addLayout(hdr)
+
+        self.stack = QStackedWidget()
+        for diag, title, accent, body, tip in self.STEPS:
+            page = QFrame()
+            page.setStyleSheet(
+                f"background: {SURFACE_DARK}; border: 1px solid {BORDER_SLATE}; border-radius: 12px;"
+            )
+            pl = QVBoxLayout(page)
+            pl.setContentsMargins(16, 14, 16, 14)
+            pl.setSpacing(10)
+
+            top_r = QHBoxLayout()
+            top_r.addWidget(GestureDiagramWidget(diag, accent_hex=accent))
+            tl = QLabel(title)
+            tl.setWordWrap(True)
+            tl.setStyleSheet(f"color: {accent}; font-size: 15px; font-weight: 800; border: none; background: transparent;")
+            top_r.addWidget(tl, stretch=1)
+            pl.addLayout(top_r)
+
+            bl = QLabel(body)
+            bl.setWordWrap(True)
+            bl.setStyleSheet(f"color: {TEXT_LIGHT}; font-size: 12.5px; line-height: 1.5; border: none; background: transparent;")
+            pl.addWidget(bl)
+
+            tip_lbl = QLabel(tip)
+            tip_lbl.setWordWrap(True)
+            tip_lbl.setStyleSheet(
+                f"background: {BG_DARK}; color: {SECONDARY_TEAL}; border: 1px solid {BORDER_SLATE}; border-radius: 8px; padding: 8px 10px; font-size: 11.5px; font-weight: 600;"
+            )
+            pl.addWidget(tip_lbl)
+            pl.addStretch(1)
+            self.stack.addWidget(page)
+        root.addWidget(self.stack, stretch=1)
+
+        foot = QHBoxLayout()
+        self.dont_show_chk = QCheckBox("Không hiện lại ở lần khởi động sau")
+        self.dont_show_chk.setChecked(True)
+        self.dont_show_chk.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11.5px;")
+        foot.addWidget(self.dont_show_chk)
+        foot.addStretch(1)
+
+        sandbox_btn = QPushButton("🧪 Thử Cử Chỉ Ngay")
+        sandbox_btn.setStyleSheet(
+            f"background: #0D9488; color: {TEXT_LIGHT}; border: none; border-radius: 7px; padding: 6px 12px; font-weight: 700;"
+        )
+        sandbox_btn.clicked.connect(self._on_open_sandbox)
+        foot.addWidget(sandbox_btn)
+
+        skip_btn = QPushButton("Bỏ qua")
+        skip_btn.clicked.connect(self._on_finish)
+        foot.addWidget(skip_btn)
+
+        self.prev_btn = QPushButton("◀ Trước")
+        self.prev_btn.setEnabled(False)
+        self.prev_btn.clicked.connect(self._on_prev)
+        foot.addWidget(self.prev_btn)
+
+        self.next_btn = QPushButton("Tiếp theo ▶")
+        self.next_btn.setStyleSheet(
+            f"background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; border: none; border-radius: 7px; padding: 6px 14px; font-weight: 800;"
+        )
+        self.next_btn.clicked.connect(self._on_next)
+        foot.addWidget(self.next_btn)
+        root.addLayout(foot)
+
+    def _sync_step_ui(self) -> None:
+        self.stack.setCurrentIndex(self._step_idx)
+        n = len(self.STEPS)
+        self.step_pill.setText(f"Bước {self._step_idx + 1} / {n}")
+        self.prev_btn.setEnabled(self._step_idx > 0)
+        self.next_btn.setText("Bắt Đầu Ngay ✓" if self._step_idx == n - 1 else "Tiếp theo ▶")
+
+    def _on_prev(self) -> None:
+        if self._step_idx > 0:
+            self._step_idx -= 1
+            self._sync_step_ui()
+
+    def _on_next(self) -> None:
+        if self._step_idx < len(self.STEPS) - 1:
+            self._step_idx += 1
+            self._sync_step_ui()
+        else:
+            self._on_finish()
+
+    def _on_open_sandbox(self) -> None:
+        self.dont_show_again = self.dont_show_chk.isChecked()
+        self.open_sandbox_requested.emit()
+        self.accept()
+
+    def _on_finish(self) -> None:
+        self.dont_show_again = self.dont_show_chk.isChecked()
+        self.accept()
+
+
 class UserGuideDialog(QDialog):
-    """Built-in interactive 4-tab User Guide & Gesture Cheat-Sheet (`[? Hướng Dẫn]`)."""
+    """Built-in interactive 5-tab User Guide, Cheat-Sheet & Live Gesture Sandbox (`?` / `F1`)."""
+
+    start_spotlight_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None, initial_tab: int = 0) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Hướng Dẫn Sử Dụng Trực Quan — AirTeach AI")
-        self.resize(840, 620)
+        self.setWindowTitle("Hướng Dẫn Sử Dụng, Phím Tắt & Phòng Thử Cử Chỉ — AirTeach AI")
+        self.resize(880, 650)
         self.setStyleSheet(f"background: {BG_DARK}; color: {TEXT_LIGHT};")
 
         root = QVBoxLayout(self)
@@ -225,15 +565,27 @@ class UserGuideDialog(QDialog):
         root.setSpacing(12)
 
         hdr = QHBoxLayout()
+        hdr.setSpacing(8)
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
-        title = QLabel("HƯỚNG DẪN SỬ DỤNG & BẢNG TRA CỨU CỬ CHỈ AIRTEACH AI")
+        title = QLabel("HƯỚNG DẪN SỬ DỤNG, BẢNG TRA CỨU CỬ CHỈ & GESTURE SANDBOX")
         title.setStyleSheet(f"color: {TEXT_LIGHT}; font-size: 16px; font-weight: 800;")
-        sub = QLabel("Làm chủ bảng trắng không chạm, điều khiển chuột tròn 8 hướng, tài liệu đa định dạng & AI Offline")
+        sub = QLabel("Làm chủ cử chỉ 1 & 2 tay, Bảng chọn tròn chuột phải, Object Canvas, Slide đa định dạng & AI Offline")
         sub.setStyleSheet(f"color: {SECONDARY_TEAL}; font-size: 12px; font-weight: 600;")
         title_col.addWidget(title)
         title_col.addWidget(sub)
         hdr.addLayout(title_col, stretch=1)
+
+        self.spotlight_btn = QPushButton("🔦 Tour Spotlight")
+        self.spotlight_btn.setFixedHeight(32)
+        self.spotlight_btn.setCursor(Qt.PointingHandCursor)
+        self.spotlight_btn.setToolTip("Khởi chạy hướng dẫn tương tác Spotlight trực tiếp trên giao diện chính")
+        self.spotlight_btn.setStyleSheet(
+            f"QPushButton {{ background: #0F766E; color: {TEXT_LIGHT}; border: 1.5px solid {NEON_CYAN}; border-radius: 7px; padding: 0 14px; font-weight: 800; }}"
+            f"QPushButton:hover {{ background: #0D9488; }}"
+        )
+        self.spotlight_btn.clicked.connect(self._on_start_spotlight)
+        hdr.addWidget(self.spotlight_btn)
 
         close_btn = QPushButton("Đóng [Esc]")
         close_btn.setFixedHeight(32)
@@ -248,7 +600,7 @@ class UserGuideDialog(QDialog):
         self.tabs.setStyleSheet(
             f"""
             QTabWidget::pane {{ background: {BG_DARK}; border: 1px solid {BORDER_SLATE}; border-radius: 10px; }}
-            QTabBar::tab {{ background: {SURFACE_DARK}; color: {TEXT_MUTED}; padding: 9px 14px; font-weight: 700; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 4px; }}
+            QTabBar::tab {{ background: {SURFACE_DARK}; color: {TEXT_MUTED}; padding: 9px 13px; font-weight: 700; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 4px; }}
             QTabBar::tab:selected {{ background: {PRIMARY_INDIGO}; color: {TEXT_LIGHT}; }}
             """
         )
@@ -256,34 +608,34 @@ class UserGuideDialog(QDialog):
         # Tab 1: Cử Chỉ 1 Tay
         tab1_cards: List[QWidget] = [
             _make_guide_card(
-                "POINTER",
-                "1. Chỉ Trỏ (1 Ngón Trỏ Duỗi Thẳng)",
-                "Giơ ngón trỏ để điều khiển con trỏ Laser 60Hz siêu mượt trên toàn bộ màn hình bảng trắng (vùng camera 12%–88% tự động ánh xạ đủ 4 góc).",
+                "PINCH_DRAW",
+                "1. Giơ 1 Ngón Trỏ (Index) để Vẽ Nét",
+                "Giơ 1 ngón trỏ thẳng để vẽ nét mượt 60Hz (làm mượt Catmull-Rom & nắn hình học bằng lõi Rust `airteach_core_rs`).",
                 NEON_CYAN,
             ),
             _make_guide_card(
-                "PINCH_DRAW",
-                "2. Kẹp Ngón Cái + Trỏ (Pinch < 0.32) để Vẽ",
-                "Chạm nhẹ đầu ngón cái và ngón trỏ để bắt đầu nét vẽ. Nhả tay ra (> 0.42) để kết thúc — hệ thống tự động cắt đuôi 105ms chống nét thừa và làm mượt bằng Rust Catmull-Rom.",
-                NEON_CYAN,
+                "POINTER",
+                "2. Giơ 2 Ngón Chữ V (Trỏ + Giữa) để Di Chuyển Con Trỏ / Hover",
+                "Dùng 2 ngón chữ V để trỏ chỉ bài hoặc di chuyển con trỏ mà KHÔNG tạo nét vẽ thừa trên bảng.",
+                SECONDARY_TEAL,
+            ),
+            _make_guide_card(
+                "PINCH_GRAB",
+                "3. Chụm Ngón Cái + Trỏ (Pinch) để Cầm & Di Chuyển Object",
+                "Đưa tay vào một Hình khối, Hộp chữ, Ghi chú hoặc Ảnh trên bảng rồi chụm ngón cái + ngón trỏ để kéo di chuyển đối tượng đó mượt mà.",
+                BRIGHT_YELLOW,
             ),
             _make_guide_card(
                 "OPEN_ERASE",
-                "3. Xòe Cả 5 Ngón để Tẩy Động",
-                "Xòe rộng lòng bàn tay hướng vào camera để bật vòng tẩy động (bán kính tỷ lệ theo kích thước bàn tay) và quét qua nét mực cần xóa.",
+                "4. Xòe Cả 5 Ngón (Open Palm) để Tẩy Nét / Dừng Vẽ",
+                "Xòe rộng lòng bàn tay hướng vào camera để bật vòng tẩy động hoặc hủy nét đang vẽ.",
                 ALERT_ROSE,
             ),
             _make_guide_card(
                 "SWIPE_H",
-                "4. Vẫy Ngang Nhanh (Trái / Phải) Đổi Slide",
-                "Vẫy dứt khoát sang Trái để qua Slide kế tiếp (Next) hoặc sang Phải để quay lại Slide trước (Prev). Hỗ trợ PPTX, PDF và Thư mục Ảnh.",
+                "5. Vẫy Tay Ngang (Trái / Phải) Đổi Trang / Slide",
+                "Vẫy dứt khoát sang Trái để qua trang kế tiếp hoặc sang Phải để lùi trang trước (có cooldown chống lật nhầm).",
                 BRIGHT_YELLOW,
-            ),
-            _make_guide_card(
-                "SWIPE_V",
-                "5. Vẫy Dọc / 2 Ngón Trượt để Cuộn Tài Liệu",
-                "Vẫy lên/xuống hoặc dùng 2 ngón trỏ+giữa di chuyển lên xuống để cuộn mượt tài liệu Word (.docx) và PDF nhiều trang.",
-                SECONDARY_TEAL,
             ),
         ]
         self.tabs.addTab(_wrap_scroll(tab1_cards), "1. Cử Chỉ 1 Tay")
@@ -292,35 +644,35 @@ class UserGuideDialog(QDialog):
         tab2_cards: List[QWidget] = [
             _make_guide_card(
                 "DUAL_ZOOM",
-                "1. Thu / Phóng Bảng (2 Tay Kẹp Kéo Ra / Vào)",
-                "Chụm cả hai tay rồi kéo rộng ra để Phóng to (tới 400%) hoặc thu hẹp lại để Thu nhỏ (tới 25%), lấy tâm chính xác tại điểm giữa hai bàn tay.",
+                "1. Thu / Phóng Bảng (2 Tay Cùng Chụm — Dual Pinch)",
+                "Chụm cả hai tay rồi kéo rộng ra để Phóng to (tới 400%) hoặc thu hẹp lại để Thu nhỏ (tới 25%), lấy tâm đúng điểm giữa 2 bàn tay (lọc mượt Rust EMA).",
                 BRIGHT_YELLOW,
             ),
             _make_guide_card(
                 "DUAL_PAN",
-                "2. Di Chuyển Bảng Vô Tận (2 Tay Xòe hoặc Tay Trái Nắm + Tay Phải Kéo)",
-                "Xòe cả hai lòng bàn tay (hoặc nắm nhẹ tay trái + di chuyển tay phải) rồi kéo theo bất kỳ hướng nào để trượt toàn bộ bảng trắng và tài liệu cực nhẹ nhàng.",
+                "2. Di Chuyển Bảng & Cuộn Tài Liệu (2 Tay Cùng Nắm hoặc Cùng Xòe)",
+                "Cùng nắm hoặc cùng xòe cả hai bàn tay rồi di chuyển song song để kéo bảng vô tận mọi hướng, hoặc cuộn mượt tài liệu PDF / DOCX lên xuống khi đang bật Cuộn Dọc.",
                 SECONDARY_TEAL,
             ),
             _make_guide_card(
                 "MOD_LOCK",
-                "3. Khóa Nét Thẳng & Nắn Hình Chuẩn (2 Tay Phối Hợp)",
-                "• Tay phụ NẮM + Tay chính KẸP VẼ: Khóa thành đoạn thẳng tuyệt đối.\n"
-                "• Tay phụ GIƠ 2 NGÓN + Tay chính KẸP VẼ: Tự động chuẩn hóa hình tròn, elip, tam giác, chữ nhật, mũi tên.\n"
+                "3. Khóa Nét Thẳng, Nắn Hình & Hoàn Tác (Phối Hợp 2 Tay)",
+                "• Tay phụ NẮM + Tay chính VẼ: Khóa đoạn thẳng tuyệt đối.\n"
+                "• Tay phụ GIƠ 2 NGÓN + Tay chính VẼ: Tăng cường chuẩn hóa hình tròn, vuông, chữ nhật, tam giác, mũi tên.\n"
                 "• Tay phụ GIƠ 3 NGÓN: Hoàn tác (Undo) tức thì.",
-                "#10B981",
+                SUCCESS_GREEN,
             ),
         ]
         self.tabs.addTab(_wrap_scroll(tab2_cards), "2. Cử Chỉ 2 Tay")
 
-        # Tab 3: Chuột & Bảng Tròn
+        # Tab 3: Chuột, Phím Tắt & Bảng Tròn
         pie_grid_frame = QFrame()
         pie_grid_frame.setStyleSheet(
             f"background: {SURFACE_DARK}; border: 1px solid {BORDER_SLATE}; border-radius: 10px;"
         )
         pg_vbox = QVBoxLayout(pie_grid_frame)
         pg_vbox.setContentsMargins(12, 10, 12, 10)
-        pg_title = QLabel("Bố cục 8 Hướng Bảng Tròn Chuột Phải (Nhấn giữ chuột phải → Kéo về hướng → Thả)")
+        pg_title = QLabel("Bố cục 8 Hướng Bảng Tròn Chuột Phải (+ Vòng Con ngoài ở Bút / Hình / Xóa)")
         pg_title.setStyleSheet(f"color: {NEON_CYAN}; font-size: 13px; font-weight: 800; border: none;")
         pg_vbox.addWidget(pg_title)
         grid = QGridLayout()
@@ -336,18 +688,18 @@ class UserGuideDialog(QDialog):
         tab3_cards: List[QWidget] = [
             _make_guide_card(
                 "PIE_MENU",
-                "Bảng Tròn Chuột Phải (Blender/Maya Radial Pie Menu)",
-                "Nhấn giữ Chuột Phải ở bất kỳ vị trí nào trên bảng để mở vòng tròn 8 công cụ quanh con trỏ. Kéo sang hướng tương ứng rồi thả chuột phải để kích hoạt ngay; giữ trong tâm (< 20px) để Hủy.",
+                "Bảng Chọn Tròn Chuột Phải (Nhấn giữ → Kéo hướng → Thả)",
+                "Nhấn giữ Chuột Phải bất kỳ đâu trên bảng để mở vòng tròn 8 công cụ. Thả chuột để kích hoạt; giữ ở tâm (< 22px) để Hủy; kéo xa ra vòng ngoài ở Bút vẽ / Hình khối / Xóa để chọn nhanh Màu mực, Hình cụ thể hoặc Thêm trang mới.",
                 NEON_CYAN,
             ),
             pie_grid_frame,
             _make_guide_card(
                 "MOUSE_NAV",
-                "Điều Hướng Bảng Siêu Mượt Bằng Chuột & Phím Tắt",
-                "• Kéo Chuột Giữa (hoặc giữ Space + Chuột Trái): Di chuyển bảng mọi hướng.\n"
-                "• Cuộn Chuột: Phóng to / Thu nhỏ tại con trỏ (Ctrl + Cuộn khi ở chế độ Cuộn Dọc Word).\n"
-                "• Shift + Cuộn Chuột: Cuộn ngang bảng.\n"
-                "• Ctrl + 0 (hoặc nút [Về Giữa]): Đưa bảng về 100% chính giữa ngay lập tức.",
+                "Điều Hướng Bảng, Object Canvas & Phím Tắt Chuẩn",
+                "• Kéo Chuột Giữa hoặc giữ Space + Chuột Trái: Di chuyển bảng vô tận 60fps.\n"
+                "• Cuộn Chuột: Zoom-to-cursor (25%–400%) · Ctrl+0: Reset 100% · Nút [Vừa Nội Dung]: Fit to Content.\n"
+                "• Phím tắt công cụ: V (Chọn/Di chuyển/Resize/Xoay Object) · S (Hình khối) · T (Thêm chữ) · N (Sticky Note).\n"
+                "• Thao tác Object: Ctrl+D (Nhân bản) · Delete (Xóa) · Ctrl+Z (Hoàn tác) · Ctrl+Y (Làm lại) · Nhấn đúp để sửa chữ.",
                 SECONDARY_TEAL,
             ),
         ]
@@ -357,22 +709,30 @@ class UserGuideDialog(QDialog):
         tab4_cards: List[QWidget] = [
             _make_guide_card(
                 "AI_LOCAL",
-                "1. Trợ Lý Sư Phạm & Quản Lý AI Local (100% Offline)",
-                "• Mở [Quản Lý AI Local] để tải trực tiếp các mô hình GGUF gọn nhẹ (Qwen2.5-1.5B/3B, Phi-3.5-mini) từ HuggingFace/GitHub với tiến độ MB/s & kiểm tra SHA-256.\n"
-                "• Dán bất kỳ link .gguf từ GitHub/HuggingFace để tải về %APPDATA%/AirTeachAI/models.\n"
-                "• Chuyển linh hoạt 3 chế độ: Local AI (Offline) | Gemini Cloud AI | Auto Hybrid.",
+                "1. Trợ Lý AI Chuyên Sâu & Kho Model Local Offline (GGUF)",
+                "• Trả lời đầy đủ (tới 8192 token) chuẩn Markdown, bảng biểu, công thức LaTeX, streaming thời gian thực.\n"
+                "• Nút '📋 Sao chép' và '📌 Đưa nội dung lên bảng' tạo ngay Text Object độc lập.\n"
+                "• Mở [🤖 Hub] để tải Qwen2.5-1.5B/3B, Llama-3.2-1B/3B, Gemma-2-2B hoặc dán link GitHub/HuggingFace bất kỳ; chuyển Cloud ↔ Local chỉ 1 cú click.",
                 "#A855F7",
             ),
             _make_guide_card(
                 "DOCS",
-                "2. Mở Word / PDF / PowerPoint / Ảnh / Thư Mục Ảnh",
-                "• Hỗ trợ .PDF, .PPTX/.PPT, .DOCX/.DOC (cuộn dọc liên tục), và Ảnh (.PNG/.JPG/.WEBP/.BMP/.SVG).\n"
-                "• Mở cả Thư mục Ảnh làm bộ Slide trình chiếu, hoặc Chèn Ảnh trực tiếp lên bảng trắng (kéo để di chuyển, kéo góc dưới phải để phóng to/thu nhỏ).\n"
-                "• Nét vẽ lưu riêng từng trang và xuất trọn vẹn ra [Xuất Bài Giảng (.PDF)].",
+                "2. Mở & Trình Chiếu Đa Định Dạng (PDF / PPTX / DOCX / Ảnh)",
+                "• Render PDF sắc nét tới 400% bằng PyMuPDF, cache trang kề lật tức thì.\n"
+                "• Mở Ảnh làm nền Slide hoặc Chèn Ảnh làm Object độc lập (di chuyển, co giãn 8 góc, xoay).\n"
+                "• Mỗi trang có lớp chú thích Object riêng biệt; xuất trọn vẹn bài giảng kèm chú thích ra PDF hoặc bộ ảnh PNG.",
                 NEON_CYAN,
             ),
         ]
         self.tabs.addTab(_wrap_scroll(tab4_cards), "4. AI Local & Tài Liệu")
 
-        self.tabs.setCurrentIndex(max(0, min(3, int(initial_tab))))
+        # Tab 5: Live Gesture Sandbox
+        self.sandbox = GestureSandboxWidget(self)
+        self.tabs.addTab(self.sandbox, "5. 🧪 Thử Cử Chỉ (Sandbox)")
+
+        self.tabs.setCurrentIndex(max(0, min(self.tabs.count() - 1, int(initial_tab))))
         root.addWidget(self.tabs, stretch=1)
+
+    def _on_start_spotlight(self) -> None:
+        self.start_spotlight_requested.emit()
+        self.accept()

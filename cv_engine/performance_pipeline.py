@@ -298,11 +298,46 @@ class DirtyCanvasBackingTracker:
 class PerformancePipeline:
     """Coordinates telemetry metrics & dynamic scaling across CV, Render, and AI workers."""
 
-    def __init__(self) -> None:
-        self.hw_report = detect_hardware_acceleration()
-        self.telemetry = PipelineTelemetry(hw_backend=self.hw_report.selected_backend)
+    def __init__(self, defer_hw_probe: bool = True) -> None:
+        cpu_cnt = max(2, min(8, os.cpu_count() or 4))
+        try:
+            cv2.setNumThreads(cpu_cnt)
+        except Exception:
+            pass
+        if defer_hw_probe:
+            self.hw_report = HardwareAccelReport(
+                cv2_threads=cpu_cnt,
+                cv2_opencl_available=False,
+                ort_providers=[],
+                selected_backend="CPU-SIMD",
+            )
+            self.telemetry = PipelineTelemetry(hw_backend=self.hw_report.selected_backend)
+            self._probe_started = False
+        else:
+            self.hw_report = detect_hardware_acceleration()
+            self.telemetry = PipelineTelemetry(hw_backend=self.hw_report.selected_backend)
+            self._probe_started = True
         self.backing_tracker = DirtyCanvasBackingTracker()
         self._frame_times: List[float] = []
+
+    def probe_hardware_async(self, on_done: Optional[Any] = None) -> None:
+        """Probe OpenCL / ONNXRuntime delegates in a background thread so UI startup stays < 1.5s."""
+        if self._probe_started:
+            return
+        self._probe_started = True
+        import threading
+
+        def _worker() -> None:
+            rep = detect_hardware_acceleration()
+            self.hw_report = rep
+            self.telemetry.hw_backend = rep.selected_backend
+            if callable(on_done):
+                try:
+                    on_done(rep)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True, name="airteach-hw-probe").start()
 
     def record_render_tick(self, now_sec: Optional[float] = None) -> float:
         t = time.perf_counter() if now_sec is None else float(now_sec)

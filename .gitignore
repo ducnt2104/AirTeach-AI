@@ -1,6 +1,7 @@
 # Rust build outputs & native Windows binaries
 /target/
 /rust_core/target/
+rust_core/target/
 *.exe
 !/AirTeach-AI.exe
 *.dll
@@ -10,10 +11,19 @@
 *.whl
 **/*.rs.bk
 
-# Runtime AI weights & partial downloads (auto-downloaded via scripts/fetch_assets.py)
+# Runtime AI weights, GGUF models & partial downloads (auto-downloaded via scripts/fetch_assets.py or Model Hub)
+*.gguf
+*.gguf.part
+*.gguf.sha256
 /models/*.part
 /assets/**/*.part
 crash_log.txt
+
+# Setup & build logs
+setup_build.log
+setup_all.log
+build_exe.log
+*.log
 
 # Local user databases, sessions, face vectors, recordings & temp slides
 /data/
@@ -31,7 +41,7 @@ crash_log.txt
 !.env.example
 secrets/
 
-# Python caches & virtual environments
+# Python caches, build outputs & virtual environments
 __pycache__/
 *.py[cod]
 *$py.class
@@ -40,10 +50,11 @@ __pycache__/
 .venv/
 venv/
 env/
+dist/
+build/
 /dist/
 /build/
 /Output/
-*.log
 
 # OS & IDE noise
 .DS_Store

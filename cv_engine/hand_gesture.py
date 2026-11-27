@@ -42,6 +42,9 @@ from cv_engine.rust_bridge import (
     classify_hand_3d_fast,
     compute_dual_hand_kinematics_fast,
     compute_roi_crop_box_fast,
+    make_dual_hand_state_machine,
+    make_gesture_state_machine,
+    make_kalman_predictor_2d,
     make_kinematic_60hz_extrapolator,
     make_one_euro_1d,
     make_swipe_detector,
@@ -846,14 +849,14 @@ class Kinematic60HzExtrapolator:
 
 class KalmanVelocityPredictor2D:
     """
-    Lightweight scalar 2D Constant-Velocity Kalman filter `[x, y, vx, vy]` with zero NumPy overhead.
-    Tracks true cursor velocity so 120–180ms motion-blur dropouts extrapolate smoothly instead
-    of freezing at a stale pixel or causing jumps when re-acquired.
+    Lightweight scalar 2D Constant-Velocity Kalman filter `[x, y, vx, vy]`
+    (Rust PyO3 `RustKalmanVelocityPredictor2D` accelerated with pure-Python fallback).
     """
 
     def __init__(self, process_noise: float = 0.04, meas_noise: float = 0.0015) -> None:
         self.q = float(process_noise)
         self.r = float(meas_noise)
+        self._rs = make_kalman_predictor_2d(self.q, self.r)
         self.initialized = False
         self.x = 0.5
         self.y = 0.5
@@ -865,6 +868,8 @@ class KalmanVelocityPredictor2D:
         self._last_meas: Optional[Tuple[float, float]] = None
 
     def reset(self) -> None:
+        if self._rs is not None:
+            self._rs.reset()
         self.initialized = False
         self.vx = 0.0
         self.vy = 0.0
@@ -874,6 +879,15 @@ class KalmanVelocityPredictor2D:
         self._last_meas = None
 
     def update(self, meas_x: float, meas_y: float, t_sec: float) -> Tuple[float, float]:
+        if self._rs is not None:
+            ox, oy = self._rs.update(float(meas_x), float(meas_y), float(t_sec))
+            self.initialized = bool(self._rs.initialized)
+            self.x = float(self._rs.x)
+            self.y = float(self._rs.y)
+            self.vx = float(self._rs.vx)
+            self.vy = float(self._rs.vy)
+            self.last_t = float(t_sec)
+            return (float(ox), float(oy))
         mx = float(meas_x)
         my = float(meas_y)
         if not self.initialized or self.last_t is None:
@@ -915,6 +929,14 @@ class KalmanVelocityPredictor2D:
         return (max(0.0, min(1.0, self.x)), max(0.0, min(1.0, self.y)))
 
     def predict_dropout(self, t_sec: float, damping: float = 0.86) -> Optional[Tuple[float, float]]:
+        if self._rs is not None:
+            res = self._rs.predict_dropout(float(t_sec), float(damping))
+            self.x = float(self._rs.x)
+            self.y = float(self._rs.y)
+            self.vx = float(self._rs.vx)
+            self.vy = float(self._rs.vy)
+            self.last_t = float(t_sec)
+            return (float(res[0]), float(res[1])) if res is not None else None
         if not self.initialized or self.last_t is None:
             return None
         dt = max(0.0, min(0.12, float(t_sec) - self.last_t))
@@ -986,6 +1008,22 @@ class GestureFsmEngine:
         self.index_tip_filter = OneEuroFilter3D(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
         self.pinch_filter = OneEuroFilter1D(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
         self.kalman_predictor = KalmanVelocityPredictor2D()
+        self._rs_fsm = make_gesture_state_machine(
+            min_hold_frames=self.min_hold_frames,
+            min_hold_sec=self.min_hold_sec,
+            grace_period_sec=self.grace_period_sec,
+            min_cutoff=min_cutoff,
+            beta=beta,
+            d_cutoff=d_cutoff,
+            frame_w=self.frame_size[0],
+            frame_h=self.frame_size[1],
+            deadzone_px=self.deadzone_px,
+            voting_window_size=self.voting_window_size,
+            voting_min_votes=self.voting_min_votes,
+            pinch_enter_ratio=self.pinch_enter_ratio,
+            pinch_exit_ratio=self.pinch_exit_ratio,
+            palm_facing_min_z=self.palm_facing_min_z,
+        )
 
         self.fsm_state = GestureFsmState.IDLE
         self.active_gesture = "IDLE"
@@ -1024,6 +1062,43 @@ class GestureFsmEngine:
         handedness: str = "right",
     ) -> GestureFsmSnapshot:
         now = time.perf_counter() if t_sec is None else float(t_sec)
+
+        if self._rs_fsm is not None:
+            self._rs_fsm.set_frame_size(int(self.frame_size[0]), int(self.frame_size[1]))
+            lm_in = (
+                [[float(p[0]), float(p[1]), float(p[2])] for p in landmarks]
+                if (landmarks is not None and len(landmarks) >= 21)
+                else None
+            )
+            r = self._rs_fsm.update(lm_in, now, str(handedness))
+            st_val = str(r.get("fsm_state", "IDLE"))
+            self.fsm_state = GestureFsmState(st_val)
+            self.active_gesture = str(r.get("active_gesture", "IDLE"))
+            self.candidate_gesture = str(r.get("candidate_gesture", "IDLE"))
+            self.candidate_count = int(r.get("hold_frames", 0))
+            cn = r.get("cursor_norm")
+            cur_pt = (float(cn[0]), float(cn[1])) if cn is not None else None
+            self.last_cursor = cur_pt
+            if "pinch_ratio" in r and r["pinch_ratio"] is not None:
+                self.last_smoothed_pinch_ratio = float(r["pinch_ratio"])
+            elif st_val == "IDLE":
+                self.last_smoothed_pinch_ratio = None
+            cls_meta = r.get("classify_meta")
+            if isinstance(cls_meta, dict):
+                self.last_classify_meta = dict(cls_meta)
+                fgs = cls_meta.get("fingers")
+                if isinstance(fgs, list) and len(fgs) == 5:
+                    self.prev_fingers = [bool(x) for x in fgs]
+            return GestureFsmSnapshot(
+                fsm_state=self.fsm_state,
+                active_gesture=self.active_gesture,
+                candidate_gesture=self.candidate_gesture,
+                cursor_norm=cur_pt,
+                hold_frames=self.candidate_count,
+                in_grace_period=bool(r.get("in_grace_period", False)),
+                kalman_predicted=bool(r.get("kalman_predicted", False)),
+                voting_counts=dict(r.get("voting_counts") or {}),
+            )
 
         if landmarks is not None and len(landmarks) >= 21:
             self.last_seen_sec = now
@@ -1992,13 +2067,17 @@ class DualHandGestureCoordinator:
         self._offhand_cand: str = ""
         self._offhand_cand_count: int = 0
         self._last_offhand_cmd_ts: float = -1e9
+        self._rs_dual = make_dual_hand_state_machine()
 
     def set_primary_preference(self, pref: str) -> None:
-        if pref in ("auto", "left", "right"):
-            self.primary_pref = pref
+        p = str(pref or "auto").strip().lower()
+        if p in ("auto", "left", "right"):
+            self.primary_pref = p
             self._sticky_primary = None
 
     def reset(self) -> None:
+        if self._rs_dual is not None:
+            self._rs_dual.reset()
         self._sticky_primary = None
         self._prev_pinch_dist = None
         self._prev_pan_center = None
@@ -2063,6 +2142,8 @@ class DualHandGestureCoordinator:
         self._sticky_primary = p_side
 
         if secondary is None:
+            if self._rs_dual is not None:
+                self._rs_dual.reset()
             self._prev_pinch_dist = None
             self._prev_pan_center = None
             self._offhand_cand = ""
@@ -2083,6 +2164,24 @@ class DualHandGestureCoordinator:
         s_pr = float(secondary.get("pinch_ratio") or 1.0)
         p_xy = self._hand_xy(primary)
         s_xy = self._hand_xy(secondary)
+
+        if self._rs_dual is not None:
+            res = self._rs_dual.step(p_pose, p_pr, p_xy, s_pose, s_pr, s_xy, now)
+            zc = res.get("zoom_center_norm")
+            pd = res.get("pan_delta_norm") or (0.0, 0.0)
+            return DualHandActionState(
+                primary_side=p_side,
+                primary_hand=primary,
+                secondary_hand=secondary,
+                two_hand_mode=str(res.get("two_hand_mode") or "NONE"),
+                modifier_mode=str(res.get("modifier_mode") or "NONE"),
+                zoom_factor=float(res.get("zoom_factor") or 1.0),
+                zoom_center_norm=(float(zc[0]), float(zc[1])) if zc is not None else None,
+                pan_delta_norm=(float(pd[0]), float(pd[1])),
+                offhand_command=res.get("offhand_command"),
+                suppress_primary_drawing=bool(res.get("suppress_primary_drawing", False)),
+                status_label_vi=str(res.get("status_label_vi") or ""),
+            )
 
         # 1. Dual Pinch Zoom (both hands pinching — Rust accelerated kinematics)
         both_pinch = (p_pose == "PINCH" or p_pr < 0.33) and (s_pose == "PINCH" or s_pr < 0.33)
@@ -2107,8 +2206,8 @@ class DualHandGestureCoordinator:
             )
         self._prev_pinch_dist = None
 
-        # 2. Dual Open Palm Pan (both hands open palm — Rust accelerated kinematics)
-        if p_pose == "OPEN_PALM" and s_pose == "OPEN_PALM":
+        # 2. Dual Open Palm Pan OR Dual Fist Pan (both hands moving in parallel)
+        if (p_pose == "OPEN_PALM" and s_pose == "OPEN_PALM") or (p_pose == "FIST" and s_pose == "FIST"):
             self._prev_fist_pan_xy = None
             self._offhand_cand = ""
             self._offhand_cand_count = 0
@@ -2116,6 +2215,7 @@ class DualHandGestureCoordinator:
                 p_xy, s_xy, prev_pinch_dist=None, prev_pan_center=self._prev_pan_center
             )
             self._prev_pan_center = mid
+            lbl = "2 Tay: Kéo trượt bảng (2 Tay Nắm)" if p_pose == "FIST" else "2 Tay: Kéo trượt bảng (2 Tay Xòe)"
             return DualHandActionState(
                 primary_side=p_side,
                 primary_hand=primary,
@@ -2123,7 +2223,7 @@ class DualHandGestureCoordinator:
                 two_hand_mode="DUAL_PALM_PAN",
                 pan_delta_norm=(round(pan_delta[0], 5), round(pan_delta[1], 5)),
                 suppress_primary_drawing=True,
-                status_label_vi="2 Tay: Kéo trượt bảng (Dual Pan)",
+                status_label_vi=lbl,
             )
         self._prev_pan_center = None
 

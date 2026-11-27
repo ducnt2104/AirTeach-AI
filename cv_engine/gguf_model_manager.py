@@ -137,6 +137,21 @@ CURATED_GGUF_CATALOG: Tuple[GgufModelSpec, ...] = (
         recommended=False,
     ),
     GgufModelSpec(
+        model_id="llama-3.2-1b-instruct-q4_k_m",
+        name="Meta Llama 3.2 1B Instruct (Q4_K_M)",
+        provider="HuggingFace • bartowski / Meta",
+        quantization="Q4_K_M",
+        size_bytes=807694464,
+        size_label="770 MB",
+        ram_requirement="RAM ≥ 3 GB",
+        languages="Nhẹ siêu nhanh • Đa ngôn ngữ",
+        description="Khởi chạy cực nhanh trên laptop CPU văn phòng (AVX2), phù hợp giảng dạy offline tức thì.",
+        download_url="https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        repo_url="https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF",
+        filename="Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        recommended=True,
+    ),
+    GgufModelSpec(
         model_id="llama-3.2-3b-instruct-q4_k_m",
         name="Meta Llama 3.2 3B Instruct (Q4_K_M)",
         provider="HuggingFace • bartowski / Meta",
@@ -526,6 +541,7 @@ def detect_local_ai_runtimes() -> Dict[str, Any]:
     """Detect available local AI execution engines without blocking startup."""
     has_llama_cpp_py = importlib.util.find_spec("llama_cpp") is not None
     has_onnxruntime = importlib.util.find_spec("onnxruntime") is not None
+    has_onnx_genai = importlib.util.find_spec("onnxruntime_genai") is not None
     ollama_bin = shutil.which("ollama")
     llama_server_bin = shutil.which("llama-server") or shutil.which("llama-cli")
 
@@ -536,6 +552,7 @@ def detect_local_ai_runtimes() -> Dict[str, Any]:
     return {
         "llama_cpp_python": has_llama_cpp_py,
         "onnxruntime": has_onnxruntime,
+        "onnxruntime_genai": has_onnx_genai,
         "ollama_installed": bool(ollama_bin),
         "ollama_online": ollama_online,
         "ollama_models": ollama_models,
@@ -570,7 +587,7 @@ class LlamaCppLocalBackend:
             self._llm = None
             self._loaded_path = ""
 
-    def load_model(self, gguf_path: Path, n_ctx: int = 4096) -> Tuple[bool, str]:
+    def load_model(self, gguf_path: Path, n_ctx: int = 8192) -> Tuple[bool, str]:
         path = Path(gguf_path)
         if not path.exists():
             return False, f"Không tìm thấy file model GGUF: {path}"
@@ -590,13 +607,27 @@ class LlamaCppLocalBackend:
             try:
                 from llama_cpp import Llama  # type: ignore
 
-                cpu_threads = max(2, min(8, (os.cpu_count() or 4) - 1))
-                self._llm = Llama(
-                    model_path=resolved,
-                    n_ctx=int(n_ctx),
-                    n_threads=cpu_threads,
-                    verbose=False,
-                )
+                cpu_threads = max(2, min(12, (os.cpu_count() or 4) - 1))
+                # Try GPU offload first if compiled with CUDA/Vulkan/Metal, gracefully fall back to CPU AVX2
+                loaded = None
+                for gpu_layers in (-1, 0):
+                    for ctx_try in (int(n_ctx), 4096):
+                        try:
+                            loaded = Llama(
+                                model_path=resolved,
+                                n_ctx=ctx_try,
+                                n_threads=cpu_threads,
+                                n_gpu_layers=gpu_layers,
+                                verbose=False,
+                            )
+                            break
+                        except Exception:
+                            loaded = None
+                    if loaded is not None:
+                        break
+                if loaded is None:
+                    raise RuntimeError("Không thể khởi tạo ngữ cảnh GGUF trên GPU hoặc CPU.")
+                self._llm = loaded
                 self._loaded_path = resolved
                 return True, f"Đã nạp model offline: {path.name}"
             except Exception as exc:
@@ -868,8 +899,14 @@ class LocalAiManagerDialog(QDialog):
         self._pause_dl_btn = QPushButton("Tạm Dừng")
         self._pause_dl_btn.setEnabled(False)
         self._pause_dl_btn.clicked.connect(self._on_pause_download)
+        self._cancel_dl_btn = QPushButton("Hủy Tải")
+        self._cancel_dl_btn.setObjectName("DangerBtn")
+        self._cancel_dl_btn.setEnabled(False)
+        self._cancel_dl_btn.setToolTip("Dừng hẳn và xóa tệp .part đang tải dở")
+        self._cancel_dl_btn.clicked.connect(self._on_cancel_download)
         dl_top.addWidget(self._dl_status_lbl, 1)
         dl_top.addWidget(self._pause_dl_btn)
+        dl_top.addWidget(self._cancel_dl_btn)
         dl_lay.addLayout(dl_top)
 
         self._dl_progress = QProgressBar()
@@ -1059,6 +1096,9 @@ class LocalAiManagerDialog(QDialog):
         self._dl_progress.setFormat(f"Đang kết nối tới {filename}...")
         self._dl_status_lbl.setText(f"Chuẩn bị tải: {filename}")
         self._pause_dl_btn.setEnabled(True)
+        self._cancel_dl_btn.setEnabled(True)
+        self._active_dl_filename = filename
+        self._cancel_delete_part = False
 
         worker = ModelDownloadWorker(url=url, filename=filename, expected_sha256=expected_sha256, parent=self)
         worker.progress_changed.connect(self._on_download_progress)
@@ -1068,8 +1108,15 @@ class LocalAiManagerDialog(QDialog):
 
     def _on_pause_download(self) -> None:
         if self._download_worker is not None and self._download_worker.isRunning():
+            self._cancel_delete_part = False
             self._download_worker.request_pause()
             self._dl_status_lbl.setText("Đang tạm dừng tải (dữ liệu đã lưu vào file .part để tải tiếp sau)...")
+
+    def _on_cancel_download(self) -> None:
+        if self._download_worker is not None and self._download_worker.isRunning():
+            self._cancel_delete_part = True
+            self._download_worker.request_pause()
+            self._dl_status_lbl.setText("Đang hủy tác vụ tải và dọn file tạm...")
 
     def _on_download_progress(self, prog: DownloadProgress) -> None:
         self._dl_progress.setValue(int(round(prog.percent)))
@@ -1083,6 +1130,18 @@ class LocalAiManagerDialog(QDialog):
 
     def _on_download_finished(self, ok: bool, path_or_err: str, sha_hex: str) -> None:
         self._pause_dl_btn.setEnabled(False)
+        self._cancel_dl_btn.setEnabled(False)
+        if not ok and getattr(self, "_cancel_delete_part", False):
+            fname = getattr(self, "_active_dl_filename", "")
+            if fname:
+                part_file = get_models_storage_dir() / f"{fname}.part"
+                part_file.unlink(missing_ok=True)
+            self._dl_progress.setValue(0)
+            self._dl_progress.setFormat("0% • Đã hủy tải")
+            self._dl_status_lbl.setText("Đã hủy tải và xóa tệp .part tạm.")
+            self._cancel_delete_part = False
+            self._refresh_downloaded_list()
+            return
         self._refresh_downloaded_list()
         if ok:
             self._dl_progress.setValue(100)

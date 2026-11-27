@@ -1,0 +1,25 @@
+{
+  "app_name": "AirTeach AI",
+  "organization": "DNT - Victer",
+  "tagline": "Touchless Smartboard • Rust Core & Hybrid Cloud/Local AI",
+  "tools": {
+    "select": "Select Object (V)",
+    "pen": "Pen",
+    "highlighter": "Highlighter",
+    "eraser": "Eraser",
+    "shape": "Shapes (S)",
+    "text": "Text Box (T)",
+    "sticky": "Sticky Note (N)",
+    "pan": "Pan Canvas (Space)",
+    "laser": "Laser Pointer",
+    "lasso": "AI Region Lasso"
+  },
+  "gestures": {
+    "one_hand_draw": "1-Hand Index: Drawing",
+    "one_hand_hover": "2-Finger V: Pointer / Hover",
+    "one_hand_grab": "1-Hand Pinch: Moving Object",
+    "one_hand_erase": "Open Palm: Erasing",
+    "two_hand_zoom": "2-Hand: Zooming",
+    "two_hand_pan": "2-Hand: Panning Canvas"
+  }
+}

@@ -110,17 +110,28 @@ _add_collect_all("shiboken6", filter_pyside=False)
 
 if importlib.util.find_spec("airteach_core_rs") is not None:
     _add_collect_all("airteach_core_rs")
+    _rs_spec = importlib.util.find_spec("airteach_core_rs")
+    _rs_search_dirs = list(_rs_spec.submodule_search_locations or []) if _rs_spec is not None else []
+    if _rs_spec is not None and _rs_spec.origin and _rs_spec.origin.lower().endswith((".pyd", ".dll")):
+        binaries.append((_rs_spec.origin, "."))
+    for _rs_dir in _rs_search_dirs:
+        _rs_path = Path(_rs_dir)
+        if _rs_path.exists():
+            for _ext in ("*.pyd", "*.dll"):
+                for _bin in _rs_path.glob(_ext):
+                    binaries.append((str(_bin), "airteach_core_rs"))
 
 datas += collect_data_files("matplotlib")
 if importlib.util.find_spec("_sounddevice_data") is not None:
     datas += collect_data_files("_sounddevice_data")
 
-# Explicit application assets, AI models, Vietnamese NotoSans fonts, icons & config templates
+# Explicit application assets, AI models, Vietnamese NotoSans fonts, icons, locales & config templates
 for src_rel, dst_rel in (
     ("assets/models", "assets/models"),
     ("assets/fonts", "assets/fonts"),
     ("assets/icons", "assets/icons"),
     ("assets/branding", "assets/branding"),
+    ("locales", "locales"),
     ("models", "models"),
     ("config", "config"),
 ):
@@ -153,6 +164,20 @@ if sys.platform == "win32":
             binaries.append((str(dll_path), "."))
 
 hiddenimports += collect_submodules("cv_engine")
+for _cv_mod in (
+    "cv_engine.canvas_scene",
+    "cv_engine.spotlight_tour",
+    "cv_engine.file_attachment_parser",
+    "cv_engine.radial_pie_menu",
+    "cv_engine.user_guide_dialog",
+    "cv_engine.gguf_model_manager",
+    "cv_engine.document_presenter",
+    "cv_engine.gemini_client",
+    "cv_engine.output_sanitizer",
+    "cv_engine.rust_bridge",
+):
+    if importlib.util.find_spec(_cv_mod) is not None:
+        hiddenimports.append(_cv_mod)
 hiddenimports += [
     "PySide6.QtCore",
     "PySide6.QtGui",
@@ -258,8 +283,10 @@ coll = COLLECT(
     name="AirTeachAI",
 )
 
-# Copy 1-click competition AutoFix launcher alongside AirTeachAI.exe
-autofix_src = ROOT / "Chay_AirTeachAI_AutoFix.bat"
+# Copy 1-click launchers alongside AirTeachAI.exe
 dist_bundle_dir = Path(DISTPATH) / "AirTeachAI"
-if autofix_src.exists() and dist_bundle_dir.exists():
-    shutil.copy2(autofix_src, dist_bundle_dir / "Chay_AirTeachAI_AutoFix.bat")
+if dist_bundle_dir.exists():
+    for launcher_name in ("run_airteach.bat", "Chay_AirTeachAI_AutoFix.bat"):
+        src_bat = ROOT / launcher_name
+        if src_bat.exists():
+            shutil.copy2(src_bat, dist_bundle_dir / launcher_name)

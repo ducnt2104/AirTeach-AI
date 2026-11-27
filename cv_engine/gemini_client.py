@@ -51,10 +51,20 @@ DEFAULT_FALLBACK_MODELS: Tuple[str, ...] = (
     "gemini-3.5-flash-lite",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+)
+AVAILABLE_GEMINI_MODELS: Tuple[Tuple[str, str], ...] = (
+    ("", "Auto (Chuỗi Fallback tối ưu)"),
+    ("gemini-2.5-flash", "Gemini 2.5 Flash (Nhanh & Mạnh)"),
+    ("gemini-2.5-pro", "Gemini 2.5 Pro (Suy luận chuyên sâu)"),
+    ("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite (Siêu nhẹ)"),
+    ("gemini-2.0-flash", "Gemini 2.0 Flash (Ổn định)"),
+    ("gemini-3.8-flash", "Gemini 3.8 Flash (Preview)"),
+    ("gemini-3.5-flash", "Gemini 3.5 Flash"),
 )
 EXPONENTIAL_BACKOFF_DELAYS_SEC: Tuple[float, ...] = (1.0, 2.0, 4.0)
 MAX_VISION_IMAGE_DIM = 1024
-DEFAULT_MAX_OUTPUT_TOKENS = 4096
+DEFAULT_MAX_OUTPUT_TOKENS = 8192
 PLACEHOLDER_KEYS = {"", "your_gemini_api_key_here", "YOUR_GEMINI_API_KEY"}
 DEFAULT_SETTINGS_PATH = get_config_file_path()
 
@@ -190,6 +200,7 @@ def save_ui_api_settings(
     quick_tip_dismissed: Optional[bool] = None,
     ai_routing_mode: Optional[str] = None,
     active_gguf_path: Optional[str] = None,
+    tour_completed: Optional[bool] = None,
 ) -> Dict[str, str]:
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     data = load_ui_api_settings(settings_path)
@@ -221,6 +232,8 @@ def save_ui_api_settings(
             data["active_gguf_path"] = gp
         else:
             data.pop("active_gguf_path", None)
+    if tour_completed is not None:
+        data["tour_completed"] = "true" if tour_completed else "false"
     settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return data
 

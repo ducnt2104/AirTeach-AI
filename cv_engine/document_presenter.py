@@ -120,9 +120,10 @@ def warmup_document_engines() -> Dict[str, bool]:
 from PIL import Image, ImageDraw, ImageFont
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap, QTransform
 
 from cv_engine.app_paths import get_app_logger, get_doc_cache_dir, resource_path
+from cv_engine.file_attachment_parser import normalize_vietnamese_text
 
 _LOGGER = get_app_logger("document_presenter")
 
@@ -374,32 +375,48 @@ def _extract_pptx_slide_texts(src_path: Path) -> List[str]:
     if not _ensure_python_pptx() or Presentation is None:
         return []
     try:
-        prs = Presentation(str(src_path))
+        prs = Presentation(io.BytesIO(src_path.read_bytes()))
         texts: List[str] = []
+
+        def _collect_shape(shape: Any, parts: List[str]) -> None:
+            if MSO_SHAPE_TYPE is not None and getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
+                for sub in getattr(shape, "shapes", ()):
+                    _collect_shape(sub, parts)
+                return
+            if getattr(shape, "has_text_frame", False):
+                txt = normalize_vietnamese_text(shape.text_frame.text).strip()
+                if txt:
+                    parts.append(txt)
+            if getattr(shape, "has_table", False):
+                for row in shape.table.rows:
+                    row_txt = " | ".join(
+                        normalize_vietnamese_text(c.text).strip()
+                        for c in row.cells
+                        if normalize_vietnamese_text(c.text).strip()
+                    )
+                    if row_txt:
+                        parts.append(row_txt)
+
         for slide in prs.slides:
             parts: List[str] = []
             for shape in slide.shapes:
-                if getattr(shape, "has_text_frame", False):
-                    txt = shape.text_frame.text.strip()
-                    if txt:
-                        parts.append(txt)
-                if getattr(shape, "has_table", False):
-                    for row in shape.table.rows:
-                        row_txt = " | ".join(c.text.strip() for c in row.cells if c.text.strip())
-                        if row_txt:
-                            parts.append(row_txt)
-            texts.append("\n".join(parts))
+                _collect_shape(shape, parts)
+            texts.append(normalize_vietnamese_text("\n".join(parts)).strip())
         return texts
     except Exception:
         return []
 
 
-def _render_pptx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool, List[str]]:
+def _render_pptx_pure_python_to_pdf(
+    src_path: Path,
+    pdf_out: Path,
+    max_slides: Optional[int] = None,
+) -> Tuple[bool, List[str]]:
     _ensure_fitz()
     if not _ensure_python_pptx() or Presentation is None:
         return False, []
     try:
-        prs = Presentation(str(src_path))
+        prs = Presentation(io.BytesIO(src_path.read_bytes()))
     except Exception as exc:
         _LOGGER.warning("python-pptx failed to open %s: %s", src_path.name, exc)
         return False, []
@@ -444,7 +461,7 @@ def _render_pptx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool
         collected: List[str] = []
 
         for p_idx, para in enumerate(tf.paragraphs):
-            raw_p = para.text or ""
+            raw_p = normalize_vietnamese_text(para.text or "")
             if raw_p.strip():
                 collected.append(raw_p.strip())
             level = int(getattr(para, "level", 0) or 0)
@@ -625,6 +642,8 @@ def _render_pptx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool
     out_pdf = fitz.open()
     try:
         slides_iter = list(prs.slides)
+        if max_slides is not None and max_slides > 0:
+            slides_iter = slides_iter[: int(max_slides)]
         if not slides_iter:
             blank = Image.new("RGB", (canvas_w, canvas_h), (248, 250, 252))
             buf = io.BytesIO()
@@ -661,7 +680,7 @@ def _render_pptx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool
                 img.save(buf, format="PNG", optimize=True)
                 page = out_pdf.new_page(width=float(canvas_w), height=float(canvas_h))
                 page.insert_image(page.rect, stream=buf.getvalue())
-                slide_texts.append("\n".join(s_acc))
+                slide_texts.append(normalize_vietnamese_text("\n".join(s_acc)).strip())
 
         out_pdf.save(str(pdf_out), deflate=True)
     finally:
@@ -676,14 +695,14 @@ def _render_legacy_ppt_fallback_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[b
     extracted: List[str] = []
     for ch in utf16_chunks:
         try:
-            txt = ch.decode("utf-16le", errors="ignore").strip()
+            txt = normalize_vietnamese_text(ch.decode("utf-16le", errors="ignore")).strip()
             if txt and len(txt) >= 5 and txt not in extracted:
                 extracted.append(txt)
         except Exception:
             continue
     if not extracted:
         ascii_chunks = re.findall(rb"[\x20-\x7e]{8,}", raw)
-        extracted = [c.decode("ascii", errors="ignore").strip() for c in ascii_chunks[:40]]
+        extracted = [normalize_vietnamese_text(c.decode("ascii", errors="ignore")).strip() for c in ascii_chunks[:40]]
 
     chunks_per_slide = 8
     groups = [extracted[i : i + chunks_per_slide] for i in range(0, max(1, len(extracted)), chunks_per_slide)]
@@ -746,7 +765,7 @@ def convert_presentation_to_cached_pdf(
                 cnt = probe.page_count
                 probe.close()
                 if cnt >= 1:
-                    texts = [str(t) for t in (manifest.get("slide_texts") or [])]
+                    texts = [normalize_vietnamese_text(str(t)) for t in (manifest.get("slide_texts") or [])]
                     return pdf_out, texts, "CACHE_HIT"
         except Exception as exc:
             _LOGGER.debug("PPTX PDF cache probe miss (%s): %s", src.name, exc)
@@ -779,9 +798,11 @@ def convert_presentation_to_cached_pdf(
         if not slide_texts:
             pptx_texts = _extract_pptx_slide_texts(src) if src.suffix.lower() in (".pptx", ".ppsx", ".potx") else []
             for idx in range(n_pages):
-                pdf_txt = doc.load_page(idx).get_text("text").strip()
-                pt_txt = pptx_texts[idx] if idx < len(pptx_texts) else ""
+                pdf_txt = normalize_vietnamese_text(doc.load_page(idx).get_text("text")).strip()
+                pt_txt = normalize_vietnamese_text(pptx_texts[idx]).strip() if idx < len(pptx_texts) else ""
                 slide_texts.append(pdf_txt or pt_txt)
+        else:
+            slide_texts = [normalize_vietnamese_text(t).strip() for t in slide_texts]
     finally:
         doc.close()
 
@@ -897,7 +918,7 @@ def _render_docx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool
     if not _ensure_python_docx() or python_docx is None:
         return False, []
     try:
-        doc = python_docx.Document(str(src_path))
+        doc = python_docx.Document(io.BytesIO(src_path.read_bytes()))
     except Exception as exc:
         _LOGGER.warning("python-docx failed to open %s: %s", src_path.name, exc)
         return False, []
@@ -973,7 +994,7 @@ def _render_docx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool
 
             parts: List[str] = [bullet]
             for run in p.runs:
-                txt = html_lib.escape(run.text or "")
+                txt = html_lib.escape(normalize_vietnamese_text(run.text or ""))
                 txt = txt.replace("\n", "<br/>")
                 r_styles: List[str] = []
                 rf = run.font
@@ -999,7 +1020,7 @@ def _render_docx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool
                         parts.append(f"<br/><img src=\"{rid_to_fname[rid]}\" width=\"440\"/><br/>")
 
             if not parts and p.text:
-                parts.append(html_lib.escape(p.text))
+                parts.append(html_lib.escape(normalize_vietnamese_text(p.text)))
             inner = "".join(parts).strip()
             if not inner:
                 return "<p style=\"margin: 0 0 6px 0;\">&nbsp;</p>"
@@ -1017,7 +1038,9 @@ def _render_docx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool
                     bg = "#E2E8F0" if r_i == 0 else "#FFFFFF"
                     for cell in row.cells:
                         c_txt = "<br/>".join(
-                            html_lib.escape(cp.text.strip()) for cp in cell.paragraphs if cp.text.strip()
+                            html_lib.escape(normalize_vietnamese_text(cp.text).strip())
+                            for cp in cell.paragraphs
+                            if normalize_vietnamese_text(cp.text).strip()
                         ) or "&nbsp;"
                         cells_html.append(
                             f"<{cell_tag} style=\"background: {bg}; border: 1px solid #94A3B8; padding: 6px 8px; text-align: left;\">{c_txt}</{cell_tag}>"
@@ -1045,7 +1068,7 @@ def _render_docx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool
     out_doc = fitz.open(str(pdf_out))
     try:
         for i in range(out_doc.page_count):
-            page_texts.append(out_doc.load_page(i).get_text("text").strip())
+            page_texts.append(normalize_vietnamese_text(out_doc.load_page(i).get_text("text")).strip())
     finally:
         out_doc.close()
     return pdf_out.exists() and pdf_out.stat().st_size > 200, page_texts
@@ -1057,19 +1080,19 @@ def _render_legacy_doc_fallback_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[b
     extracted: List[str] = []
     for ch in utf16_chunks:
         try:
-            txt = ch.decode("utf-16le", errors="ignore").strip()
+            txt = normalize_vietnamese_text(ch.decode("utf-16le", errors="ignore")).strip()
             if txt and len(txt) >= 5 and txt not in extracted:
                 extracted.append(txt)
         except Exception:
             continue
     if not extracted:
         ascii_chunks = re.findall(rb"[\x20-\x7e]{8,}", raw)
-        extracted = [c.decode("ascii", errors="ignore").strip() for c in ascii_chunks[:80]]
+        extracted = [normalize_vietnamese_text(c.decode("ascii", errors="ignore")).strip() for c in ascii_chunks[:80]]
 
-    body_html = "".join(f"<p>{html_lib.escape(t)}</p>" for t in extracted) or f"<p>{html_lib.escape(src_path.name)}</p>"
+    body_html = "".join(f"<p>{html_lib.escape(t)}</p>" for t in extracted) or f"<p>{html_lib.escape(normalize_vietnamese_text(src_path.name))}</p>"
     full_html = (
         "<html><body style=\"font-family: 'Segoe UI', Arial, sans-serif; font-size: 12pt; color: #0F172A;\">"
-        f"<h2>{html_lib.escape(src_path.name)}</h2>{body_html}</body></html>"
+        f"<h2>{html_lib.escape(normalize_vietnamese_text(src_path.name))}</h2>{body_html}</body></html>"
     )
     pdf_out.write_bytes(_render_story_html_to_pdf_bytes(full_html))
     page_texts: List[str] = []
@@ -1077,7 +1100,7 @@ def _render_legacy_doc_fallback_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[b
     out_doc = fitz.open(str(pdf_out))
     try:
         for i in range(out_doc.page_count):
-            page_texts.append(out_doc.load_page(i).get_text("text").strip())
+            page_texts.append(normalize_vietnamese_text(out_doc.load_page(i).get_text("text")).strip())
     finally:
         out_doc.close()
     return pdf_out.exists() and pdf_out.stat().st_size > 200, page_texts
@@ -1111,7 +1134,7 @@ def convert_word_to_cached_pdf(
                 cnt = probe.page_count
                 probe.close()
                 if cnt >= 1:
-                    texts = [str(t) for t in (manifest.get("page_texts") or [])]
+                    texts = [normalize_vietnamese_text(str(t)) for t in (manifest.get("page_texts") or [])]
                     return pdf_out, texts, "CACHE_HIT"
         except Exception as exc:
             _LOGGER.debug("Word PDF cache probe miss (%s): %s", src.name, exc)
@@ -1139,7 +1162,12 @@ def convert_word_to_cached_pdf(
     doc = fitz.open(str(pdf_out))
     try:
         if not page_texts or len(page_texts) != doc.page_count:
-            page_texts = [doc.load_page(idx).get_text("text").strip() for idx in range(doc.page_count)]
+            page_texts = [
+                normalize_vietnamese_text(doc.load_page(idx).get_text("text")).strip()
+                for idx in range(doc.page_count)
+            ]
+        else:
+            page_texts = [normalize_vietnamese_text(t).strip() for t in page_texts]
     finally:
         doc.close()
 
@@ -1184,9 +1212,12 @@ class LectureDocument:
         self.doc_type = doc_type
         self._lock = threading.Lock()
         _ensure_fitz()
-        self._doc = fitz.open(str(self.pdf_path))
+        try:
+            self._doc = fitz.open(str(self.pdf_path))
+        except Exception:
+            self._doc = fitz.open(stream=self.pdf_path.read_bytes(), filetype="pdf")
         self.page_count = int(self._doc.page_count)
-        self.slide_texts: List[str] = list(slide_texts or [])
+        self.slide_texts: List[str] = [normalize_vietnamese_text(str(t)) for t in (slide_texts or [])]
         self._max_page_cache = max(6, int(max_page_cache))
         self._max_thumb_cache = max(16, int(max_thumb_cache))
         self._page_cache: OrderedDict[Tuple[int, int], QImage] = OrderedDict()
@@ -1314,10 +1345,10 @@ class LectureDocument:
         with self._lock:
             if self._closed:
                 return ""
-            pdf_txt = self._doc.load_page(idx).get_text("text").strip()
-        extra = self.slide_texts[idx].strip() if idx < len(self.slide_texts) else ""
+            pdf_txt = normalize_vietnamese_text(self._doc.load_page(idx).get_text("text")).strip()
+        extra = normalize_vietnamese_text(self.slide_texts[idx]).strip() if idx < len(self.slide_texts) else ""
         if pdf_txt and extra and extra not in pdf_txt:
-            return f"{pdf_txt}\n{extra}"
+            return normalize_vietnamese_text(f"{pdf_txt}\n{extra}").strip()
         return pdf_txt or extra
 
     def get_page_aspect_ratio(self, page_idx: int) -> float:
@@ -1376,28 +1407,75 @@ def _qimage_to_png_bytes(img: QImage) -> bytes:
     return bytes(ba)
 
 
+def get_office_conversion_notice(doc_type: str, backend_used: str) -> str:
+    """Return a clear, user-friendly Vietnamese conversion status note for PPTX/DOCX."""
+    dt = str(doc_type or "").upper()
+    bk = str(backend_used or "").upper()
+    if dt not in ("PPTX", "WORD"):
+        return ""
+    if bk in ("LIBREOFFICE", "POWERPOINT_COM", "WORD_COM"):
+        return f"Đã chuyển đổi chuẩn gốc bằng `{bk}` (giữ trọn bố cục & font chữ)."
+    if bk == "CACHE_HIT":
+        return "Tải tức thì từ bộ đệm SHA-256 cục bộ (<0.2s)."
+    return (
+        f"Đang dùng trình render nội bộ (`{bk}`) vì máy chưa cài LibreOffice hoặc Microsoft Office. "
+        "Các slide/văn bản vẫn hiển thị & chú thích bình thường; cài thêm LibreOffice nếu cần giữ hiệu ứng/SmartArt phức tạp 100%."
+    )
+
+
 def _render_annotation_card_png(ann: Dict[str, Any]) -> Optional[bytes]:
+    rot = float(ann.get("rotation", 0.0) or 0.0)
     ann_pm = ann.get("pixmap")
     if isinstance(ann_pm, QPixmap) and not ann_pm.isNull():
-        return _qimage_to_png_bytes(ann_pm.toImage())
+        img = ann_pm.toImage()
+    else:
+        text = str(ann.get("text") or ann.get("raw") or "").strip()
+        if not text:
+            return None
+        w = max(120, int(round(float(ann.get("w", 240.0)))))
+        h = max(44, int(round(float(ann.get("h", 52.0)))))
+        img = QImage(w, h, QImage.Format_ARGB32)
+        img.fill(Qt.transparent)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing)
+        is_sticky = str(ann.get("obj_type") or "") == "sticky"
+        if is_sticky:
+            bg_c = QColor(str(ann.get("bg_color") or "#FEF08A"))
+            bd_c = QColor(str(ann.get("border_color") or "#CA8A04"))
+            fg_c = QColor(str(ann.get("color") or "#1E293B"))
+            p.setBrush(bg_c)
+            p.setPen(QPen(bd_c, 2.0))
+            p.drawRoundedRect(QRectF(1, 1, w - 2, h - 2), 8.0, 8.0)
+            p.fillRect(QRectF(2, 2, w - 4, 10), bd_c)
+            p.setPen(fg_c)
+            p.setFont(QFont("Segoe UI", max(10, int(ann.get("font_size") or 13)), QFont.DemiBold))
+            p.drawText(QRectF(10, 16, w - 20, h - 22), Qt.AlignTop | Qt.AlignLeft | Qt.TextWordWrap, text)
+        else:
+            bg_raw = str(ann.get("bg_color") or "")
+            bg_c = QColor(bg_raw) if bg_raw else QColor(15, 23, 42, 225)
+            bd_c = QColor(str(ann.get("border_color") or "#06B6D4"))
+            p.setBrush(bg_c)
+            p.setPen(QPen(bd_c, 1.5))
+            p.drawRoundedRect(QRectF(1, 1, w - 2, h - 2), 8.0, 8.0)
+            p.setPen(QColor(str(ann.get("color") or "#00F5D4")))
+            p.setFont(QFont("Segoe UI", max(10, int(ann.get("font_size") or 13)), QFont.Bold))
+            p.drawText(QRectF(8, 6, w - 16, h - 12), Qt.AlignTop | Qt.AlignLeft | Qt.TextWordWrap, text)
+        p.end()
 
-    text = str(ann.get("text") or ann.get("raw") or "").strip()
-    if not text:
-        return None
-    w = max(120, int(round(float(ann.get("w", 240.0)))))
-    h = max(40, int(round(float(ann.get("h", 48.0)))))
-    img = QImage(w, h, QImage.Format_ARGB32)
-    img.fill(Qt.transparent)
-    p = QPainter(img)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(QColor(15, 23, 42, 225))
-    p.setPen(QPen(QColor("#06B6D4"), 1.5))
-    p.drawRoundedRect(QRectF(1, 1, w - 2, h - 2), 8.0, 8.0)
-    p.setPen(QColor(str(ann.get("color") or "#00F5D4")))
-    p.setFont(QFont("Segoe UI", max(10, int(ann.get("font_size") or 13)), QFont.Bold))
-    p.drawText(QRectF(8, 4, w - 16, h - 8), Qt.AlignVCenter | Qt.AlignLeft, text)
-    p.end()
+    if abs(rot) > 0.1:
+        img = img.transformed(QTransform().rotate(rot), Qt.SmoothTransformation)
     return _qimage_to_png_bytes(img)
+
+
+def _rotate_xy_deg(px: float, py: float, cx: float, cy: float, angle_deg: float) -> Tuple[float, float]:
+    if abs(angle_deg) < 1e-4:
+        return (px, py)
+    import math as _m
+
+    rad = _m.radians(angle_deg)
+    c, s = _m.cos(rad), _m.sin(rad)
+    dx, dy = px - cx, py - cy
+    return (cx + dx * c - dy * s, cy + dx * s + dy * c)
 
 
 def export_annotated_lecture_pdf(
@@ -1408,8 +1486,9 @@ def export_annotated_lecture_pdf(
     lecture_doc: Optional[LectureDocument] = None,
 ) -> Path:
     """
-    Export the active slide deck (PDF/PPTX or whiteboard slides) with every slide's
-    non-destructive ink strokes, highlighter marks, and AI annotations burned into a single PDF.
+    Export the active slide deck (PDF/PPTX/DOCX/Images or whiteboard slides) with every slide's
+    non-destructive Object annotations (strokes, shapes, text boxes, sticky notes, inserted images)
+    burned cleanly into a single PDF.
     """
     out_file = Path(output_path)
     out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1431,18 +1510,18 @@ def export_annotated_lecture_pdf(
                     png = _qimage_to_png_bytes(pm.toImage())
                     page.insert_image(page.rect, stream=png)
                 else:
-                    # Render whiteboard slide card cleanly via QImage
                     card = QImage(int(cw), int(ch), QImage.Format_RGB888)
                     card.fill(QColor("#0F172A"))
-                    qp = QPainter(card)
-                    qp.setPen(QColor("#06B6D4"))
-                    qp.setFont(QFont("Segoe UI", 22, QFont.Bold))
-                    qp.drawText(QPointF(48, 84), str(sl.get("title") or "AirTeach AI Smartboard"))
-                    qp.setPen(QColor("#F8FAFC"))
-                    qp.setFont(QFont("Segoe UI", 14))
-                    for b_i, bullet in enumerate(sl.get("bullets") or []):
-                        qp.drawText(QPointF(54, 148 + b_i * 38), str(bullet))
-                    qp.end()
+                    if not bool(sl.get("is_blank", False)):
+                        qp = QPainter(card)
+                        qp.setPen(QColor("#06B6D4"))
+                        qp.setFont(QFont("Segoe UI", 22, QFont.Bold))
+                        qp.drawText(QPointF(48, 84), str(sl.get("title") or "AirTeach AI Smartboard"))
+                        qp.setPen(QColor("#F8FAFC"))
+                        qp.setFont(QFont("Segoe UI", 14))
+                        for b_i, bullet in enumerate(sl.get("bullets") or []):
+                            qp.drawText(QPointF(54, 148 + b_i * 38), str(bullet))
+                        qp.end()
                     page.insert_image(page.rect, stream=_qimage_to_png_bytes(card))
 
     try:
@@ -1453,7 +1532,8 @@ def export_annotated_lecture_pdf(
                 continue
             strokes = layer.get("strokes") or []
             annotations = layer.get("annotations") or []
-            if not strokes and not annotations:
+            images = layer.get("images") or []
+            if not strokes and not annotations and not images:
                 continue
 
             page = out_doc.load_page(idx)
@@ -1464,17 +1544,43 @@ def export_annotated_lecture_pdf(
             sx = pw / max(1.0, s_rect.width())
             sy = ph / max(1.0, s_rect.height())
 
+            for img_item in images:
+                img_obj = img_item.get("pixmap")
+                if isinstance(img_obj, QPixmap) and not img_obj.isNull():
+                    qimg_obj = img_obj.toImage()
+                elif isinstance(img_obj, QImage) and not img_obj.isNull():
+                    qimg_obj = img_obj
+                else:
+                    continue
+                rot = float(img_item.get("rotation", 0.0) or 0.0)
+                if abs(rot) > 0.1:
+                    qimg_obj = qimg_obj.transformed(QTransform().rotate(rot), Qt.SmoothTransformation)
+                img_bytes = _qimage_to_png_bytes(qimg_obj)
+                if not img_bytes:
+                    continue
+                ix = (float(img_item.get("x", 60.0)) - s_rect.left()) * sx
+                iy = (float(img_item.get("y", 80.0)) - s_rect.top()) * sy
+                iw = max(24.0, float(img_item.get("w", 240.0)) * sx)
+                ih = max(24.0, float(img_item.get("h", 180.0)) * sy)
+                target = fitz.Rect(ix, iy, ix + iw, iy + ih)
+                page.insert_image(target, stream=img_bytes, overlay=True)
+
             for st in strokes:
                 pts = st.get("points") or []
                 if len(pts) < 2:
                     continue
-                fitz_pts = [
-                    fitz.Point(
-                        (float(p.x()) - s_rect.left()) * sx,
-                        (float(p.y()) - s_rect.top()) * sy,
+                rot = float(st.get("rotation", 0.0) or 0.0)
+                cx_s = float(st.get("x", 0.0)) + 0.5 * float(st.get("w", 0.0))
+                cy_s = float(st.get("y", 0.0)) + 0.5 * float(st.get("h", 0.0))
+                fitz_pts = []
+                for p in pts:
+                    px0 = float(p.x()) if hasattr(p, "x") else float(p[0])
+                    py0 = float(p.y()) if hasattr(p, "y") else float(p[1])
+                    if abs(rot) > 0.1:
+                        px0, py0 = _rotate_xy_deg(px0, py0, cx_s, cy_s, rot)
+                    fitz_pts.append(
+                        fitz.Point((px0 - s_rect.left()) * sx, (py0 - s_rect.top()) * sy)
                     )
-                    for p in pts
-                ]
                 col = st.get("color")
                 if isinstance(col, QColor):
                     rgb = (col.redF(), col.greenF(), col.blueF())
@@ -1510,29 +1616,50 @@ def export_annotated_lecture_pdf(
                 target = fitz.Rect(ax, ay, ax + aw, ay + ah)
                 page.insert_image(target, stream=png_bytes, overlay=True)
 
-            for img_item in layer.get("images") or []:
-                img_obj = img_item.get("pixmap")
-                if isinstance(img_obj, QPixmap) and not img_obj.isNull():
-                    qimg_obj = img_obj.toImage()
-                elif isinstance(img_obj, QImage) and not img_obj.isNull():
-                    qimg_obj = img_obj
-                else:
-                    continue
-                img_bytes = _qimage_to_png_bytes(qimg_obj)
-                if not img_bytes:
-                    continue
-                ix = (float(img_item.get("x", 60.0)) - s_rect.left()) * sx
-                iy = (float(img_item.get("y", 80.0)) - s_rect.top()) * sy
-                iw = max(24.0, float(img_item.get("w", 240.0)) * sx)
-                ih = max(24.0, float(img_item.get("h", 180.0)) * sy)
-                target = fitz.Rect(ix, iy, ix + iw, iy + ih)
-                page.insert_image(target, stream=img_bytes, overlay=True)
-
         out_doc.save(str(out_file), garbage=3, deflate=True)
     finally:
         out_doc.close()
 
     return out_file
+
+
+def export_annotated_slides_to_pngs(
+    output_dir: Path | str,
+    slides: Sequence[Dict[str, Any]],
+    slide_annotations: Dict[int, Dict[str, Any]],
+    canvas_size: Tuple[float, float],
+    lecture_doc: Optional[LectureDocument] = None,
+    scale: float = 2.0,
+) -> List[Path]:
+    """
+    Export every slide of the annotated deck as crisp high-DPI PNG files (`slide_001.png`, ...).
+    Burns all per-page Objects (strokes, shapes, text boxes, sticky notes, images) accurately.
+    """
+    out_folder = Path(output_dir)
+    out_folder.mkdir(parents=True, exist_ok=True)
+    _ensure_fitz()
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpd:
+        tmp_pdf = Path(tmpd) / "deck_annotated.pdf"
+        export_annotated_lecture_pdf(
+            tmp_pdf,
+            slides,
+            slide_annotations,
+            canvas_size,
+            lecture_doc=lecture_doc,
+        )
+        saved_paths: List[Path] = []
+        doc = fitz.open(str(tmp_pdf))
+        try:
+            mat = fitz.Matrix(max(1.0, min(3.5, float(scale))), max(1.0, min(3.5, float(scale))))
+            for idx in range(doc.page_count):
+                pix = doc.load_page(idx).get_pixmap(matrix=mat, colorspace=fitz.csRGB, alpha=False)
+                out_png = out_folder / f"slide_{idx + 1:03d}.png"
+                pix.save(str(out_png))
+                saved_paths.append(out_png)
+        finally:
+            doc.close()
+    return saved_paths
 
 
 def _natural_sort_key(name: str) -> List[Any]:
@@ -1554,15 +1681,27 @@ def list_folder_images(folder_path: Path | str) -> List[Path]:
 
 
 def load_image_file_qimage(src_path: Path | str, target_max_dim: int = 2048) -> QImage:
-    """Load PNG/JPG/WEBP/BMP or vector SVG at crisp high resolution as QImage."""
+    """
+    Load PNG/JPG/WEBP/BMP or vector SVG at crisp high resolution as QImage.
+    Hardened for non-ASCII Vietnamese Windows file paths via `Path.read_bytes()`
+    -> `QImage.loadFromData` / Pillow `BytesIO` / PyMuPDF stream fallbacks.
+    """
     src = Path(src_path)
     if not src.exists():
         return QImage()
+    try:
+        raw_bytes = src.read_bytes()
+    except OSError as exc:
+        _LOGGER.warning("Cannot read image bytes (%s): %s", src.name, exc)
+        return QImage()
+    if not raw_bytes:
+        return QImage()
+
     ext = src.suffix.lower()
     if ext == ".svg":
         try:
             _ensure_fitz()
-            doc = fitz.open(str(src))
+            doc = fitz.open(stream=raw_bytes, filetype="svg")
             try:
                 page = doc.load_page(0)
                 rect = page.rect
@@ -1577,7 +1716,7 @@ def load_image_file_qimage(src_path: Path | str, target_max_dim: int = 2048) -> 
             try:
                 from PySide6.QtSvg import QSvgRenderer
 
-                renderer = QSvgRenderer(str(src))
+                renderer = QSvgRenderer(QByteArray(raw_bytes))
                 if renderer.isValid():
                     sz = renderer.defaultSize()
                     w = max(64, int(sz.width()) or 1024)
@@ -1595,8 +1734,11 @@ def load_image_file_qimage(src_path: Path | str, target_max_dim: int = 2048) -> 
     qimg = QImage(str(src))
     if not qimg.isNull():
         return qimg
+    qimg_mem = QImage()
+    if qimg_mem.loadFromData(raw_bytes) and not qimg_mem.isNull():
+        return qimg_mem
     try:
-        pil_img = Image.open(str(src)).convert("RGBA")
+        pil_img = Image.open(io.BytesIO(raw_bytes)).convert("RGBA")
         raw = pil_img.tobytes("raw", "RGBA")
         return QImage(raw, pil_img.width, pil_img.height, pil_img.width * 4, QImage.Format_RGBA8888).copy()
     except Exception:
@@ -1640,9 +1782,9 @@ def rasterize_document_to_png_dir(
             pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False)
             fname = f"page_{idx + 1:04d}.png"
             pix.save(str(out / fname))
-            txt = page.get_text("text").strip()
+            txt = normalize_vietnamese_text(page.get_text("text")).strip()
             if not txt and idx < len(texts):
-                txt = texts[idx].strip()
+                txt = normalize_vietnamese_text(texts[idx]).strip()
             pages_meta.append({
                 "index": idx,
                 "image_file": fname,
