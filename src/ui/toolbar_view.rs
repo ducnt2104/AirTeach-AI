@@ -1,6 +1,6 @@
 //! Minimalist Studio Header Bar & Bottom Drawing Dock (`src/ui/toolbar_view.rs` — MODULE 2.1):
 //! - Single Header Bar (`Height: 46px`, zero 2nd Sub-Toolbar!):
-//!   * Left: `[Đăng xuất]` | Tên Giáo viên đã đăng nhập | `[Mở PDF/Slide]` | `[ < ] Slide 1/4 [ > ]` | `[Bật/Tắt Lưới Caro]`
+//!   * Left: `[Đăng xuất]` | Tên Giáo viên đã đăng nhập | `[Mở Tài Liệu: Word / PDF / PPTX]` | `[ < ] Slide 1/4 [ > ]` | `[Bật/Tắt Lưới Caro]`
 //!   * Middle: Flexible stretch spacer so left and right controls never overlap
 //!   * Right: `[Ghi Âm Bài Giảng]` | `[Ẩn/Hiện Camera]` | `[Trợ Lý AI (Đóng/Mở)]`
 //! - Bottom Drawing Dock (`Height: 54px`):
@@ -86,7 +86,7 @@ pub fn render_top_toolbar(app: &mut AirTeachApp, ctx: &egui::Context) {
                 if ui
                     .add(
                         egui::Button::new(
-                            RichText::new("[Mở PDF/Slide]")
+                            RichText::new("[Mở Tài Liệu: Word / PDF / PPTX]")
                                 .font(FontId::proportional(12.5))
                                 .color(palette.text_primary)
                                 .strong(),

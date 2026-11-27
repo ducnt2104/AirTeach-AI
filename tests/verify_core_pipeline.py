@@ -216,15 +216,15 @@ def test_hand_engine_init_fallback_and_grace_period() -> None:
                 dark_frame,
                 face_boxes=[],
                 search_size=(640, 360),
-                roi_target_size=(420, 420),
+                roi_target_size=256,
                 enable_roi_sharpen=True,
             )
             assert left_res is None and right_res is None
 
-            # Call 2: sustain hand lock across ~180ms (min_hold_sec + frames) via SOLUTIONS_HANDS
+            # Call 2: sustain hand lock across ~245ms (min_hold_sec + frames) via SOLUTIONS_HANDS
             emit_hand["active"] = True
             acquired = None
-            for _ in range(5):
+            for _ in range(7):
                 acq_l, acq_r = fallback_engine.detect_hands(
                     dark_frame, face_boxes=[], search_size=(640, 360)
                 )

@@ -37,6 +37,7 @@ from cv_engine.document_presenter import (
     LectureDocument,
     compute_slide_rect_on_canvas,
     convert_presentation_to_cached_pdf,
+    convert_word_to_cached_pdf,
     export_annotated_lecture_pdf,
 )
 from cv_engine.preprocessing import (
@@ -53,7 +54,9 @@ from cv_engine.hand_gesture import (
     GestureFsmEngine,
     GestureFsmState,
     HandGestureEngine,
+    HandTelemetryPacket,
     KalmanVelocityPredictor2D,
+    Kinematic60HzExtrapolator,
     OneEuroFilter1D,
     OneEuroFilter2D,
     OneEuroFilter3D,
@@ -64,6 +67,7 @@ from cv_engine.hand_gesture import (
     compute_palm_scale_3d,
     compute_pinch_ratio_3d,
     joint_angle_3d_deg,
+    map_active_workspace_norm,
     thumb_palm_plane_angle_deg,
 )
 from cv_engine.subject_tracker import (
@@ -170,7 +174,11 @@ __all__ = [
     "LectureDocument",
     "compute_slide_rect_on_canvas",
     "convert_presentation_to_cached_pdf",
+    "convert_word_to_cached_pdf",
     "export_annotated_lecture_pdf",
+    "HandTelemetryPacket",
+    "Kinematic60HzExtrapolator",
+    "map_active_workspace_norm",
     "get_user_data_dir",
     "install_global_excepthook",
     "resource_path",

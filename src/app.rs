@@ -2965,16 +2965,21 @@ impl AirTeachApp {
     pub fn open_slide_file_dialog(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter(
-                "Slides (PDF, PNG, JPG, WEBP)",
-                &["pdf", "png", "jpg", "jpeg", "webp"],
+                "Tài liệu & Bài giảng (Word, PDF, PowerPoint, Ảnh)",
+                &["docx", "doc", "pdf", "pptx", "ppt", "ppsx", "potx", "png", "jpg", "jpeg", "webp"],
             )
             .pick_file()
         {
-            if let Ok(loaded) = DocumentLoader::load_slides_from_path(&path) {
-                self.slides = loaded;
-                self.rag_index.rebuild_from_slides(&self.slides);
-                self.current_slide_idx = 0;
-                self.invalidate_slide_texture();
+            match DocumentLoader::load_slides_from_path(&path) {
+                Ok(loaded) => {
+                    self.slides = loaded;
+                    self.rag_index.rebuild_from_slides(&self.slides);
+                    self.current_slide_idx = 0;
+                    self.invalidate_slide_texture();
+                }
+                Err(err) => {
+                    self.last_snapped_shape_banner = format!("[LỖI MỞ TÀI LIỆU] {err}");
+                }
             }
         }
     }

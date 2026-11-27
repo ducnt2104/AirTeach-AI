@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import hashlib
+import html as html_lib
 import io
 import json
 import os
@@ -29,6 +30,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -38,6 +40,14 @@ except ImportError:  # pragma: no cover
     import fitz  # type: ignore
 
 from PIL import Image, ImageDraw, ImageFont
+
+try:
+    import docx as python_docx  # type: ignore
+
+    HAS_PYTHON_DOCX = True
+except Exception:  # pragma: no cover
+    python_docx = None  # type: ignore[assignment]
+    HAS_PYTHON_DOCX = False
 
 try:
     from pptx import Presentation  # type: ignore
@@ -58,7 +68,7 @@ from cv_engine.app_paths import get_app_logger, get_doc_cache_dir
 
 _LOGGER = get_app_logger("document_presenter")
 
-SUPPORTED_DOC_EXTENSIONS = {".pdf", ".pptx", ".ppt", ".ppsx", ".potx"}
+SUPPORTED_DOC_EXTENSIONS = {".pdf", ".pptx", ".ppt", ".ppsx", ".potx", ".docx", ".doc"}
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
@@ -101,6 +111,18 @@ def _has_windows_powerpoint_com() -> bool:
         import winreg
 
         with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"PowerPoint.Application"):
+            return True
+    except OSError:
+        return False
+
+
+def _has_windows_word_com() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"Word.Application"):
             return True
     except OSError:
         return False
@@ -575,6 +597,13 @@ def _render_pptx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool
                 draw.rectangle([0, 0, canvas_w, 8], fill=(79, 70, 229))
 
                 s_acc: List[str] = []
+                # Render non-placeholder background shapes from slide layout for higher visual fidelity
+                layout = getattr(slide, "slide_layout", None)
+                if layout is not None:
+                    for lshape in getattr(layout, "shapes", ()):
+                        if getattr(lshape, "is_placeholder", False):
+                            continue
+                        _render_shape(img, draw, lshape, default_fg, [])
                 for shape in slide.shapes:
                     _render_shape(img, draw, shape, default_fg, s_acc)
 
@@ -725,6 +754,361 @@ def convert_presentation_to_cached_pdf(
     return pdf_out, slide_texts, backend
 
 
+def _convert_via_word_com(src_path: Path, pdf_out: Path) -> bool:
+    if not _has_windows_word_com():
+        return False
+    try:
+        import pythoncom  # type: ignore
+        import win32com.client  # type: ignore
+
+        pythoncom.CoInitialize()
+        word_app = None
+        word_doc = None
+        try:
+            word_app = win32com.client.DispatchEx("Word.Application")
+            word_app.Visible = False
+            word_doc = word_app.Documents.Open(
+                str(src_path.resolve()),
+                ConfirmConversions=False,
+                ReadOnly=True,
+                AddToRecentFiles=False,
+            )
+            word_doc.ExportAsFixedFormat(
+                OutputFileName=str(pdf_out.resolve()),
+                ExportFormat=17,  # wdExportFormatPDF
+            )
+        finally:
+            if word_doc is not None:
+                word_doc.Close(SaveChanges=False)
+            if word_app is not None:
+                word_app.Quit(SaveChanges=False)
+            pythoncom.CoUninitialize()
+        if pdf_out.exists() and pdf_out.stat().st_size > 200:
+            return True
+    except Exception:
+        pass
+
+    try:
+        src_esc = str(src_path.resolve()).replace("'", "''")
+        out_esc = str(pdf_out.resolve()).replace("'", "''")
+        ps_script = (
+            "$ErrorActionPreference='Stop';"
+            "$w = New-Object -ComObject Word.Application;"
+            "$w.Visible = $false;"
+            "$d = $null;"
+            "try {"
+            f"  $d = $w.Documents.Open('{src_esc}', $false, $true, $false);"
+            f"  $d.ExportAsFixedFormat('{out_esc}', 17);"
+            "} finally {"
+            "  if ($d) { $d.Close($false) };"
+            "  if ($w) { $w.Quit($false) };"
+            "}"
+        )
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=45,
+            creationflags=_subprocess_creationflags(),
+            check=False,
+        )
+        if res.returncode == 0 and pdf_out.exists() and pdf_out.stat().st_size > 200:
+            return True
+    except Exception as exc:
+        _LOGGER.warning("Word COM conversion failed (%s): %s", src_path.name, exc)
+    return False
+
+
+def _render_story_html_to_pdf_bytes(html_str: str, assets_dir: Optional[Path] = None) -> bytes:
+    bio = io.BytesIO()
+    mediabox = fitz.paper_rect("a4")
+    where = mediabox + (42, 42, -42, -42)
+    archive = fitz.Archive(str(assets_dir)) if assets_dir is not None else None
+    story = fitz.Story(html=html_str, archive=archive) if archive is not None else fitz.Story(html=html_str)
+    writer = fitz.DocumentWriter(bio)
+    try:
+        more = 1
+        pages = 0
+        while more and pages < 400:
+            dev = writer.begin_page(mediabox)
+            more, _ = story.place(where)
+            story.draw(dev)
+            writer.end_page()
+            pages += 1
+        if pages == 0:
+            dev = writer.begin_page(mediabox)
+            writer.end_page()
+    finally:
+        writer.close()
+    del story, writer
+    return bio.getvalue()
+
+
+def _render_docx_pure_python_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool, List[str]]:
+    if not HAS_PYTHON_DOCX or python_docx is None:
+        return False, []
+    try:
+        doc = python_docx.Document(str(src_path))
+    except Exception as exc:
+        _LOGGER.warning("python-docx failed to open %s: %s", src_path.name, exc)
+        return False, []
+
+    w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    r_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    a_ns = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as asset_tmp:
+        assets_dir = Path(asset_tmp)
+        rid_to_fname: Dict[str, str] = {}
+        try:
+            for r_id, rel in doc.part.rels.items():
+                if "image" in str(getattr(rel, "reltype", "")).lower():
+                    blob = rel.target_part.blob
+                    ext = Path(str(getattr(rel, "target_ref", "img.png"))).suffix or ".png"
+                    if ext.lower() not in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"):
+                        try:
+                            im = Image.open(io.BytesIO(blob)).convert("RGB")
+                            out_buf = io.BytesIO()
+                            im.save(out_buf, format="PNG")
+                            blob = out_buf.getvalue()
+                            ext = ".png"
+                        except Exception:
+                            continue
+                    safe_name = f"rel_{len(rid_to_fname)}{ext}"
+                    (assets_dir / safe_name).write_bytes(blob)
+                    rid_to_fname[r_id] = safe_name
+        except Exception as exc:
+            _LOGGER.debug("DOCX image relation extraction note: %s", exc)
+
+        para_map = {p._element: p for p in doc.paragraphs}
+        table_map = {t._element: t for t in doc.tables}
+        html_blocks: List[str] = []
+
+        def _render_paragraph_html(p: Any) -> str:
+            style_name = str(getattr(getattr(p, "style", None), "name", "") or "")
+            s_low = style_name.lower()
+            if s_low == "title":
+                tag = "h1"
+                extra_css = "font-size: 20pt; color: #1E1B4B; margin: 0 0 10px 0;"
+            elif s_low == "subtitle":
+                tag = "h2"
+                extra_css = "font-size: 13.5pt; color: #475569; margin: 0 0 12px 0;"
+            elif s_low.startswith("heading 1"):
+                tag = "h1"
+                extra_css = "font-size: 16.5pt; color: #1E293B; margin: 14px 0 6px 0;"
+            elif s_low.startswith("heading 2"):
+                tag = "h2"
+                extra_css = "font-size: 14pt; color: #1E40AF; margin: 12px 0 5px 0;"
+            elif s_low.startswith("heading"):
+                tag = "h3"
+                extra_css = "font-size: 12.5pt; color: #0F172A; margin: 10px 0 4px 0;"
+            else:
+                tag = "p"
+                extra_css = "margin: 0 0 7px 0; line-height: 1.45;"
+
+            align_css = ""
+            try:
+                al = str(getattr(p, "alignment", "") or "").upper()
+                if "CENTER" in al:
+                    align_css = "text-align: center;"
+                elif "RIGHT" in al:
+                    align_css = "text-align: right;"
+                elif "JUSTIFY" in al:
+                    align_css = "text-align: justify;"
+            except Exception:
+                pass
+
+            bullet = "• " if "list" in s_low or p._element.find(f"{w_ns}pPr/{w_ns}numPr") is not None else ""
+            if bullet:
+                extra_css += " padding-left: 14px;"
+
+            parts: List[str] = [bullet]
+            for run in p.runs:
+                txt = html_lib.escape(run.text or "")
+                txt = txt.replace("\n", "<br/>")
+                r_styles: List[str] = []
+                rf = run.font
+                if rf.color is not None and rf.color.rgb is not None:
+                    r_styles.append(f"color: #{rf.color.rgb}")
+                if rf.size is not None:
+                    r_styles.append(f"font-size: {max(8.0, min(36.0, float(rf.size.pt))):.1f}pt")
+                if run.bold:
+                    txt = f"<b>{txt}</b>"
+                if run.italic:
+                    txt = f"<i>{txt}</i>"
+                if run.underline:
+                    txt = f"<u>{txt}</u>"
+                if r_styles:
+                    txt = f"<span style=\"{'; '.join(r_styles)}\">{txt}</span>"
+                if txt:
+                    parts.append(txt)
+
+                # Inline embedded images inside this run (`a:blip r:embed="..."`)
+                for blip in run._element.iter(f"{a_ns}blip"):
+                    rid = blip.get(f"{r_ns}embed")
+                    if rid and rid in rid_to_fname:
+                        parts.append(f"<br/><img src=\"{rid_to_fname[rid]}\" width=\"440\"/><br/>")
+
+            if not parts and p.text:
+                parts.append(html_lib.escape(p.text))
+            inner = "".join(parts).strip()
+            if not inner:
+                return "<p style=\"margin: 0 0 6px 0;\">&nbsp;</p>"
+            return f"<{tag} style=\"{extra_css} {align_css}\">{inner}</{tag}>"
+
+        for child in doc.element.body:
+            if child in para_map:
+                html_blocks.append(_render_paragraph_html(para_map[child]))
+            elif child in table_map:
+                tbl = table_map[child]
+                rows_html: List[str] = []
+                for r_i, row in enumerate(tbl.rows):
+                    cells_html: List[str] = []
+                    cell_tag = "th" if r_i == 0 else "td"
+                    bg = "#E2E8F0" if r_i == 0 else "#FFFFFF"
+                    for cell in row.cells:
+                        c_txt = "<br/>".join(
+                            html_lib.escape(cp.text.strip()) for cp in cell.paragraphs if cp.text.strip()
+                        ) or "&nbsp;"
+                        cells_html.append(
+                            f"<{cell_tag} style=\"background: {bg}; border: 1px solid #94A3B8; padding: 6px 8px; text-align: left;\">{c_txt}</{cell_tag}>"
+                        )
+                    rows_html.append("<tr>" + "".join(cells_html) + "</tr>")
+                html_blocks.append(
+                    "<table style=\"border-collapse: collapse; width: 100%; margin: 10px 0;\">"
+                    + "".join(rows_html)
+                    + "</table>"
+                )
+
+        if not html_blocks:
+            html_blocks.append(f"<p>{html_lib.escape(src_path.name)}</p>")
+
+        full_html = (
+            "<html><head><meta charset=\"utf-8\"/></head>"
+            "<body style=\"font-family: 'Segoe UI', Arial, Tahoma, sans-serif; font-size: 11.5pt; color: #0F172A; background: #FFFFFF;\">"
+            + "\n".join(html_blocks)
+            + "</body></html>"
+        )
+        pdf_bytes = _render_story_html_to_pdf_bytes(full_html, assets_dir=assets_dir)
+        pdf_out.write_bytes(pdf_bytes)
+
+    page_texts: List[str] = []
+    out_doc = fitz.open(str(pdf_out))
+    try:
+        for i in range(out_doc.page_count):
+            page_texts.append(out_doc.load_page(i).get_text("text").strip())
+    finally:
+        out_doc.close()
+    return pdf_out.exists() and pdf_out.stat().st_size > 200, page_texts
+
+
+def _render_legacy_doc_fallback_to_pdf(src_path: Path, pdf_out: Path) -> Tuple[bool, List[str]]:
+    raw = src_path.read_bytes()
+    utf16_chunks = re.findall(rb"(?:[\x20-\x7e\u00a0-\u024f\u1e00-\u1eff]\x00){5,}", raw)
+    extracted: List[str] = []
+    for ch in utf16_chunks:
+        try:
+            txt = ch.decode("utf-16le", errors="ignore").strip()
+            if txt and len(txt) >= 5 and txt not in extracted:
+                extracted.append(txt)
+        except Exception:
+            continue
+    if not extracted:
+        ascii_chunks = re.findall(rb"[\x20-\x7e]{8,}", raw)
+        extracted = [c.decode("ascii", errors="ignore").strip() for c in ascii_chunks[:80]]
+
+    body_html = "".join(f"<p>{html_lib.escape(t)}</p>" for t in extracted) or f"<p>{html_lib.escape(src_path.name)}</p>"
+    full_html = (
+        "<html><body style=\"font-family: 'Segoe UI', Arial, sans-serif; font-size: 12pt; color: #0F172A;\">"
+        f"<h2>{html_lib.escape(src_path.name)}</h2>{body_html}</body></html>"
+    )
+    pdf_out.write_bytes(_render_story_html_to_pdf_bytes(full_html))
+    page_texts: List[str] = []
+    out_doc = fitz.open(str(pdf_out))
+    try:
+        for i in range(out_doc.page_count):
+            page_texts.append(out_doc.load_page(i).get_text("text").strip())
+    finally:
+        out_doc.close()
+    return pdf_out.exists() and pdf_out.stat().st_size > 200, page_texts
+
+
+def convert_word_to_cached_pdf(
+    src_path: Path | str,
+    cache_dir: Optional[Path] = None,
+) -> Tuple[Path, List[str], str]:
+    """
+    Convert `.docx` / `.doc` to a paginated cached PDF keyed by SHA-256 in `%APPDATA%/AirTeachAI/doc_cache`:
+    Tier 1: MS Word COM / LibreOffice headless -> Tier 2: Pure-Python `python-docx` + `PyMuPDF.Story`.
+    """
+    src = Path(src_path)
+    if not src.exists():
+        raise FileNotFoundError(f"Không tìm thấy tài liệu Word: {src}")
+
+    doc_hash = compute_file_sha256(src)
+    root_cache = Path(cache_dir) if cache_dir is not None else get_doc_cache_dir()
+    entry_dir = root_cache / doc_hash[:24]
+    entry_dir.mkdir(parents=True, exist_ok=True)
+    pdf_out = entry_dir / "converted.pdf"
+    manifest_path = entry_dir / "manifest.json"
+
+    if pdf_out.exists() and pdf_out.stat().st_size > 200 and manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("sha256") == doc_hash:
+                probe = fitz.open(str(pdf_out))
+                cnt = probe.page_count
+                probe.close()
+                if cnt >= 1:
+                    texts = [str(t) for t in (manifest.get("page_texts") or [])]
+                    return pdf_out, texts, "CACHE_HIT"
+        except Exception:
+            pass
+
+    backend = ""
+    page_texts: List[str] = []
+    if _convert_via_word_com(src, pdf_out):
+        backend = "WORD_COM"
+    elif _convert_via_libreoffice(src, entry_dir, pdf_out):
+        backend = "LIBREOFFICE"
+    elif src.suffix.lower() == ".docx":
+        ok, page_texts = _render_docx_pure_python_to_pdf(src, pdf_out)
+        if ok:
+            backend = "PYTHON_DOCX_STORY"
+    elif src.suffix.lower() == ".doc":
+        ok, page_texts = _render_legacy_doc_fallback_to_pdf(src, pdf_out)
+        if ok:
+            backend = "LEGACY_DOC_FALLBACK"
+
+    if not backend or not pdf_out.exists():
+        raise RuntimeError(
+            f"Không thể chuyển đổi tài liệu Word '{src.name}' sang PDF."
+        )
+
+    doc = fitz.open(str(pdf_out))
+    try:
+        if not page_texts or len(page_texts) != doc.page_count:
+            page_texts = [doc.load_page(idx).get_text("text").strip() for idx in range(doc.page_count)]
+    finally:
+        doc.close()
+
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "sha256": doc_hash,
+                "source_name": src.name,
+                "backend": backend,
+                "page_count": len(page_texts),
+                "page_texts": page_texts,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return pdf_out, page_texts, backend
+
+
 class LectureDocument:
     """
     Thread-safe high-DPI PDF/PPTX presentation document with LRU page/thumbnail cache
@@ -738,6 +1122,7 @@ class LectureDocument:
         doc_hash: str,
         backend_used: str,
         slide_texts: Optional[Sequence[str]] = None,
+        doc_type: str = "PDF",
         max_page_cache: int = 24,
         max_thumb_cache: int = 96,
     ) -> None:
@@ -745,6 +1130,7 @@ class LectureDocument:
         self.pdf_path = Path(pdf_path)
         self.doc_hash = doc_hash
         self.backend_used = backend_used
+        self.doc_type = doc_type
         self._lock = threading.Lock()
         self._doc = fitz.open(str(self.pdf_path))
         self.page_count = int(self._doc.page_count)
@@ -769,6 +1155,7 @@ class LectureDocument:
                 doc_hash=doc_hash,
                 backend_used="PYMUPDF",
                 slide_texts=[],
+                doc_type="PDF",
             )
         if ext in (".pptx", ".ppt", ".ppsx", ".potx"):
             pdf_path, slide_texts, backend = convert_presentation_to_cached_pdf(src, cache_dir=cache_dir)
@@ -779,6 +1166,18 @@ class LectureDocument:
                 doc_hash=doc_hash,
                 backend_used=backend,
                 slide_texts=slide_texts,
+                doc_type="PPTX",
+            )
+        if ext in (".docx", ".doc"):
+            pdf_path, page_texts, backend = convert_word_to_cached_pdf(src, cache_dir=cache_dir)
+            doc_hash = compute_file_sha256(src)
+            return cls(
+                source_path=src,
+                pdf_path=pdf_path,
+                doc_hash=doc_hash,
+                backend_used=backend,
+                slide_texts=page_texts,
+                doc_type="WORD",
             )
         raise ValueError(f"Định dạng không được hỗ trợ: {ext}")
 
@@ -788,7 +1187,7 @@ class LectureDocument:
         qimg = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
         return qimg
 
-    def render_page_qimage(self, page_idx: int, scale: float = 2.0) -> QImage:
+    def render_page_qimage(self, page_idx: int, scale: float = 2.25) -> QImage:
         idx = max(0, min(self.page_count - 1, int(page_idx)))
         scale_key = int(round(max(0.5, min(4.0, float(scale))) * 100))
         key = (idx, scale_key)
@@ -827,13 +1226,23 @@ class LectureDocument:
                 self._thumb_cache.popitem(last=False)
             return qimg
 
-    def prewarm_around(self, center_idx: int, radius: int = 2, scale: float = 2.0) -> None:
+    def prewarm_around(
+        self,
+        center_idx: int,
+        radius: int = 2,
+        scale: float = 2.25,
+        offsets: Optional[Sequence[int]] = (-1, 0, 1, 2),
+    ) -> None:
         if self._closed or self.page_count <= 1:
             return
-        indices = [
-            i for i in range(max(0, center_idx - radius), min(self.page_count, center_idx + radius + 1))
-            if i != center_idx
-        ]
+        if offsets is not None:
+            raw_indices = [center_idx + int(off) for off in offsets]
+        else:
+            raw_indices = list(range(center_idx - radius, center_idx + radius + 1))
+        indices = []
+        for i in raw_indices:
+            if 0 <= i < self.page_count and i not in indices:
+                indices.append(i)
         if not indices:
             return
 
@@ -1053,3 +1462,84 @@ def export_annotated_lecture_pdf(
         out_doc.close()
 
     return out_file
+
+
+def rasterize_document_to_png_dir(
+    src_path: Path | str,
+    out_dir: Path | str,
+    target_min_width: int = 1600,
+    max_pages: int = 80,
+) -> Path:
+    """Headless high-DPI document rasterizer (PDF / PPTX / PPT / DOCX / DOC) writing PNG pages + manifest.json."""
+    src = Path(src_path)
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    ext = src.suffix.lower()
+    if ext == ".pdf":
+        pdf_path = src
+        texts: List[str] = []
+        backend = "PYMUPDF"
+        doc_type = "PDF"
+    elif ext in (".pptx", ".ppt", ".ppsx", ".potx"):
+        pdf_path, texts, backend = convert_presentation_to_cached_pdf(src)
+        doc_type = "PPTX"
+    elif ext in (".docx", ".doc"):
+        pdf_path, texts, backend = convert_word_to_cached_pdf(src)
+        doc_type = "WORD"
+    else:
+        raise ValueError(f"Định dạng tài liệu không được hỗ trợ: {ext}")
+
+    pages_meta: List[Dict[str, Any]] = []
+    doc = fitz.open(str(pdf_path))
+    try:
+        total = min(int(doc.page_count), max(1, int(max_pages)))
+        for idx in range(total):
+            page = doc.load_page(idx)
+            pw = max(1.0, float(page.rect.width))
+            scale = max(2.0, min(3.2, float(target_min_width) / pw))
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False)
+            fname = f"page_{idx + 1:04d}.png"
+            pix.save(str(out / fname))
+            txt = page.get_text("text").strip()
+            if not txt and idx < len(texts):
+                txt = texts[idx].strip()
+            pages_meta.append({
+                "index": idx,
+                "image_file": fname,
+                "width": int(pix.width),
+                "height": int(pix.height),
+                "text": txt,
+            })
+    finally:
+        doc.close()
+
+    manifest = out / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "source_name": src.name,
+                "doc_type": doc_type,
+                "backend": backend,
+                "page_count": len(pages_meta),
+                "pages": pages_meta,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def _cli_main(argv: Optional[Sequence[str]] = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) >= 3 and args[0] == "--rasterize":
+        manifest = rasterize_document_to_png_dir(args[1], args[2])
+        print(str(manifest))
+        return 0
+    print("Usage: python -m cv_engine.document_presenter --rasterize <source_doc> <out_dir>", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli_main())

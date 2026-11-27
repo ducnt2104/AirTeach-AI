@@ -364,6 +364,22 @@ def is_thumb_extended_3d(lm: Sequence[Sequence[float]], was_extended: bool = Fal
     return ip_flexion_deg < 48.0 and spread_ratio > 0.45 and abduction_deg > 18.0
 
 
+def map_active_workspace_norm(
+    x: float,
+    y: float,
+    margin_min: float = 0.12,
+    margin_max: float = 0.88,
+) -> Tuple[float, float]:
+    """
+    Map inner active camera workspace `[margin_min..margin_max]` (default `12%..88%`)
+    linearly onto `[0.0..1.0]` smartboard coordinates so teachers reach all 4 corners comfortably.
+    """
+    span = max(0.20, float(margin_max) - float(margin_min))
+    mx = min(1.0, max(0.0, (float(x) - float(margin_min)) / span))
+    my = min(1.0, max(0.0, (float(y) - float(margin_min)) / span))
+    return (mx, my)
+
+
 def classify_hand_3d_vectors(
     lm: Sequence[Sequence[float]],
     prev_fingers: Optional[List[bool]] = None,
@@ -418,10 +434,7 @@ def classify_hand_3d_vectors(
     palm_norm_info = compute_palm_normal_3d(lm, handedness=handedness, min_facing_z=palm_facing_min_z)
 
     def map_box(x: float, y: float) -> Tuple[float, float]:
-        margin = 0.12
-        mx = min(1.0, max(0.0, (float(x) - margin) / (1.0 - 2.0 * margin)))
-        my = min(1.0, max(0.0, (float(y) - margin) / (1.0 - 2.0 * margin)))
-        return (mx, my)
+        return map_active_workspace_norm(x, y, margin_min=0.12, margin_max=0.88)
 
     base_meta: Dict[str, object] = {
         "pinch_ratio": round(pinch_ratio, 4),
@@ -598,6 +611,128 @@ class OneEuroFilter3D:
             self.fy.filter(float(pt[1]), t_sec),
             self.fz.filter(float(pt[2]), t_sec),
         ]
+
+
+@dataclass
+class HandTelemetryPacket:
+    """Lightweight 60Hz cursor/gesture telemetry packet emitted cleanly to the PySide6 UI thread."""
+
+    timestamp_sec: float
+    cursor_norm: Optional[Tuple[float, float]] = None
+    velocity_norm: Tuple[float, float] = (0.0, 0.0)
+    gesture: str = "IDLE"
+    pose_tag: str = "IDLE"
+    pinch_ratio: Optional[float] = None
+    hand_span: float = 0.20
+    two_hand_mode: str = "NONE"
+    modifier_mode: str = "NONE"
+    nav_event: Optional[str] = None
+    swipe_direction: Optional[str] = None
+    scroll_delta_norm: float = 0.0
+    extrapolated: bool = False
+    cam_fps: float = 0.0
+    ai_fps: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "timestamp_sec": round(self.timestamp_sec, 6),
+            "cursor_norm": self.cursor_norm,
+            "velocity_norm": self.velocity_norm,
+            "gesture": self.gesture,
+            "pose_tag": self.pose_tag,
+            "pinch_ratio": self.pinch_ratio,
+            "hand_span": self.hand_span,
+            "two_hand_mode": self.two_hand_mode,
+            "modifier_mode": self.modifier_mode,
+            "nav_event": self.nav_event,
+            "swipe_direction": self.swipe_direction,
+            "scroll_delta_norm": self.scroll_delta_norm,
+            "extrapolated": self.extrapolated,
+            "cam_fps": round(self.cam_fps, 1),
+            "ai_fps": round(self.ai_fps, 1),
+        }
+
+
+class Kinematic60HzExtrapolator:
+    """
+    Decoupled 60Hz Kinematic Velocity Extrapolator + Adaptive One-Euro Filter.
+    Bridges 25-30 FPS MediaPipe inference frames to silky 60 FPS cursor updates on UI
+    with exponential velocity damping so extrapolation never overshoots when stopping.
+    """
+
+    def __init__(
+        self,
+        min_cutoff: float = 0.8,
+        beta: float = 0.04,
+        d_cutoff: float = 1.0,
+        max_stale_sec: float = 0.16,
+    ) -> None:
+        self.filter = OneEuroFilter2D(min_cutoff=min_cutoff, beta=beta, d_cutoff=d_cutoff)
+        self.max_stale_sec = max(0.05, float(max_stale_sec))
+        self.anchor_xy: Optional[Tuple[float, float]] = None
+        self.anchor_t: float = 0.0
+        self.velocity: Tuple[float, float] = (0.0, 0.0)
+        self.last_output: Optional[Tuple[float, float]] = None
+
+    def reset(self) -> None:
+        self.filter.reset()
+        self.anchor_xy = None
+        self.anchor_t = 0.0
+        self.velocity = (0.0, 0.0)
+        self.last_output = None
+
+    def ingest_vision(
+        self,
+        cursor_norm: Optional[Tuple[float, float]],
+        t_sec: Optional[float] = None,
+    ) -> Optional[Tuple[float, float]]:
+        now = time.perf_counter() if t_sec is None else float(t_sec)
+        if cursor_norm is None:
+            self.reset()
+            return None
+
+        cx = max(0.0, min(1.0, float(cursor_norm[0])))
+        cy = max(0.0, min(1.0, float(cursor_norm[1])))
+        if self.anchor_xy is not None and self.anchor_t > 0.0:
+            dt = max(1e-3, now - self.anchor_t)
+            if dt <= 0.25:
+                inst_vx = max(-3.5, min(3.5, (cx - self.anchor_xy[0]) / dt))
+                inst_vy = max(-3.5, min(3.5, (cy - self.anchor_xy[1]) / dt))
+                vx = 0.55 * self.velocity[0] + 0.45 * inst_vx
+                vy = 0.55 * self.velocity[1] + 0.45 * inst_vy
+                self.velocity = (vx, vy)
+            else:
+                self.velocity = (0.0, 0.0)
+                self.filter.reset()
+        else:
+            self.velocity = (0.0, 0.0)
+
+        self.anchor_xy = (cx, cy)
+        self.anchor_t = now
+        out = self.filter.filter((cx, cy), now)
+        clamped = (max(0.0, min(1.0, out[0])), max(0.0, min(1.0, out[1])))
+        self.last_output = clamped
+        return clamped
+
+    def sample_60hz(
+        self,
+        t_sec: Optional[float] = None,
+    ) -> Tuple[Optional[Tuple[float, float]], bool]:
+        if self.anchor_xy is None:
+            return None, False
+        now = time.perf_counter() if t_sec is None else float(t_sec)
+        elapsed = now - self.anchor_t
+        if elapsed > self.max_stale_sec:
+            return None, False
+
+        dt = max(0.0, min(0.045, elapsed))
+        decay = math.exp(-10.0 * dt)
+        px = max(0.0, min(1.0, self.anchor_xy[0] + self.velocity[0] * dt * decay))
+        py = max(0.0, min(1.0, self.anchor_xy[1] + self.velocity[1] * dt * decay))
+        out = self.filter.filter((px, py), now)
+        clamped = (max(0.0, min(1.0, out[0])), max(0.0, min(1.0, out[1])))
+        self.last_output = clamped
+        return clamped, (dt > 0.004)
 
 
 class KalmanVelocityPredictor2D:
@@ -965,7 +1100,7 @@ class HandGestureEngine:
         min_tracking_confidence: float = 0.40,
         roi_area_threshold: float = 0.08,
         roi_expand_factor: float = 2.2,
-        roi_padding_ratio: float = 0.35,
+        roi_padding_ratio: float = 0.45,
         roi_target_size: int = 256,
         pinch_enter_ratio: float = 0.28,
         pinch_exit_ratio: float = 0.42,
@@ -973,12 +1108,13 @@ class HandGestureEngine:
         grace_period_sec: float = 0.160,
         voting_window_size: int = 7,
         voting_min_votes: int = 3,
-        one_euro_min_cutoff: float = 1.45,
-        one_euro_beta: float = 0.020,
+        one_euro_min_cutoff: float = 0.8,
+        one_euro_beta: float = 0.04,
         one_euro_d_cutoff: float = 1.0,
         roi_unsharp_strength: float = 0.65,
         min_hold_frames: int = 3,
         min_hold_sec: float = 0.080,
+        model_complexity: int = 1,
     ) -> None:
         self.num_hands = max(1, min(2, int(num_hands)))
         self.min_detection_confidence = float(min_detection_confidence)
@@ -986,14 +1122,14 @@ class HandGestureEngine:
         self.min_tracking_confidence = float(min_tracking_confidence)
         self.ROI_AREA_THRESHOLD = float(roi_area_threshold)
         self.roi_expand_factor = float(roi_expand_factor)
-        self.ROI_PADDING_RATIO = max(0.35, float(roi_padding_ratio))
+        self.ROI_PADDING_RATIO = max(0.45, float(roi_padding_ratio))
         self.ROI_TARGET_SIZE = int(roi_target_size)
         self.roi_unsharp_strength = float(roi_unsharp_strength)
         self.pinch_enter_ratio = float(pinch_enter_ratio)
         self.pinch_exit_ratio = float(pinch_exit_ratio)
         self.palm_facing_min_z = float(palm_facing_min_z)
 
-        self.model_complexity = 1
+        self.model_complexity = 0 if int(model_complexity) <= 0 else 1
         self.solutions_hands = None
         self.tasks_detector = None
         self.backend_mode: str = "NONE"
@@ -1029,6 +1165,7 @@ class HandGestureEngine:
         self._last_hand_seen_ts: float = 0.0
         self._last_valid_left: Optional[Dict[str, object]] = None
         self._last_valid_right: Optional[Dict[str, object]] = None
+        self._prev_hand_centers: Dict[str, Tuple[float, float, float]] = {}
         self._detect_tick: int = 0
         self.last_tracking_mode: str = "FULL_SCAN"
         self.last_raw_hands: List[Dict[str, object]] = []
@@ -1075,7 +1212,7 @@ class HandGestureEngine:
                 self.solutions_hands = mp.solutions.hands.Hands(
                     static_image_mode=True,
                     max_num_hands=self.num_hands,
-                    model_complexity=1,
+                    model_complexity=self.model_complexity,
                     min_detection_confidence=self.min_detection_confidence,
                     min_tracking_confidence=self.min_tracking_confidence,
                 )
@@ -1268,8 +1405,8 @@ class HandGestureEngine:
         if bbox_area >= self.ROI_AREA_THRESHOLD or bw <= 0.008 or bh <= 0.008:
             return lm_coords, orig_score, orig_cat, False
 
-        pad_x = max(bw, bh) * max(0.35, self.ROI_PADDING_RATIO, (self.roi_expand_factor - 1.0) * 0.5)
-        pad_y = max(bw, bh) * max(0.35, self.ROI_PADDING_RATIO, (self.roi_expand_factor - 1.0) * 0.5)
+        pad_x = max(bw, bh) * max(0.45, self.ROI_PADDING_RATIO, (self.roi_expand_factor - 1.0) * 0.5)
+        pad_y = max(bw, bh) * max(0.45, self.ROI_PADDING_RATIO, (self.roi_expand_factor - 1.0) * 0.5)
         roi_norm = [
             max(0.0, min_x - pad_x),
             max(0.0, min_y - pad_y),
@@ -1434,27 +1571,31 @@ class HandGestureEngine:
                     self._last_hand_roi_boxes = []
                     roi_missed = True
 
-            # Stage B: Full-Frame Scan on initial acquisition, 1-frame ROI miss, OR 2nd-hand discovery
+            # Stage B: Wide Full-Frame Acquisition (640x480 base + 800x600 HD sweep if distant)
             need_full_scan = (not unfiltered_candidates) or (
                 self.num_hands > 1 and len(unfiltered_candidates) < self.num_hands and (self._detect_tick % 4 == 0)
             )
             if need_full_scan:
                 self.last_tracking_mode = "FALLBACK_FULL" if roi_missed else "FULL_SCAN"
+                wide_wh = (
+                    min(fw, max(640, int(search_size[0]))),
+                    min(fh, max(480, int(search_size[1]))),
+                )
                 scan_hits = self._run_frame_scan(
                     rgb_contig,
-                    search_size,
+                    wide_wh,
                     face_boxes,
                     roi_target_size=roi_target_size,
                     enable_roi_sharpen=enable_roi_sharpen,
                 )
                 self._merge_unique_hand_candidates(unfiltered_candidates, scan_hits)
 
-                # If low-res scan found 0 hands on a high-res input, do an immediate 640x360 full-frame pass
-                if not unfiltered_candidates and (fw > max(480, int(search_size[0])) or fh > max(340, int(search_size[1]))):
+                # If 640x480 full-frame found 0 hands on a high-res sensor, step up to 800x600 full-frame
+                if not unfiltered_candidates and (fw >= 800 or fh >= 600):
                     self.last_tracking_mode = "FULL_FRAME_HD"
                     hd_hits = self._run_frame_scan(
                         rgb_contig,
-                        (min(fw, 640), min(fh, 360)),
+                        (min(fw, 800), min(fh, 600)),
                         face_boxes,
                         roi_target_size=roi_target_size,
                         enable_roi_sharpen=enable_roi_sharpen,
@@ -1511,12 +1652,25 @@ class HandGestureEngine:
                 ys = [float(p[1]) for p in lm_coords]
                 bw = max(0.06, max(xs) - min(xs))
                 bh = max(0.06, max(ys) - min(ys))
-                # 2.2x square ROI expansion around detected hand
-                side = max(bw, bh) * self.roi_expand_factor
                 cx = 0.5 * (min(xs) + max(xs))
                 cy = 0.5 * (min(ys) + max(ys))
-                rx0 = max(0.0, cx - 0.5 * side)
-                ry0 = max(0.0, cy - 0.5 * side)
+                side_key = (cat_name or "right").lower()
+                pred_dx, pred_dy = 0.0, 0.0
+                prev_info = self._prev_hand_centers.get(side_key)
+                if prev_info is not None:
+                    dt_c = now_mono - prev_info[2]
+                    if 0.005 <= dt_c <= 0.14:
+                        pred_dx = max(-0.08, min(0.08, (cx - prev_info[0])))
+                        pred_dy = max(-0.08, min(0.08, (cy - prev_info[1])))
+                self._prev_hand_centers[side_key] = (cx, cy, now_mono)
+
+                # Generous >= 45% padded velocity-predicted square ROI around detected hand
+                expand = max(self.roi_expand_factor, 1.0 + 2.0 * max(0.45, self.ROI_PADDING_RATIO))
+                side = max(bw, bh) * expand
+                pred_cx = max(0.0, min(1.0, cx + pred_dx * 0.5))
+                pred_cy = max(0.0, min(1.0, cy + pred_dy * 0.5))
+                rx0 = max(0.0, pred_cx - 0.5 * side)
+                ry0 = max(0.0, pred_cy - 0.5 * side)
                 new_roi_cache.append(
                     [
                         rx0,
@@ -1699,7 +1853,8 @@ class DualHandActionState:
     primary_side: str = "none"  # "left" | "right" | "none"
     primary_hand: Optional[Dict[str, object]] = None
     secondary_hand: Optional[Dict[str, object]] = None
-    two_hand_mode: str = "NONE"  # "NONE" | "DUAL_PINCH_ZOOM" | "DUAL_PALM_PAN" | "OFFHAND_COMMAND"
+    two_hand_mode: str = "NONE"  # "NONE" | "DUAL_PINCH_ZOOM" | "DUAL_PALM_PAN" | "OFFHAND_COMMAND" | "MODIFIER_DRAW"
+    modifier_mode: str = "NONE"  # "NONE" | "LINE_LOCK" | "SHAPE_LOCK"
     zoom_factor: float = 1.0
     zoom_center_norm: Optional[Tuple[float, float]] = None
     pan_delta_norm: Tuple[float, float] = (0.0, 0.0)
@@ -1866,6 +2021,28 @@ class DualHandGestureCoordinator:
             )
         self._prev_pan_center = None
 
+        # 2B. Left-Hand Modifier Lock while Primary Hand is Pinching/Drawing:
+        # Holding Secondary Fist -> lock straight line; Secondary Two-Fingers -> lock geometric shape snap.
+        p_is_drawing = (p_pose == "PINCH") or (p_pr < 0.34)
+        if p_is_drawing and s_pose in ("FIST", "TWO_FINGERS"):
+            self._offhand_cand = ""
+            self._offhand_cand_count = 0
+            mod = "LINE_LOCK" if s_pose == "FIST" else "SHAPE_LOCK"
+            lbl = (
+                "2 Tay: Khóa Nét Thẳng (Tay phụ Nắm + Tay chính Vẽ)"
+                if mod == "LINE_LOCK"
+                else "2 Tay: Khóa Hình Học Chuẩn (Tay phụ 2 Ngón + Tay chính Vẽ)"
+            )
+            return DualHandActionState(
+                primary_side=p_side,
+                primary_hand=primary,
+                secondary_hand=secondary,
+                two_hand_mode="MODIFIER_DRAW",
+                modifier_mode=mod,
+                suppress_primary_drawing=False,
+                status_label_vi=lbl,
+            )
+
         # 3. Off-hand quick tool command while primary hand keeps its position/drawing
         cmd_map = {
             "FIST": "TOGGLE_PEN_ERASER",
@@ -1955,10 +2132,12 @@ def catmull_rom_spline(
 class SlideNavigationGestureDetector:
     """
     Detects non-drawing classroom presentation air gestures:
-    1. Horizontal Air-Swipe (`SLIDE_NEXT` / `SLIDE_PREV`) with velocity threshold + `600ms` cooldown
-       to prevent double-skipping slides.
-    2. Two-Finger Peace-Sign Hold (`TWO_FINGERS` held steady for `800ms`) -> `SLIDE_NEXT`.
-    3. Pinky Question Hold (`QUESTION_HOLD` held steady for `900ms`) -> `ASK_SLIDE_AI`.
+    1. Horizontal Air-Swipe (`SLIDE_NEXT` / `SLIDE_PREV`) with velocity threshold + `600–650ms`
+       cooldown to prevent double-skipping slides.
+    2. Vertical Air-Swipe (`SCROLL_UP` / `SCROLL_DOWN`) with `450ms` cooldown + continuous two-finger
+       vertical drag for scrolling long Word (`.docx`) and multi-page PDF documents.
+    3. Two-Finger Peace-Sign Hold (`TWO_FINGERS` held steady for `800ms`) -> `SLIDE_NEXT`.
+    4. Pinky Question Hold (`QUESTION_HOLD` held steady for `900ms`) -> `ASK_SLIDE_AI`.
     """
 
     def __init__(
@@ -1967,6 +2146,9 @@ class SlideNavigationGestureDetector:
         swipe_min_dx: float = 0.16,
         swipe_min_vel: float = 0.85,
         swipe_window_sec: float = 0.28,
+        vertical_cooldown_sec: float = 0.45,
+        vertical_min_dy: float = 0.14,
+        vertical_min_vel: float = 0.75,
         peace_hold_sec: float = 0.80,
         question_hold_sec: float = 0.90,
     ) -> None:
@@ -1974,11 +2156,16 @@ class SlideNavigationGestureDetector:
         self.swipe_min_dx = max(0.08, float(swipe_min_dx))
         self.swipe_min_vel = max(0.35, float(swipe_min_vel))
         self.swipe_window_sec = max(0.12, float(swipe_window_sec))
+        self.vertical_cooldown_sec = max(0.25, float(vertical_cooldown_sec))
+        self.vertical_min_dy = max(0.07, float(vertical_min_dy))
+        self.vertical_min_vel = max(0.30, float(vertical_min_vel))
         self.peace_hold_sec = max(0.40, float(peace_hold_sec))
         self.question_hold_sec = max(0.45, float(question_hold_sec))
 
         self._trail: Deque[Tuple[float, float, float]] = deque(maxlen=24)
         self._last_trigger_ts: float = -1e9
+        self._last_vert_trigger_ts: float = -1e9
+        self._prev_two_finger_y: Optional[float] = None
         self._peace_since_ts: Optional[float] = None
         self._peace_anchor: Optional[Tuple[float, float]] = None
         self._peace_fired: bool = False
@@ -1988,6 +2175,7 @@ class SlideNavigationGestureDetector:
 
     def reset(self) -> None:
         self._trail.clear()
+        self._prev_two_finger_y = None
         self._peace_since_ts = None
         self._peace_anchor = None
         self._peace_fired = False
@@ -2005,11 +2193,14 @@ class SlideNavigationGestureDetector:
     ) -> Dict[str, object]:
         now = time.monotonic() if t_sec is None else float(t_sec)
         cooldown_rem_ms = max(0.0, (self.swipe_cooldown_sec - (now - self._last_trigger_ts)) * 1000.0)
+        vert_cooldown_rem_ms = max(0.0, (self.vertical_cooldown_sec - (now - self._last_vert_trigger_ts)) * 1000.0)
 
         if primary_hand is None or suppress or is_drawing:
             self.reset()
             return {
                 "nav_event": None,
+                "swipe_direction": None,
+                "scroll_delta_norm": 0.0,
                 "peace_hold_progress": 0.0,
                 "question_hold_progress": 0.0,
                 "cooldown_remaining_ms": round(cooldown_rem_ms, 1),
@@ -2031,14 +2222,27 @@ class SlideNavigationGestureDetector:
             self.reset()
             return {
                 "nav_event": None,
+                "swipe_direction": None,
+                "scroll_delta_norm": 0.0,
                 "peace_hold_progress": 0.0,
                 "question_hold_progress": 0.0,
                 "cooldown_remaining_ms": round(cooldown_rem_ms, 1),
             }
 
-        # 1. Two-Finger Peace-Sign Hold (800ms -> SLIDE_NEXT)
+        scroll_delta_norm = 0.0
+        # 1. Two-Finger Vertical Drag Scroll & Two-Finger Peace-Sign Hold (800ms -> SLIDE_NEXT)
         peace_prog = 0.0
         if pose_tag == "TWO_FINGERS":
+            if self._prev_two_finger_y is not None:
+                step_dy = xy[1] - self._prev_two_finger_y
+                if 0.008 < abs(step_dy) < 0.12:
+                    scroll_delta_norm = round(-step_dy * 1.6, 4)
+                    if abs(step_dy) > 0.025:
+                        self._peace_since_ts = now
+                        self._peace_anchor = xy
+                        self._peace_fired = False
+            self._prev_two_finger_y = xy[1]
+
             if self._peace_since_ts is None or self._peace_anchor is None:
                 self._peace_since_ts = now
                 self._peace_anchor = xy
@@ -2057,11 +2261,14 @@ class SlideNavigationGestureDetector:
                 self._trail.clear()
                 return {
                     "nav_event": "SLIDE_NEXT",
+                    "swipe_direction": "LEFT",
+                    "scroll_delta_norm": 0.0,
                     "peace_hold_progress": 1.0,
                     "question_hold_progress": 0.0,
                     "cooldown_remaining_ms": round(self.swipe_cooldown_sec * 1000.0, 1),
                 }
         else:
+            self._prev_two_finger_y = None
             self._peace_since_ts = None
             self._peace_anchor = None
             self._peace_fired = False
@@ -2087,6 +2294,8 @@ class SlideNavigationGestureDetector:
                 self._trail.clear()
                 return {
                     "nav_event": "ASK_SLIDE_AI",
+                    "swipe_direction": None,
+                    "scroll_delta_norm": 0.0,
                     "peace_hold_progress": round(peace_prog, 3),
                     "question_hold_progress": 1.0,
                     "cooldown_remaining_ms": round(self.swipe_cooldown_sec * 1000.0, 1),
@@ -2096,12 +2305,12 @@ class SlideNavigationGestureDetector:
             self._question_anchor = None
             self._question_fired = False
 
-        # 3. Horizontal Air-Swipe (OPEN_PALM / HOVER / TWO_FINGERS / INDEX) with 600ms cooldown
+        # 3. Horizontal Air-Swipe (Next/Prev) + Vertical Air-Swipe (Scroll Up/Down)
         if pose_tag in ("OPEN_PALM", "HOVER", "TWO_FINGERS", "INDEX"):
             self._trail.append((xy[0], xy[1], now))
             while self._trail and (now - self._trail[0][2]) > self.swipe_window_sec:
                 self._trail.popleft()
-            if cooldown_rem_ms <= 0.0 and len(self._trail) >= 3:
+            if len(self._trail) >= 3:
                 for ox, oy, ot in self._trail:
                     dt = now - ot
                     if dt < 0.04 or dt > self.swipe_window_sec:
@@ -2109,22 +2318,54 @@ class SlideNavigationGestureDetector:
                     dx = xy[0] - ox
                     dy = xy[1] - oy
                     vel_x = abs(dx) / dt
-                    if abs(dx) >= self.swipe_min_dx and vel_x >= self.swipe_min_vel and abs(dx) >= 2.0 * abs(dy):
+                    vel_y = abs(dy) / dt
+                    if (
+                        cooldown_rem_ms <= 0.0
+                        and abs(dx) >= self.swipe_min_dx
+                        and vel_x >= self.swipe_min_vel
+                        and abs(dx) >= 1.8 * abs(dy)
+                    ):
                         ev = "SLIDE_NEXT" if dx < 0.0 else "SLIDE_PREV"
+                        sdir = "LEFT" if dx < 0.0 else "RIGHT"
                         self._last_trigger_ts = now
                         self._trail.clear()
                         self._peace_since_ts = None
                         return {
                             "nav_event": ev,
+                            "swipe_direction": sdir,
+                            "scroll_delta_norm": 0.0,
                             "peace_hold_progress": 0.0,
                             "question_hold_progress": round(question_prog, 3),
                             "cooldown_remaining_ms": round(self.swipe_cooldown_sec * 1000.0, 1),
+                        }
+                    if (
+                        pose_tag in ("OPEN_PALM", "TWO_FINGERS", "HOVER")
+                        and vert_cooldown_rem_ms <= 0.0
+                        and abs(dy) >= self.vertical_min_dy
+                        and vel_y >= self.vertical_min_vel
+                        and abs(dy) >= 1.8 * abs(dx)
+                    ):
+                        ev = "SCROLL_DOWN" if dy < 0.0 else "SCROLL_UP"
+                        sdir = "UP" if dy < 0.0 else "DOWN"
+                        delta = 0.38 if dy < 0.0 else -0.38
+                        self._last_vert_trigger_ts = now
+                        self._trail.clear()
+                        self._peace_since_ts = None
+                        return {
+                            "nav_event": ev,
+                            "swipe_direction": sdir,
+                            "scroll_delta_norm": delta,
+                            "peace_hold_progress": 0.0,
+                            "question_hold_progress": round(question_prog, 3),
+                            "cooldown_remaining_ms": round(cooldown_rem_ms, 1),
                         }
         else:
             self._trail.clear()
 
         return {
             "nav_event": None,
+            "swipe_direction": None,
+            "scroll_delta_norm": scroll_delta_norm,
             "peace_hold_progress": round(peace_prog, 3),
             "question_hold_progress": round(question_prog, 3),
             "cooldown_remaining_ms": round(cooldown_rem_ms, 1),

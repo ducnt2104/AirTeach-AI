@@ -17,7 +17,7 @@ import wave
 import hashlib
 import secrets
 import urllib.request
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Sequence, Tuple, Dict, Any
@@ -134,12 +134,16 @@ from cv_engine.gemini_client import (
     resolve_api_key_layered,
     resolve_api_key_pool,
     save_ui_api_settings,
+    split_api_keys,
 )
 from cv_engine.hand_gesture import (
     DualHandGestureCoordinator,
     HandGestureEngine,
+    HandTelemetryPacket,
+    Kinematic60HzExtrapolator,
     SlideNavigationGestureDetector,
     classify_hand_3d_vectors,
+    map_active_workspace_norm,
 )
 from cv_engine.preprocessing import (
     AdaptiveExposureController,
@@ -195,7 +199,7 @@ from cv_engine.performance_pipeline import (
     StaggeredInferenceScheduler,
     compute_cv_tracking_size,
 )
-from cv_engine.shape_recognizer import beautify_stroke, catmull_rom_spline
+from cv_engine.shape_recognizer import beautify_stroke, catmull_rom_spline, resample_arc_length
 from cv_engine.whiteboard_agent import (
     WhiteboardAction,
     WhiteboardAgent,
@@ -369,9 +373,24 @@ def enhance_backlit_frame(bgr_frame: np.ndarray) -> np.ndarray:
     return enhanced
 
 
-class CameraHandWorker(QThread):
+class CameraCaptureThread(threading.Thread):
+    """
+    Lock-free low-latency webcam capture thread (`CAP_DSHOW`/`CAP_V4L2`, `CAP_PROP_BUFFERSIZE=1`).
+    Continuously drops stale buffered frames so capture-to-inference latency remains < 16ms.
+    """
+
+    def __init__(self, worker: "VisionInferenceWorker") -> None:
+        super().__init__(name="airteach-py-capture", daemon=True)
+        self.worker = worker
+
+    def run(self) -> None:
+        self.worker._capture_loop()
+
+
+class VisionInferenceWorker(QThread):
     frame_ready = Signal(dict)
     calibration_done = Signal(dict)
+    telemetry_ready = Signal(object)
 
     def __init__(self, initial_cam_idx: int = 0) -> None:
         super().__init__()
@@ -395,8 +414,10 @@ class CameraHandWorker(QThread):
         self._latest_frame: Optional[np.ndarray] = None
         self._frame_seq: int = 0
         self._frame_event = threading.Event()
-        self._capture_thread: Optional[threading.Thread] = None
+        self._capture_thread: Optional[CameraCaptureThread] = None
         self._cam_fps_smoothed: float = 0.0
+        self._last_swipe_dir: Optional[str] = None
+        self._last_swipe_until: float = 0.0
 
     def request_auto_calibration(self) -> None:
         self._calibrate_requested = True
@@ -443,7 +464,12 @@ class CameraHandWorker(QThread):
     def _open_camera(self, idx: int) -> Optional[cv2.VideoCapture]:
         req_w = self.vision_cfg.camera.hd_width if self.prefer_hd else self.vision_cfg.camera.width
         req_h = self.vision_cfg.camera.hd_height if self.prefer_hd else self.vision_cfg.camera.height
-        backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY] if sys.platform == "win32" else [cv2.CAP_ANY]
+        if sys.platform == "win32":
+            backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+        elif sys.platform.startswith("linux"):
+            backends = [cv2.CAP_V4L2, cv2.CAP_ANY]
+        else:
+            backends = [cv2.CAP_ANY]
         for backend in backends:
             if not self.running:
                 return None
@@ -589,25 +615,34 @@ class CameraHandWorker(QThread):
             pose_estimator.close()
             face_extractor.close()
             return
+        # Micro CPU benchmark (~3ms) to select optimal MediaPipe complexity dynamically
+        t_bench0 = time.perf_counter()
+        _probe = np.full((160, 160, 3), 127, dtype=np.uint8)
+        _ = cv2.GaussianBlur(_probe, (5, 5), 1.2)
+        bench_ms = (time.perf_counter() - t_bench0) * 1000.0
+        dyn_complexity = 0 if bench_ms > 2.5 else 1
+
         hand_engine = HandGestureEngine(
             model_path=MODELS_DIR / "hand_landmarker.task",
-            num_hands=vcfg.hand_tracking.num_hands,
+            num_hands=max(2, int(vcfg.hand_tracking.num_hands)),
             min_detection_confidence=vcfg.hand_tracking.min_detection_confidence,
             min_presence_confidence=vcfg.hand_tracking.min_presence_confidence,
             min_tracking_confidence=vcfg.hand_tracking.min_tracking_confidence,
             roi_area_threshold=vcfg.hand_tracking.roi_area_threshold,
-            roi_expand_factor=vcfg.hand_tracking.roi_expand_factor,
-            roi_padding_ratio=vcfg.hand_tracking.roi_padding_ratio,
+            roi_expand_factor=max(2.2, float(vcfg.hand_tracking.roi_expand_factor)),
+            roi_padding_ratio=max(0.45, float(vcfg.hand_tracking.roi_padding_ratio)),
             roi_target_size=vcfg.hand_tracking.roi_target_size,
-            pinch_enter_ratio=vcfg.gesture_3d.pinch_enter_ratio,
-            pinch_exit_ratio=vcfg.gesture_3d.pinch_exit_ratio,
+            pinch_enter_ratio=0.32,
+            pinch_exit_ratio=0.42,
             palm_facing_min_z=vcfg.gesture_3d.palm_facing_min_z,
-            grace_period_sec=vcfg.gesture_3d.grace_period_ms / 1000.0,
+            grace_period_sec=max(0.14, vcfg.gesture_3d.grace_period_ms / 1000.0),
             voting_window_size=vcfg.gesture_3d.voting_window_size,
             voting_min_votes=vcfg.gesture_3d.voting_min_votes,
-            one_euro_min_cutoff=vcfg.gesture_3d.one_euro_min_cutoff,
-            one_euro_beta=vcfg.gesture_3d.one_euro_beta,
+            one_euro_min_cutoff=0.8,
+            one_euro_beta=0.04,
             one_euro_d_cutoff=vcfg.gesture_3d.one_euro_d_cutoff,
+            min_hold_sec=0.120,
+            model_complexity=dyn_complexity,
         )
         if not self.running:
             pose_estimator.close()
@@ -631,9 +666,7 @@ class CameraHandWorker(QThread):
                 "nav_event": None,
             })
 
-        self._capture_thread = threading.Thread(
-            target=self._capture_loop, name="airteach-py-capture", daemon=True
-        )
+        self._capture_thread = CameraCaptureThread(self)
         self._capture_thread.start()
 
         prev_gray: Optional[np.ndarray] = None
@@ -647,7 +680,10 @@ class CameraHandWorker(QThread):
         )
         scheduler = StaggeredInferenceScheduler()
         dual_coord = DualHandGestureCoordinator(primary_pref=self.primary_hand_pref)
-        nav_detector = SlideNavigationGestureDetector()
+        nav_detector = SlideNavigationGestureDetector(
+            swipe_cooldown_sec=0.65,
+            vertical_cooldown_sec=0.45,
+        )
         cached_face_info: Dict[str, Any] = {
             "face": None,
             "face_boxes": [],
@@ -774,14 +810,18 @@ class CameraHandWorker(QThread):
                     primary_face = subj_snap.locked_face_bbox or cached_face_info.get("face")
                     face_bbox = tuple(primary_face) if primary_face and len(primary_face) == 4 else None
 
-                    # Fail-Open 2-Hand Tracking (Dual-Res ROI + Instant 1-Frame Full-Frame Fallback)
+                    # Fail-Open 2-Hand Tracking (Wide Full-Frame 640x480 + 45% Velocity-Predicted ROI)
+                    scan_wh = (
+                        max(640, int(preset.search_size[0])),
+                        max(480, int(preset.search_size[1])),
+                    )
                     left_hand, right_hand = hand_engine.detect_hands(
                         rgb,
                         face_boxes,
                         teacher_tracker=teacher_tracker,
                         teacher_snapshot=subj_snap,
                         wrist_roi_hints=wrist_hints,
-                        search_size=preset.search_size,
+                        search_size=scan_wh,
                         roi_target_size=preset.roi_size,
                         enable_roi_sharpen=preset.enable_roi_sharpen,
                     )
@@ -870,21 +910,49 @@ class CameraHandWorker(QThread):
                                     cv2.LINE_AA,
                                 )
 
-                        for tag, h_obj, col in (("L", left_hand, (255, 220, 0)), ("R", right_hand, (0, 245, 212))):
+                        active_pair: List[Tuple[int, str, Optional[Dict[str, object]], Tuple[int, int, int]]] = []
+                        hand_idx = 1
+                        if dual_state.primary_hand is not None:
+                            p_side_name = "Right" if dual_state.primary_side == "right" else "Left"
+                            active_pair.append((hand_idx, p_side_name, dual_state.primary_hand, (0, 245, 212)))
+                            hand_idx += 1
+                        if dual_state.secondary_hand is not None:
+                            s_side_name = "Left" if dual_state.primary_side == "right" else "Right"
+                            active_pair.append((hand_idx, s_side_name, dual_state.secondary_hand, (255, 220, 0)))
+
+                        for h_num, side_title, h_obj, col in active_pair:
                             if not h_obj or "lm" not in h_obj:
                                 continue
                             wpt = h_obj["lm"][0]
-                            lbl = f"{tag}:{h_obj.get('pose_tag', 'HOVER')}"
+                            raw_pose = str(h_obj.get("pose_tag", "HOVER"))
+                            if dual_state.two_hand_mode == "DUAL_PINCH_ZOOM":
+                                tag_disp = "ZOOM"
+                            elif dual_state.two_hand_mode == "DUAL_PALM_PAN":
+                                tag_disp = "PAN"
+                            elif h_num == 2 and dual_state.modifier_mode != "NONE":
+                                tag_disp = dual_state.modifier_mode
+                            elif raw_pose == "PINCH":
+                                tag_disp = "DRAW"
+                            elif raw_pose == "OPEN_PALM":
+                                tag_disp = "ERASE"
+                            else:
+                                tag_disp = raw_pose
+                            lbl = f"Hand {h_num}: {side_title} [{tag_disp}]"
                             cv2.putText(
                                 display_bgr,
                                 lbl,
-                                (max(4, int(wpt[0] * w) - 18), max(16, int(wpt[1] * h) - 8)),
+                                (max(4, int(wpt[0] * w) - 34), max(18, int(wpt[1] * h) - 10)),
                                 cv2.FONT_HERSHEY_SIMPLEX,
-                                0.45,
+                                0.43,
                                 col,
                                 1,
                                 cv2.LINE_AA,
                             )
+
+                        # Draw Active Workspace Margin Guide (12%..88% -> 0%..100% screen corners)
+                        mx0, my0 = int(0.12 * w), int(0.12 * h)
+                        mx1, my1 = int(0.88 * w), int(0.88 * h)
+                        cv2.rectangle(display_bgr, (mx0, my0), (mx1, my1), (79, 70, 229), 1, cv2.LINE_AA)
 
                         n_hands_active = int(left_hand is not None) + int(right_hand is not None)
                         overlay_txt = f"FPS:{smoothed_fps:.0f} | Hands:{n_hands_active}/2 | {hand_engine.last_tracking_mode}"
@@ -924,6 +992,38 @@ class CameraHandWorker(QThread):
                         is_drawing=self._was_pinched,
                         t_sec=now_mono,
                     )
+                    if nav_info.get("swipe_direction"):
+                        self._last_swipe_dir = str(nav_info["swipe_direction"])
+                        self._last_swipe_until = now_mono + 0.65
+
+                    if (self.skeleton_overlay_enabled or self.debug_hud_enabled) and now_mono <= self._last_swipe_until and self._last_swipe_dir:
+                        cx_a, cy_a = w // 2, h // 2
+                        d_vec = {
+                            "LEFT": (-75, 0, "<<< NEXT"),
+                            "RIGHT": (75, 0, "PREV >>>"),
+                            "UP": (0, -65, "SCROLL DOWN"),
+                            "DOWN": (0, 65, "SCROLL UP"),
+                        }.get(self._last_swipe_dir)
+                        if d_vec is not None:
+                            cv2.arrowedLine(
+                                display_bgr,
+                                (cx_a - d_vec[0] // 2, cy_a - d_vec[1] // 2),
+                                (cx_a + d_vec[0], cy_a + d_vec[1]),
+                                (0, 245, 212),
+                                4,
+                                cv2.LINE_AA,
+                                tipLength=0.35,
+                            )
+                            cv2.putText(
+                                display_bgr,
+                                d_vec[2],
+                                (max(8, cx_a - 56), max(38, cy_a - 44)),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.58,
+                                (250, 204, 21),
+                                2,
+                                cv2.LINE_AA,
+                            )
 
                     if calib_now:
                         self._calibrate_requested = False
@@ -1003,6 +1103,24 @@ class CameraHandWorker(QThread):
                         "fsm_state": (primary or {}).get("fsm_state", "IDLE"),
                     }
 
+                    telemetry_pkt = HandTelemetryPacket(
+                        timestamp_sec=time.perf_counter(),
+                        cursor_norm=cursor_norm,
+                        gesture=gesture,
+                        pose_tag=pose_tag,
+                        pinch_ratio=float(pinch_ratio) if pinch_ratio is not None else None,
+                        hand_span=hand_span,
+                        two_hand_mode=dual_state.two_hand_mode,
+                        modifier_mode=dual_state.modifier_mode,
+                        nav_event=nav_info.get("nav_event"),  # type: ignore[arg-type]
+                        swipe_direction=nav_info.get("swipe_direction"),  # type: ignore[arg-type]
+                        scroll_delta_norm=float(nav_info.get("scroll_delta_norm") or 0.0),
+                        extrapolated=False,
+                        cam_fps=self._cam_fps_smoothed or smoothed_fps,
+                        ai_fps=smoothed_fps,
+                    )
+                    self.telemetry_ready.emit(telemetry_pkt)
+
                     self.frame_ready.emit({
                         "ok": True,
                         "paused": False,
@@ -1022,6 +1140,8 @@ class CameraHandWorker(QThread):
                         "hand_span": hand_span,
                         "cursor_norm": cursor_norm,
                         "nav_event": nav_info.get("nav_event"),
+                        "swipe_direction": nav_info.get("swipe_direction"),
+                        "scroll_delta_norm": float(nav_info.get("scroll_delta_norm") or 0.0),
                         "peace_hold_progress": nav_info.get("peace_hold_progress", 0.0),
                         "question_hold_progress": nav_info.get("question_hold_progress", 0.0),
                         "left_hand": left_hand,
@@ -1030,6 +1150,7 @@ class CameraHandWorker(QThread):
                         "dual_hand": {
                             "primary_side": dual_state.primary_side,
                             "two_hand_mode": dual_state.two_hand_mode,
+                            "modifier_mode": dual_state.modifier_mode,
                             "zoom_factor": dual_state.zoom_factor,
                             "zoom_center_norm": dual_state.zoom_center_norm,
                             "pan_delta_norm": dual_state.pan_delta_norm,
@@ -1039,6 +1160,7 @@ class CameraHandWorker(QThread):
                         },
                         "left_pan_active": left_pan_active,
                         "vision_telemetry": primary_telemetry,
+                        "telemetry_packet": telemetry_pkt,
                     })
                 except Exception as exc:
                     _LOGGER.exception("CameraHandWorker frame error: %s", exc)
@@ -1079,6 +1201,10 @@ class CameraHandWorker(QThread):
     ) -> Tuple[str, Tuple[float, float]]:
         res = classify_hand_3d_vectors(pts, was_pinched=was_pinched)
         return (str(res["gesture"]), tuple(res["cursor_norm"]))  # type: ignore[return-value]
+
+
+class CameraHandWorker(VisionInferenceWorker):
+    """Backward-compatible alias for `VisionInferenceWorker` (decoupled capture + inference)."""
 
 
 # =============================================================================
@@ -1979,16 +2105,24 @@ class SmartboardCanvas(QWidget):
         self.highlighter_color = QColor(250, 204, 21, 96)
         self.pen_thickness = 4
 
-        self.drawing_fsm = ZeroStrayStrokeDrawingFsm(allow_index_point_draw=False)
+        self.drawing_fsm = ZeroStrayStrokeDrawingFsm(
+            pinch_enter=0.32,
+            pinch_exit=0.42,
+            tail_trim_ms=100.0,
+            allow_index_point_draw=False,
+        )
         self.hud_mode: DrawingHudMode = DrawingHudMode.HOVER
         self.cooldown_remaining_ms: float = 0.0
         self.cancel_hold_progress: float = 0.0
         self.dynamic_eraser_radius: float = 45.0
 
-        # Pan & Zoom Viewport Transform (driven by 2-hand Dual-Pinch / Dual-Palm or mouse wheel/drag)
+        # Pan, Zoom (50%-300%) & Continuous Vertical Document Scroll State
         self.zoom_scale: float = 1.0
         self.pan_x: float = 0.0
         self.pan_y: float = 0.0
+        self.continuous_scroll_mode: bool = False
+        self.doc_scroll_y: float = 0.0
+        self.active_modifier_mode: str = "NONE"
         self.two_hand_status_text: str = ""
         self._lasso_dwell_ready: bool = False
         self._space_panning: bool = False
@@ -2003,11 +2137,13 @@ class SmartboardCanvas(QWidget):
         self._last_motion_pt: Optional[QPointF] = None
         self._hold_snap_ready: bool = True
 
-        # Non-destructive Auto-Shape notification pill with clickable revert button
+        # Non-destructive Auto-Shape notification & Gesture action toast pills
         self.shape_toast: Optional[Dict[str, Any]] = None
         self.toast_revert_rect: Optional[QRectF] = None
+        self.gesture_toast: Optional[Dict[str, Any]] = None
 
         self.cursor_pos: Optional[QPointF] = None
+        self._prev_cursor_pos: Optional[QPointF] = None
         self.cursor_mode: str = "HOVER"  # HOVER, DRAWING, LOCKED_COOLDOWN, PAN_ERASE, LASER
         self.selection_start: Optional[QPointF] = None
         self.selection_end: Optional[QPointF] = None
@@ -2016,19 +2152,20 @@ class SmartboardCanvas(QWidget):
 
         self._dirty_tracker = DirtyCanvasBackingTracker()
         self._backing_pixmap: Optional[QPixmap] = None
+        self._scaled_page_pixmap_cache: OrderedDict[Tuple[int, int, int, int], QPixmap] = OrderedDict()
         self._scene_rev: int = 0
 
         # Neutral clean guide slide only (zero personal sample data)
         self.slides: List[Dict[str, Any]] = [
             {
                 "title": "DNT - Victer Guide • Hướng dẫn nhanh AirTeach AI",
-                "subtitle": f"Bảng trắng không chạm & Trình chiếu PDF/PPTX + {DEFAULT_GEMINI_MODEL} / Local AI",
+                "subtitle": f"Bảng trắng không chạm & Trình chiếu Word / PDF / PPTX + {DEFAULT_GEMINI_MODEL}",
                 "bullets": [
-                    "• Chỉ 1 ngón trỏ: Di chuyển con trỏ Laser • Chụm ngón (pinch < 0.28): Vẽ • Xòe tay: Tẩy.",
-                    "• Quét ngang tay hoặc Giữ 2 ngón (800ms): Chuyển Slide • Hai tay chụm: Thu/Phóng.",
-                    "• Kéo thả file PDF / PPTX / PPT vào đây hoặc bấm [Nhập PDF/PPTX] để giảng dạy ngay.",
+                    "• 1 ngón trỏ: Di chuyển con trỏ vòng đôi 60Hz • Chụm ngón (pinch < 0.32): Vẽ • Xòe tay: Tẩy.",
+                    "• Vuốt ngang: Chuyển Slide • Vuốt dọc / 2 ngón kéo: Cuộn tài liệu Word/PDF • 2 tay chụm: Thu/Phóng 50–300%.",
+                    "• Kéo thả file .DOCX / .PDF / .PPTX vào đây hoặc bấm [Mở Tài Liệu: Word / PDF / PPTX] để bắt đầu.",
                 ],
-                "formula": "Ctrl+Z: Hoàn tác  |  L: Khoanh vùng AI  |  H: Bật/tắt Mini Camera HUD",
+                "formula": "Ctrl+Z: Hoàn tác  |  Tay trái nắm khi vẽ: Khóa nét thẳng  |  H: Bật/tắt Mini HUD",
                 "pixmap": None,
                 "is_tutorial": True,
             }
@@ -2196,6 +2333,7 @@ class SmartboardCanvas(QWidget):
         if self.lecture_doc is not None and self.lecture_doc is not doc:
             self.lecture_doc.close()
         self.lecture_doc = doc
+        self._scaled_page_pixmap_cache.clear()
         self.slide_annotations.clear()
         self.current_stroke.clear()
         self.shape_toast = None
@@ -2204,7 +2342,7 @@ class SmartboardCanvas(QWidget):
         self.slides = []
         for idx in range(doc.page_count):
             self.slides.append({
-                "title": f"{doc.source_path.name} — Slide {idx + 1}/{doc.page_count}",
+                "title": f"{doc.source_path.name} — Trang {idx + 1}/{doc.page_count}",
                 "subtitle": f"Backend: {doc.backend_used}",
                 "bullets": [],
                 "formula": "",
@@ -2214,10 +2352,12 @@ class SmartboardCanvas(QWidget):
             })
             self._ensure_slide_layer(idx)
         self.current_slide_idx = 0
+        self.doc_scroll_y = 0.0
+        self.continuous_scroll_mode = (getattr(doc, "doc_type", "PDF") == "WORD")
         self.slide_visible = True
         self.toggle_slide_btn.setText("[Ẩn Slide -> Bảng trống]")
         self.clear_tutorial_btn.setVisible(False)
-        doc.prewarm_around(0, radius=2)
+        doc.prewarm_around(0, radius=2, scale=2.25)
         self.reset_viewport()
         self.slides_changed.emit()
         self._bump_scene()
@@ -2270,12 +2410,203 @@ class SmartboardCanvas(QWidget):
         self.hide_lasso_bar()
         self.current_slide_idx = clamped
         self._ensure_slide_layer(clamped)
+        if self.continuous_scroll_mode and self.lecture_doc is not None:
+            for p_i, cont_r, _canon_r, _sc in self._compute_continuous_page_rects():
+                if p_i == clamped:
+                    self.doc_scroll_y = max(0.0, cont_r.top() - 48.0)
+                    break
         if self.lecture_doc is not None and clamped < self.lecture_doc.page_count:
-            self.lecture_doc.prewarm_around(clamped, radius=2)
+            self.lecture_doc.prewarm_around(clamped, radius=2, scale=2.25)
         self.slides_changed.emit()
         self._bump_scene()
         self.update()
         return True
+
+    def show_gesture_toast(self, text_vi: str, duration_ms: float = 1150.0) -> None:
+        self.gesture_toast = {
+            "text": str(text_vi),
+            "until_ms": self._now_ms() + max(250.0, float(duration_ms)),
+        }
+        self.update()
+
+    def _get_page_qpixmap(self, page_idx: int, target_w: int, target_h: int) -> Optional[QPixmap]:
+        if self.lecture_doc is None or not (0 <= page_idx < self.lecture_doc.page_count):
+            return None
+        tw = max(64, int(round(target_w)))
+        th = max(64, int(round(target_h)))
+        doc_rev = id(self.lecture_doc)
+        key = (doc_rev, page_idx, tw, th)
+        cached = self._scaled_page_pixmap_cache.get(key)
+        if cached is not None and not cached.isNull():
+            self._scaled_page_pixmap_cache.move_to_end(key)
+            return cached
+        qimg = self.lecture_doc.render_page_qimage(page_idx, scale=2.25)
+        if qimg.isNull():
+            return None
+        scaled_img = qimg.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        pm = QPixmap.fromImage(scaled_img)
+        self._scaled_page_pixmap_cache[key] = pm
+        self._scaled_page_pixmap_cache.move_to_end(key)
+        while len(self._scaled_page_pixmap_cache) > 24:
+            self._scaled_page_pixmap_cache.popitem(last=False)
+        return pm
+
+    def _compute_continuous_page_rects(self) -> List[Tuple[int, QRectF, QRectF, float]]:
+        """Compute vertical stack of document pages `(page_idx, cont_rect, canon_rect, scale)`."""
+        cw = max(320.0, float(self.width()))
+        ch = max(240.0, float(self.height()))
+        n_pages = self.lecture_doc.page_count if self.lecture_doc is not None else len(self.slides)
+        if n_pages <= 0:
+            return []
+        avail_w = max(280.0, min(980.0, cw - 64.0))
+        y_cursor = 48.0
+        gap = 24.0
+        out: List[Tuple[int, QRectF, QRectF, float]] = []
+        for i in range(n_pages):
+            ar = (
+                self.lecture_doc.get_page_aspect_ratio(i)
+                if self.lecture_doc is not None
+                else float(self.slides[i].get("aspect_ratio") or (16.0 / 9.0))
+            )
+            pw = avail_w
+            ph = pw / max(0.3, min(3.5, ar))
+            px = 0.5 * (cw - pw)
+            cont_r = QRectF(px, y_cursor, pw, ph)
+            canon_r = compute_slide_rect_on_canvas((cw, ch), ar, is_tutorial=False)
+            ratio = pw / max(1.0, canon_r.width())
+            out.append((i, cont_r, canon_r, ratio))
+            y_cursor += ph + gap
+        return out
+
+    def set_continuous_scroll_mode(self, enabled: bool) -> None:
+        self.continuous_scroll_mode = bool(enabled)
+        if self.continuous_scroll_mode and self.lecture_doc is not None:
+            for p_i, cont_r, _canon_r, _sc in self._compute_continuous_page_rects():
+                if p_i == self.current_slide_idx:
+                    self.doc_scroll_y = max(0.0, cont_r.top() - 48.0)
+                    break
+        else:
+            self.doc_scroll_y = 0.0
+        self._bump_scene()
+        self.update()
+
+    def scroll_document(self, delta_px: float) -> float:
+        """Scroll multi-page document vertically and keep `current_slide_idx` synchronized."""
+        if self.lecture_doc is None:
+            return 0.0
+        if not self.continuous_scroll_mode:
+            if delta_px > 40.0:
+                self.next_slide()
+            elif delta_px < -40.0:
+                self.prev_slide()
+            return self.doc_scroll_y
+
+        layout = self._compute_continuous_page_rects()
+        if not layout:
+            return 0.0
+        content_bottom = layout[-1][1].bottom() + 48.0
+        view_h = max(240.0, float(self.height()) / max(0.5, float(self.zoom_scale)))
+        max_scroll = max(0.0, content_bottom - view_h)
+        new_y = max(0.0, min(max_scroll, self.doc_scroll_y + float(delta_px)))
+        if abs(new_y - self.doc_scroll_y) < 0.5:
+            return self.doc_scroll_y
+        self.doc_scroll_y = new_y
+
+        mid_y = self.doc_scroll_y + view_h * 0.45
+        best_idx = self.current_slide_idx
+        best_dist = 1e9
+        for p_i, cont_r, _, _ in layout:
+            dist = abs(cont_r.center().y() - mid_y)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = p_i
+        if best_idx != self.current_slide_idx:
+            self.current_slide_idx = best_idx
+            self._ensure_slide_layer(best_idx)
+            self.lecture_doc.prewarm_around(best_idx, radius=2, scale=2.25)
+            self.slides_changed.emit()
+
+        self._bump_scene()
+        self.update()
+        return self.doc_scroll_y
+
+    def _map_board_to_page_canon(
+        self,
+        board_pt: QPointF,
+        *,
+        pick_page: bool = False,
+    ) -> QPointF:
+        """Map board coordinates between Continuous Vertical Scroll layout and active page canonical coords."""
+        if not self.continuous_scroll_mode or self.lecture_doc is None:
+            return board_pt
+        layout = self._compute_continuous_page_rects()
+        if not layout:
+            return board_pt
+        vy = board_pt.y() + self.doc_scroll_y
+        target = None
+        if pick_page:
+            best_d = 1e9
+            for item in layout:
+                cont_r = item[1]
+                if cont_r.top() <= vy <= cont_r.bottom():
+                    target = item
+                    break
+                d = min(abs(vy - cont_r.top()), abs(vy - cont_r.bottom()))
+                if d < best_d:
+                    best_d = d
+                    target = item
+            if target is not None and target[0] != self.current_slide_idx:
+                self.current_slide_idx = target[0]
+                self._ensure_slide_layer(target[0])
+                self.slides_changed.emit()
+        else:
+            for item in layout:
+                if item[0] == self.current_slide_idx:
+                    target = item
+                    break
+        if target is None:
+            return board_pt
+        _, cont_r, canon_r, ratio = target
+        cx = canon_r.left() + (board_pt.x() - cont_r.left()) / max(0.1, ratio)
+        cy = canon_r.top() + (vy - cont_r.top()) / max(0.1, ratio)
+        return QPointF(cx, cy)
+
+    def _cursor_dirty_rect(self, pt1: Optional[QPointF], pt2: Optional[QPointF] = None, margin: float = 115.0) -> Optional[QRectF]:
+        pts = [p for p in (pt1, pt2) if p is not None]
+        if not pts:
+            return None
+        xs = [p.x() for p in pts]
+        ys = [p.y() for p in pts]
+        pad = max(48.0, float(margin))
+        return QRectF(
+            max(0.0, min(xs) - pad),
+            max(0.0, min(ys) - pad),
+            (max(xs) - min(xs)) + 2.0 * pad,
+            (max(ys) - min(ys)) + 2.0 * pad,
+        ).intersected(QRectF(0.0, 0.0, max(1.0, float(self.width())), max(1.0, float(self.height()))))
+
+    def apply_60hz_extrapolated_cursor(self, cursor_norm: Tuple[float, float]) -> None:
+        """Ultra-low-latency 60Hz cursor/ink-tip updater driven between CV inference ticks."""
+        if cursor_norm is None or len(cursor_norm) < 2:
+            return
+        sx = float(cursor_norm[0]) * max(1, self.width())
+        sy = float(cursor_norm[1]) * max(1, self.height())
+        new_pos = QPointF(sx, sy)
+        old_pos = self.cursor_pos
+        if old_pos is not None and math.hypot(new_pos.x() - old_pos.x(), new_pos.y() - old_pos.y()) < 0.6:
+            return
+        self.cursor_pos = new_pos
+        if self.hud_mode == DrawingHudMode.DRAWING:
+            bpt = self._map_board_to_page_canon(self._screen_to_board(new_pos), pick_page=False)
+            if not self.current_stroke or math.hypot(
+                bpt.x() - self.current_stroke[-1].x(), bpt.y() - self.current_stroke[-1].y()
+            ) >= 1.5:
+                self.current_stroke.append(bpt)
+        dirty = self._cursor_dirty_rect(old_pos, new_pos, margin=max(90.0, self.dynamic_eraser_radius + 36.0))
+        if dirty is not None and self.gesture_toast is None and self.shape_toast is None:
+            self.update(dirty.toRect())
+        else:
+            self.update()
 
     def next_slide(self) -> bool:
         return self.set_current_slide(self.current_slide_idx + 1)
@@ -2359,7 +2690,7 @@ class SmartboardCanvas(QWidget):
     def apply_zoom_factor(self, factor: float, center_norm: Optional[Tuple[float, float]] = None) -> None:
         if abs(factor - 1.0) < 0.002:
             return
-        new_z = max(0.45, min(3.0, self.zoom_scale * float(factor)))
+        new_z = max(0.50, min(3.0, self.zoom_scale * float(factor)))
         if abs(new_z - self.zoom_scale) < 1e-4:
             return
         cx = (center_norm[0] * max(1, self.width())) if center_norm else (self.width() * 0.5)
@@ -2369,6 +2700,10 @@ class SmartboardCanvas(QWidget):
         self.zoom_scale = new_z
         self.pan_x = cx - bx * new_z
         self.pan_y = cy - by * new_z
+        self.gesture_toast = {
+            "text": f"🔍 Thu Phóng {int(round(new_z * 100))}%",
+            "until_ms": self._now_ms() + 950.0,
+        }
         self._bump_scene()
         self.update()
 
@@ -2390,6 +2725,10 @@ class SmartboardCanvas(QWidget):
     def wheelEvent(self, event) -> None:
         delta = event.angleDelta().y()
         if delta != 0:
+            if self.continuous_scroll_mode and not (event.modifiers() & Qt.ControlModifier):
+                self.scroll_document(-float(delta) * 0.75)
+                event.accept()
+                return
             factor = 1.08 if delta > 0 else (1.0 / 1.08)
             pos = event.position()
             c_norm = (pos.x() / max(1, self.width()), pos.y() / max(1, self.height()))
@@ -2818,23 +3157,29 @@ class SmartboardCanvas(QWidget):
         left_pan = bool(pkt.get("left_pan_active", False))
         dual_info = pkt.get("dual_hand") or {}
         suppress_draw = bool(dual_info.get("suppress_primary_drawing", False))
+        self.active_modifier_mode = str(dual_info.get("modifier_mode") or "NONE")
         self.two_hand_status_text = str(dual_info.get("status_label_vi") or "")
         hand_span = float(pkt.get("hand_span") or 0.20)
         base_dim = float(min(max(360, self.width()), max(360, self.height())))
-        self.dynamic_eraser_radius = max(26.0, min(105.0, hand_span * base_dim * 0.42)) / max(0.45, self.zoom_scale)
+        self.dynamic_eraser_radius = max(26.0, min(105.0, hand_span * base_dim * 0.42)) / max(0.50, self.zoom_scale)
         hand_present = cursor_norm is not None and gesture != "IDLE"
 
+        old_cursor = self.cursor_pos
         cursor_px: Optional[Tuple[float, float]] = None
         if cursor_norm is not None:
             sx = float(cursor_norm[0]) * max(1, self.width())
             sy = float(cursor_norm[1]) * max(1, self.height())
             self.cursor_pos = QPointF(sx, sy)
-            bpt = self._screen_to_board(self.cursor_pos)
+            bpt = self._map_board_to_page_canon(
+                self._screen_to_board(self.cursor_pos),
+                pick_page=(self.hud_mode != DrawingHudMode.DRAWING),
+            )
             cursor_px = (bpt.x(), bpt.y())
             if self.active_tool == "LASER" or (
                 self.hud_mode == DrawingHudMode.HOVER and pose_tag in ("INDEX", "HOVER")
             ):
                 self.laser_trail.append((QPointF(bpt.x(), bpt.y()), now_ms))
+        self._prev_cursor_pos = old_cursor
 
         # Track hold-to-snap & closed-loop Lasso dwell stillness while drawing
         if self.hud_mode == DrawingHudMode.DRAWING and cursor_px is not None:
@@ -2899,6 +3244,15 @@ class SmartboardCanvas(QWidget):
         self.hud_status_changed.emit(
             upd.hud_mode.value, float(upd.cooldown_remaining_ms), upd.cancel_reason
         )
+        if upd.action in ("APPEND_POINT", "HOLD_GRACE", "NONE") and self.shape_toast is None and self.gesture_toast is None:
+            dirty = self._cursor_dirty_rect(
+                self._prev_cursor_pos,
+                self.cursor_pos,
+                margin=max(110.0, self.dynamic_eraser_radius + 45.0),
+            )
+            if dirty is not None:
+                self.update(dirty.toRect())
+                return
         self.update()
 
     def trigger_esc_cancel(self) -> None:
@@ -2955,7 +3309,8 @@ class SmartboardCanvas(QWidget):
     def mousePressEvent(self, event) -> None:
         pt_screen = QPointF(event.position())
         self.cursor_pos = pt_screen
-        pt = self._screen_to_board(pt_screen)
+        pt_raw = self._screen_to_board(pt_screen)
+        pt = self._map_board_to_page_canon(pt_raw, pick_page=True)
 
         # Check clickable "[Hoàn tác về nét gốc]" toast pill (screen space)
         if (
@@ -3015,8 +3370,10 @@ class SmartboardCanvas(QWidget):
 
     def mouseMoveEvent(self, event) -> None:
         pt_screen = QPointF(event.position())
+        prev_scr = self.cursor_pos
         self.cursor_pos = pt_screen
-        pt = self._screen_to_board(pt_screen)
+        pt_raw = self._screen_to_board(pt_screen)
+        pt = self._map_board_to_page_canon(pt_raw, pick_page=False)
 
         if self._mouse_pan_last is not None and (
             (event.buttons() & Qt.MiddleButton)
@@ -3087,6 +3444,16 @@ class SmartboardCanvas(QWidget):
             self.cursor_mode = "LASER" if self.active_tool == "LASER" else "HOVER"
             if self.active_tool == "LASER":
                 self.laser_trail.append((pt, self._now_ms()))
+        if not (event.buttons() & Qt.LeftButton) or self.active_tool in ("PEN", "HIGHLIGHTER", "LASER"):
+            if self.shape_toast is None and self.gesture_toast is None and self.active_tool not in ("LASSO", "SELECT_REGION"):
+                dirty = self._cursor_dirty_rect(
+                    prev_scr,
+                    self.cursor_pos,
+                    margin=max(96.0, self.dynamic_eraser_radius + 40.0),
+                )
+                if dirty is not None:
+                    self.update(dirty.toRect())
+                    return
         self.update()
 
     def mouseReleaseEvent(self, event) -> None:
@@ -3191,22 +3558,31 @@ class SmartboardCanvas(QWidget):
             raw_qpts = [QPointF(x, y) for (x, y) in (smooth_raw_xy if len(smooth_raw_xy) >= 2 else raw_xy)]
 
             is_hi = self.active_tool == "HIGHLIGHTER"
-            should_beautify = (not is_hi) and self.smart_shape_enabled and (
-                not self.hold_to_snap_350ms or self._hold_snap_ready
-            )
-            if should_beautify and len(raw_xy) >= 3:
-                shape_res = beautify_stroke(raw_xy, closed_gap_ratio=0.18, confidence_gate=0.78)
-                final_qpts = [QPointF(x, y) for (x, y) in shape_res.beautified_points]
-                is_geo = shape_res.is_geometric
-                shape_type = shape_res.shape_type
-                shape_label_vi = shape_res.shape_label_vi
-                confidence = shape_res.confidence
+            if via_cv and self.active_modifier_mode == "LINE_LOCK" and not is_hi and len(raw_xy) >= 2:
+                line_pts = resample_arc_length([raw_xy[0], raw_xy[-1]], step_px=12.0)
+                final_qpts = [QPointF(x, y) for (x, y) in (line_pts if len(line_pts) >= 2 else [raw_xy[0], raw_xy[-1]])]
+                is_geo = True
+                shape_type = "LINE"
+                shape_label_vi = "Đoạn thẳng (Khóa tay trái)"
+                confidence = 0.99
             else:
-                final_qpts = raw_qpts
-                is_geo = False
-                shape_type = "HIGHLIGHTER" if is_hi else "FREEHAND"
-                shape_label_vi = "Bút dạ quang" if is_hi else "Nét mượt tự do"
-                confidence = 0.0
+                conf_gate = 0.62 if (via_cv and self.active_modifier_mode == "SHAPE_LOCK") else 0.78
+                should_beautify = (not is_hi) and (self.smart_shape_enabled or (via_cv and self.active_modifier_mode == "SHAPE_LOCK")) and (
+                    not self.hold_to_snap_350ms or self._hold_snap_ready or (via_cv and self.active_modifier_mode == "SHAPE_LOCK")
+                )
+                if should_beautify and len(raw_xy) >= 3:
+                    shape_res = beautify_stroke(raw_xy, closed_gap_ratio=0.18, confidence_gate=conf_gate)
+                    final_qpts = [QPointF(x, y) for (x, y) in shape_res.beautified_points]
+                    is_geo = shape_res.is_geometric
+                    shape_type = shape_res.shape_type
+                    shape_label_vi = shape_res.shape_label_vi
+                    confidence = shape_res.confidence
+                else:
+                    final_qpts = raw_qpts
+                    is_geo = False
+                    shape_type = "HIGHLIGHTER" if is_hi else "FREEHAND"
+                    shape_label_vi = "Bút dạ quang" if is_hi else "Nét mượt tự do"
+                    confidence = 0.0
 
             stroke_col = QColor(self.highlighter_color if is_hi else self.ink_color)
             if is_hi and stroke_col.alpha() > 120:
@@ -3384,28 +3760,113 @@ class SmartboardCanvas(QWidget):
                 painter.setPen(major_pen if idx % 5 == 0 else minor_pen)
                 painter.drawLine(bx0, y, bx1, y)
 
-        # 2. Optional Slide Content Card / Native High-DPI PDF & PPTX Renderer
-        if self.slide_visible and self.slides and 0 <= self.current_slide_idx < len(self.slides):
+        # 2 & 3. Slide / Document Rendering & Committed Strokes (Continuous Scroll vs Single-Page)
+        now_ms = self._now_ms()
+        rendered_continuous = False
+        if (
+            self.continuous_scroll_mode
+            and self.slide_visible
+            and self.lecture_doc is not None
+            and self.lecture_doc.page_count > 0
+            and not bool((self.slides[0] if self.slides else {}).get("is_tutorial", False))
+        ):
+            rendered_continuous = True
+            layout = self._compute_continuous_page_rects()
+            vis_top = (-self.pan_y / z) - 180.0
+            vis_bot = ((self.height() - self.pan_y) / z) + 180.0
+            for p_i, cont_r, canon_r, scale_r in layout:
+                draw_r = cont_r.translated(0.0, -self.doc_scroll_y)
+                if draw_r.bottom() < vis_top or draw_r.top() > vis_bot:
+                    continue
+                page_pm = self._get_page_qpixmap(
+                    p_i,
+                    int(round(draw_r.width() * max(1.0, z))),
+                    int(round(draw_r.height() * max(1.0, z))),
+                )
+                painter.setBrush(QBrush(QColor("#FFFFFF")))
+                border_col = QColor(NEON_CYAN if p_i == self.current_slide_idx else SECONDARY_TEAL)
+                painter.setPen(QPen(border_col, 2.0 if p_i == self.current_slide_idx else 1.1))
+                painter.drawRoundedRect(draw_r.adjusted(-1, -1, 1, 1), 6.0, 6.0)
+                if page_pm is not None and not page_pm.isNull():
+                    painter.drawPixmap(draw_r.toRect(), page_pm)
+
+                # Draw per-page vector strokes & AI annotations mapped cleanly onto this page rect
+                layer = self._ensure_slide_layer(p_i)
+                for s in layer.get("strokes") or []:
+                    pts = s.get("points") or []
+                    if len(pts) < 2:
+                        continue
+                    col = QColor(s["color"])
+                    is_hi = bool(s.get("is_highlighter", False))
+                    if is_hi and col.alpha() > 120:
+                        col.setAlpha(96)
+                    painter.setPen(
+                        QPen(
+                            col,
+                            float(s["thickness"]) * scale_r,
+                            Qt.SolidLine,
+                            Qt.FlatCap if is_hi else Qt.RoundCap,
+                            Qt.RoundJoin,
+                        )
+                    )
+                    tpts = [
+                        QPointF(
+                            draw_r.left() + (p.x() - canon_r.left()) * scale_r,
+                            draw_r.top() + (p.y() - canon_r.top()) * scale_r,
+                        )
+                        for p in pts
+                    ]
+                    path = QPainterPath(tpts[0])
+                    for p in tpts[1:]:
+                        path.lineTo(p)
+                    painter.drawPath(path)
+
+                for ann in layer.get("annotations") or []:
+                    ax = draw_r.left() + (float(ann.get("x", 40.0)) - canon_r.left()) * scale_r
+                    ay = draw_r.top() + (float(ann.get("y", 60.0)) - canon_r.top()) * scale_r
+                    aw = float(ann.get("w", 200.0)) * scale_r
+                    ah = float(ann.get("h", 44.0)) * scale_r
+                    box = QRectF(ax, ay, aw, ah)
+                    ann_bg = QColor(15, 23, 42, 215) if self.dark_mode else QColor(255, 255, 255, 240)
+                    painter.setBrush(QBrush(ann_bg))
+                    painter.setPen(QPen(QColor(SECONDARY_TEAL if self.dark_mode else PRIMARY_INDIGO), 1.2))
+                    painter.drawRoundedRect(box, 8.0, 8.0)
+                    ann_pm: Optional[QPixmap] = ann.get("pixmap")
+                    if ann_pm is not None and not ann_pm.isNull():
+                        painter.drawPixmap(
+                            QRectF(ax + 6.0, ay + 4.0, max(12.0, aw - 12.0), max(12.0, ah - 8.0)).toRect(),
+                            ann_pm,
+                        )
+                    else:
+                        painter.setPen(QColor(ann.get("color") or (NEON_CYAN if self.dark_mode else "#0F172A")))
+                        painter.setFont(QFont("Segoe UI", max(10, int(ann.get("font_size") or 13)), QFont.Bold))
+                        painter.drawText(box.adjusted(8.0, 4.0, -8.0, -4.0), Qt.AlignVCenter | Qt.AlignLeft, str(ann.get("text") or ""))
+
+        if not rendered_continuous and self.slide_visible and self.slides and 0 <= self.current_slide_idx < len(self.slides):
             slide = self.slides[self.current_slide_idx]
             is_tut = bool(slide.get("is_tutorial", False))
             s_rect = self._compute_active_slide_rect()
             card_bg = QColor(15, 23, 42, 200) if self.dark_mode else QColor(255, 255, 255, 240)
             card_fg = QColor(TEXT_LIGHT if self.dark_mode else "#0F172A")
 
-            doc_qimg: Optional[QImage] = None
+            doc_pm: Optional[QPixmap] = None
             if (
                 self.lecture_doc is not None
                 and not is_tut
                 and self.current_slide_idx < self.lecture_doc.page_count
             ):
-                doc_qimg = self.lecture_doc.render_page_qimage(self.current_slide_idx, scale=2.0)
+                doc_pm = self._get_page_qpixmap(
+                    self.current_slide_idx,
+                    int(round(s_rect.width() * max(1.0, z))),
+                    int(round(s_rect.height() * max(1.0, z))),
+                )
 
             pm: Optional[QPixmap] = slide.get("pixmap")
-            if doc_qimg is not None and not doc_qimg.isNull():
+            if doc_pm is not None and not doc_pm.isNull():
                 painter.setBrush(QBrush(QColor("#FFFFFF")))
                 painter.setPen(QPen(QColor(SECONDARY_TEAL), 1.4))
                 painter.drawRoundedRect(s_rect.adjusted(-1, -1, 1, 1), 6.0, 6.0)
-                painter.drawImage(s_rect, doc_qimg)
+                painter.drawPixmap(s_rect.toRect(), doc_pm)
             elif pm is not None and not pm.isNull():
                 painter.setBrush(QBrush(card_bg))
                 painter.setPen(QPen(QColor(BORDER_SLATE if self.dark_mode else "#CBD5E1"), 1.2))
@@ -3439,59 +3900,59 @@ class SmartboardCanvas(QWidget):
                 painter.setFont(QFont("Segoe UI", 11, QFont.Bold))
                 painter.drawText(f_rect, Qt.AlignCenter, OutputSanitizer.sanitize_plain_text(slide["formula"]))
 
-        # 3. Committed Vector Ink & Highlighter Strokes
-        for s in self.strokes:
-            pts = s["points"]
-            if len(pts) >= 2:
-                col = QColor(s["color"])
-                is_hi = bool(s.get("is_highlighter", False))
-                if is_hi and col.alpha() > 120:
-                    col.setAlpha(96)
-                pen = QPen(
-                    col,
-                    s["thickness"],
-                    Qt.SolidLine,
-                    Qt.FlatCap if is_hi else Qt.RoundCap,
-                    Qt.RoundJoin,
-                )
-                painter.setPen(pen)
-                path = QPainterPath(pts[0])
-                for p in pts[1:]:
-                    path.lineTo(p)
-                painter.drawPath(path)
+        # 3. Committed Vector Ink & Highlighter Strokes (Single-Page / Blank Board Mode)
+        if not rendered_continuous:
+            for s in self.strokes:
+                pts = s["points"]
+                if len(pts) >= 2:
+                    col = QColor(s["color"])
+                    is_hi = bool(s.get("is_highlighter", False))
+                    if is_hi and col.alpha() > 120:
+                        col.setAlpha(96)
+                    pen = QPen(
+                        col,
+                        s["thickness"],
+                        Qt.SolidLine,
+                        Qt.FlatCap if is_hi else Qt.RoundCap,
+                        Qt.RoundJoin,
+                    )
+                    painter.setPen(pen)
+                    path = QPainterPath(pts[0])
+                    for p in pts[1:]:
+                        path.lineTo(p)
+                    painter.drawPath(path)
 
-        # 3B. Agentic Whiteboard Rendered Math & Text Annotations
-        now_ms = self._now_ms()
-        for ann in self.annotations:
-            ax = float(ann.get("x", 40.0))
-            ay = float(ann.get("y", 60.0))
-            aw = float(ann.get("w", 200.0))
-            ah = float(ann.get("h", 44.0))
-            reveal_until = float(ann.get("reveal_until_ms", 0.0))
-            alpha_f = 1.0
-            if reveal_until > now_ms:
-                has_active_reveal = True
-                alpha_f = max(0.15, min(1.0, 1.0 - (reveal_until - now_ms) / 420.0))
+            # 3B. Agentic Whiteboard Rendered Math & Text Annotations
+            for ann in self.annotations:
+                ax = float(ann.get("x", 40.0))
+                ay = float(ann.get("y", 60.0))
+                aw = float(ann.get("w", 200.0))
+                ah = float(ann.get("h", 44.0))
+                reveal_until = float(ann.get("reveal_until_ms", 0.0))
+                alpha_f = 1.0
+                if reveal_until > now_ms:
+                    has_active_reveal = True
+                    alpha_f = max(0.15, min(1.0, 1.0 - (reveal_until - now_ms) / 420.0))
 
-            painter.save()
-            painter.setOpacity(alpha_f)
-            box = QRectF(ax, ay, aw, ah)
-            ann_bg = QColor(15, 23, 42, 215) if self.dark_mode else QColor(255, 255, 255, 240)
-            ann_border = QColor(SECONDARY_TEAL if self.dark_mode else PRIMARY_INDIGO)
-            painter.setBrush(QBrush(ann_bg))
-            painter.setPen(QPen(ann_border, 1.2))
-            painter.drawRoundedRect(box, 8.0, 8.0)
+                painter.save()
+                painter.setOpacity(alpha_f)
+                box = QRectF(ax, ay, aw, ah)
+                ann_bg = QColor(15, 23, 42, 215) if self.dark_mode else QColor(255, 255, 255, 240)
+                ann_border = QColor(SECONDARY_TEAL if self.dark_mode else PRIMARY_INDIGO)
+                painter.setBrush(QBrush(ann_bg))
+                painter.setPen(QPen(ann_border, 1.2))
+                painter.drawRoundedRect(box, 8.0, 8.0)
 
-            ann_pm: Optional[QPixmap] = ann.get("pixmap")
-            if ann_pm is not None and not ann_pm.isNull():
-                tx = int(ax + (aw - ann_pm.width()) * 0.5)
-                ty = int(ay + (ah - ann_pm.height()) * 0.5)
-                painter.drawPixmap(tx, ty, ann_pm)
-            else:
-                painter.setPen(QColor(ann.get("color") or (NEON_CYAN if self.dark_mode else "#0F172A")))
-                painter.setFont(QFont("Segoe UI", max(11, int(ann.get("font_size") or 14)), QFont.Bold))
-                painter.drawText(box.adjusted(10.0, 4.0, -10.0, -4.0), Qt.AlignVCenter | Qt.AlignLeft, str(ann.get("text") or ""))
-            painter.restore()
+                ann_pm: Optional[QPixmap] = ann.get("pixmap")
+                if ann_pm is not None and not ann_pm.isNull():
+                    tx = int(ax + (aw - ann_pm.width()) * 0.5)
+                    ty = int(ay + (ah - ann_pm.height()) * 0.5)
+                    painter.drawPixmap(tx, ty, ann_pm)
+                else:
+                    painter.setPen(QColor(ann.get("color") or (NEON_CYAN if self.dark_mode else "#0F172A")))
+                    painter.setFont(QFont("Segoe UI", max(11, int(ann.get("font_size") or 14)), QFont.Bold))
+                    painter.drawText(box.adjusted(10.0, 4.0, -10.0, -4.0), Qt.AlignVCenter | Qt.AlignLeft, str(ann.get("text") or ""))
+                painter.restore()
 
         painter.restore()
         return has_active_reveal
@@ -3550,10 +4011,26 @@ class SmartboardCanvas(QWidget):
                 Qt.RoundJoin,
             )
             painter.setPen(pen)
-            path = QPainterPath(self.current_stroke[0])
-            for p in self.current_stroke[1:]:
-                path.lineTo(p)
-            painter.drawPath(path)
+            preview_pts = self.current_stroke
+            if self.continuous_scroll_mode and self.lecture_doc is not None:
+                for p_i, cont_r, canon_r, scale_r in self._compute_continuous_page_rects():
+                    if p_i == self.current_slide_idx:
+                        draw_r = cont_r.translated(0.0, -self.doc_scroll_y)
+                        preview_pts = [
+                            QPointF(
+                                draw_r.left() + (p.x() - canon_r.left()) * scale_r,
+                                draw_r.top() + (p.y() - canon_r.top()) * scale_r,
+                            )
+                            for p in self.current_stroke
+                        ]
+                        break
+            if self.active_modifier_mode == "LINE_LOCK" and not is_hi_cur and len(preview_pts) >= 2:
+                painter.drawLine(preview_pts[0], preview_pts[-1])
+            else:
+                path = QPainterPath(preview_pts[0])
+                for p in preview_pts[1:]:
+                    path.lineTo(p)
+                painter.drawPath(path)
 
         # Fading red laser pointer trail
         now_ms = self._now_ms()
@@ -3656,10 +4133,31 @@ class SmartboardCanvas(QWidget):
                 painter.setPen(QPen(QColor("#FFFFFF"), 1.6))
                 painter.drawEllipse(cp, 7.5, 7.5)
             else:
-                # Smooth laser pointer cursor dot in HOVER / POINTER mode
-                painter.setBrush(QBrush(QColor(244, 63, 94, 130)))
+                # Dual-ring glowing hover cursor for crisp 60Hz visibility from 3m
+                painter.setBrush(QBrush(QColor(6, 182, 212, 42)))
+                painter.setPen(QPen(QColor(NEON_CYAN), 1.8))
+                painter.drawEllipse(cp, 14.0, 14.0)
+                painter.setBrush(QBrush(QColor(244, 63, 94, 190)))
                 painter.setPen(QPen(QColor(BRIGHT_YELLOW), 2.0))
-                painter.drawEllipse(cp, 8.0, 8.0)
+                painter.drawEllipse(cp, 5.5, 5.5)
+
+        # 7. Non-Intrusive Top-Center Floating Gesture Toast
+        if self.gesture_toast is not None:
+            if self._now_ms() <= float(self.gesture_toast.get("until_ms", 0.0)):
+                msg_g = str(self.gesture_toast.get("text") or "")
+                tw_g = min(max(210.0, len(msg_g) * 9.5 + 36.0), max(220.0, self.width() - 80.0))
+                gx = 0.5 * (self.width() - tw_g)
+                gy = 12.0
+                g_rect = QRectF(gx, gy, tw_g, 32.0)
+                painter.setBrush(QBrush(QColor(15, 23, 42, 232)))
+                painter.setPen(QPen(QColor(NEON_CYAN), 1.6))
+                painter.drawRoundedRect(g_rect, 16.0, 16.0)
+                painter.setPen(QColor(TEXT_LIGHT))
+                painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+                painter.drawText(g_rect, Qt.AlignCenter, msg_g)
+                QTimer.singleShot(40, self.update)
+            else:
+                self.gesture_toast = None
 
 
 # =============================================================================
@@ -3874,12 +4372,24 @@ class AirTeachMainWindow(QMainWindow):
 
         self.stack.setCurrentIndex(0)
         self.cam_worker.start()
-        QTimer.singleShot(450, self._on_discover_local_ai)
-        QTimer.singleShot(600, self._maybe_show_first_run_onboarding)
+        self._discovery_timer = QTimer(self)
+        self._discovery_timer.setSingleShot(True)
+        self._discovery_timer.timeout.connect(self._on_discover_local_ai)
+        self._discovery_timer.start(450)
+
+        self._onboarding_timer = QTimer(self)
+        self._onboarding_timer.setSingleShot(True)
+        self._onboarding_timer.timeout.connect(self._maybe_show_first_run_onboarding)
+        self._onboarding_timer.start(600)
 
         self.ui_timer = QTimer(self)
         self.ui_timer.timeout.connect(self._update_vu_meter)
         self.ui_timer.start(80)
+
+        self.extrapolator = Kinematic60HzExtrapolator(min_cutoff=0.8, beta=0.04, d_cutoff=1.0)
+        self.cursor_60hz_timer = QTimer(self)
+        self.cursor_60hz_timer.timeout.connect(self._on_60hz_cursor_tick)
+        self.cursor_60hz_timer.start(16)
 
     def _start_audio_stream(self) -> None:
         if self._shutting_down or not HAS_SOUNDDEVICE or self.audio_stream is not None:
@@ -3955,8 +4465,8 @@ class AirTeachMainWindow(QMainWindow):
         )
         h_layout.addWidget(self.teacher_name_lbl)
 
-        open_slide_btn = QPushButton("[📂 Nhập PDF/PPTX]")
-        open_slide_btn.setToolTip("Nhập bài giảng PDF, PowerPoint (.pptx/.ppt) hoặc Ảnh (hoặc kéo thả vào bảng)")
+        open_slide_btn = QPushButton("[📂 Mở Tài Liệu: Word / PDF / PPTX]")
+        open_slide_btn.setToolTip("Mở bài giảng Word (.docx/.doc), PDF, PowerPoint (.pptx/.ppt) hoặc Ảnh (kéo thả trực tiếp)")
         open_slide_btn.clicked.connect(self._on_open_slide_file)
         h_layout.addWidget(open_slide_btn)
 
@@ -3974,6 +4484,13 @@ class AirTeachMainWindow(QMainWindow):
         next_btn.clicked.connect(self._on_next_slide)
         h_layout.addWidget(next_btn)
 
+        self.cont_scroll_btn = QPushButton("[📄 Cuộn Dọc]")
+        self.cont_scroll_btn.setCheckable(True)
+        self.cont_scroll_btn.setChecked(False)
+        self.cont_scroll_btn.setToolTip("Bật/tắt chế độ cuộn liên tục cho tài liệu Word/PDF nhiều trang")
+        self.cont_scroll_btn.clicked.connect(self._on_toggle_continuous_scroll)
+        h_layout.addWidget(self.cont_scroll_btn)
+
         self.thumb_toggle_btn = QPushButton("[📑 Thu nhỏ]")
         self.thumb_toggle_btn.setCheckable(True)
         self.thumb_toggle_btn.setChecked(True)
@@ -3981,8 +4498,8 @@ class AirTeachMainWindow(QMainWindow):
         self.thumb_toggle_btn.clicked.connect(self._on_toggle_thumb_strip)
         h_layout.addWidget(self.thumb_toggle_btn)
 
-        export_pdf_btn = QPushButton("[💾 Xuất PDF]")
-        export_pdf_btn.setToolTip("Xuất toàn bộ Slide kèm nét vẽ & chú thích thành 1 file PDF cho học sinh")
+        export_pdf_btn = QPushButton("[💾 Xuất Bài Giảng (.PDF)]")
+        export_pdf_btn.setToolTip("Xuất Bài Giảng Đã Ghi Chú (.PDF) kèm toàn bộ nét vẽ cho học sinh")
         export_pdf_btn.clicked.connect(self._on_export_annotated_pdf)
         h_layout.addWidget(export_pdf_btn)
 
@@ -4344,18 +4861,18 @@ class AirTeachMainWindow(QMainWindow):
 
         for label, prompt_prefix, struct_json in [
             (
-                "[1. Giải & Chữa Bài Trên Bảng]",
-                "Hãy đọc toàn bộ chữ viết tay/công thức trên bảng, kiểm tra lỗi sai nếu có và giải chi tiết từng bước.",
+                "[1. Giải & Chữa Bài Trên Bảng (JSON)]",
+                "Hãy phân tích nội dung tài liệu/slide đang trình chiếu cùng chữ viết tay/công thức của giáo viên, kiểm tra lỗi sai nếu có, giải chi tiết từng bước và trả về JSON hành động viết/vẽ lời giải lên bảng.",
                 False,
             ),
             (
-                "[2. Tóm Tắt & Trắc Nghiệm (JSON)]",
-                "Hãy tóm tắt trọng tâm bài giảng trên bảng và tạo 3 câu hỏi trắc nghiệm 4 lựa chọn có đáp án giải thích.",
+                "[2. Tóm Tắt & Tạo Trắc Nghiệm]",
+                "Hãy tóm tắt trọng tâm trang tài liệu/slide đang hiển thị và tạo 3 câu hỏi trắc nghiệm 4 lựa chọn có đáp án giải thích.",
                 True,
             ),
             (
                 "[3. Hỏi Đáp Sư Phạm]",
-                "Hãy gợi ý phương pháp giảng dạy trực quan và ví dụ thực tế cho nội dung trên bảng.",
+                "Hãy gợi ý phương pháp giảng dạy trực quan và ví dụ thực tế cho nội dung trên trang tài liệu đang trình chiếu.",
                 False,
             ),
         ]:
@@ -4669,19 +5186,43 @@ class AirTeachMainWindow(QMainWindow):
 
         fsm_upd = self.canvas.apply_cv_fsm_packet(pkt)
         hud_key = fsm_upd.hud_mode.value
+        self.extrapolator.ingest_vision(pkt.get("cursor_norm"), t_sec=time.perf_counter())
 
-        # Slide air-navigation gestures (Swipe Next/Prev, Peace Sign Hold 800ms, Question Hold -> Slide AI)
+        # Slide & Document Air-Navigation (Horizontal Next/Prev, Vertical Word/PDF Scroll, AI Slide)
         nav_ev = pkt.get("nav_event")
+        scroll_delta = float(pkt.get("scroll_delta_norm") or 0.0)
         now_mono = time.monotonic()
         if nav_ev == "SLIDE_NEXT":
             self._on_next_slide()
+            self.canvas.show_gesture_toast("⏭ Slide Tiếp Theo")
             self._last_nav_badge = "NEXT SLIDE"
             self._last_nav_badge_until = now_mono + 1.2
         elif nav_ev == "SLIDE_PREV":
             self._on_prev_slide()
+            self.canvas.show_gesture_toast("⏮ Slide Trước")
             self._last_nav_badge = "PREV SLIDE"
             self._last_nav_badge_until = now_mono + 1.2
+        elif nav_ev == "SCROLL_DOWN":
+            if self.canvas.continuous_scroll_mode:
+                self.canvas.scroll_document(max(180.0, abs(scroll_delta) * max(400, self.canvas.height())))
+            else:
+                self._on_next_slide()
+            self.canvas.show_gesture_toast("↕ Cuộn Tài Liệu ↓")
+            self._last_nav_badge = "SCROLL DOWN"
+            self._last_nav_badge_until = now_mono + 1.0
+        elif nav_ev == "SCROLL_UP":
+            if self.canvas.continuous_scroll_mode:
+                self.canvas.scroll_document(-max(180.0, abs(scroll_delta) * max(400, self.canvas.height())))
+            else:
+                self._on_prev_slide()
+            self.canvas.show_gesture_toast("↕ Cuộn Tài Liệu ↑")
+            self._last_nav_badge = "SCROLL UP"
+            self._last_nav_badge_until = now_mono + 1.0
+        elif abs(scroll_delta) > 1e-3 and self.canvas.continuous_scroll_mode:
+            self.canvas.scroll_document(scroll_delta * max(360, self.canvas.height()))
+            self.canvas.show_gesture_toast("↕ Cuộn Tài Liệu", duration_ms=650.0)
         elif nav_ev == "ASK_SLIDE_AI":
+            self.canvas.show_gesture_toast("✨ AI Đang Giải Slide...", duration_ms=1400.0)
             self._last_nav_badge = "AI SLIDE"
             self._last_nav_badge_until = now_mono + 1.6
             self._on_explain_active_slide()
@@ -4770,10 +5311,26 @@ class AirTeachMainWindow(QMainWindow):
         w = 460 if self.right_dock.width() < 400 else 340
         self.right_dock.setFixedWidth(w)
 
+    def _on_60hz_cursor_tick(self) -> None:
+        if self._shutting_down or self.stack.currentIndex() != 1:
+            return
+        pt, extrap = self.extrapolator.sample_60hz(time.perf_counter())
+        if pt is not None and extrap:
+            self.canvas.apply_60hz_extrapolated_cursor(pt)
+
+    def _on_toggle_continuous_scroll(self) -> None:
+        enabled = not bool(self.canvas.continuous_scroll_mode)
+        self.canvas.set_continuous_scroll_mode(enabled)
+        if hasattr(self, "cont_scroll_btn"):
+            self.cont_scroll_btn.setChecked(enabled)
+        self.canvas.show_gesture_toast("📄 Cuộn Dọc: BẬT" if enabled else "📑 Từng Trang: BẬT", duration_ms=950.0)
+
     def _update_slide_counter(self) -> None:
         total = len(self.canvas.slides)
         idx = self.canvas.current_slide_idx + 1 if total > 0 else 0
-        self.slide_counter_lbl.setText(f"Slide {idx}/{total}")
+        self.slide_counter_lbl.setText(f"Trang {idx}/{total}" if self.canvas.continuous_scroll_mode else f"Slide {idx}/{total}")
+        if hasattr(self, "cont_scroll_btn"):
+            self.cont_scroll_btn.setChecked(bool(self.canvas.continuous_scroll_mode))
         if hasattr(self, "thumb_strip"):
             self.thumb_strip.rebuild(
                 self.canvas.slides,
@@ -4830,10 +5387,10 @@ class AirTeachMainWindow(QMainWindow):
     def _on_open_slide_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Nhập Bài Giảng (PDF / PowerPoint / Ảnh)",
+            "Mở Tài Liệu Giảng Dạy (Word / PDF / PowerPoint / Ảnh)",
             "",
-            "Bài giảng (*.pdf *.pptx *.ppt *.ppsx *.potx *.png *.jpg *.jpeg *.webp *.bmp);;"
-            "PDF (*.pdf);;PowerPoint (*.pptx *.ppt *.ppsx *.potx);;Images (*.png *.jpg *.jpeg *.webp *.bmp)",
+            "Tất cả Tài liệu (*.docx *.doc *.pdf *.pptx *.ppt *.ppsx *.potx *.png *.jpg *.jpeg *.webp *.bmp);;"
+            "Word (*.docx *.doc);;PDF (*.pdf);;PowerPoint (*.pptx *.ppt *.ppsx *.potx);;Images (*.png *.jpg *.jpeg *.webp *.bmp)",
         )
         if path:
             self._import_document_async(path)
@@ -4987,14 +5544,18 @@ class AirTeachMainWindow(QMainWindow):
             self.gemini_conn_status = ApiConnectionStatus.UNCONFIGURED
 
         if not self.api_key:
-            self.api_key_mask_lbl.setText("Key: Chưa cấu hình (nhập UI hoặc .env)")
-            self.api_status_badge.setText("Chưa cấu hình")
+            self.api_key_mask_lbl.setText("Key: Chưa cấu hình (Offline/Local AI vẫn hoạt động)")
+            self.api_status_badge.setText("Ngoại tuyến")
             self.api_status_badge.setStyleSheet(
                 f"background: {BORDER_SLATE}; color: {TEXT_LIGHT}; border-radius: 9px; padding: 2px 8px; font-size: 10px; font-weight: 700;"
             )
         else:
             src_label = "UI Settings" if self.api_key_state.source == "ui" else ".env / ENV"
-            self.api_key_mask_lbl.setText(f"Key: {mask_api_key(self.api_key)} • Nguồn: {src_label}")
+            key_pool = split_api_keys(self.api_key)
+            key_valid_syntax = any(len(k) >= 30 and k.startswith("AIza") for k in key_pool)
+            self.api_key_mask_lbl.setText(
+                f"Key ({len(key_pool)}): {mask_api_key(self.api_key)} • {src_label}"
+            )
             if self.gemini_conn_status == ApiConnectionStatus.CONNECTED:
                 self.api_status_badge.setText("Đã kết nối")
                 self.api_status_badge.setStyleSheet(
@@ -5005,8 +5566,13 @@ class AirTeachMainWindow(QMainWindow):
                 self.api_status_badge.setStyleSheet(
                     f"background: {ALERT_ROSE}; color: {TEXT_LIGHT}; border-radius: 9px; padding: 2px 8px; font-size: 10px; font-weight: 800;"
                 )
+            elif key_valid_syntax:
+                self.api_status_badge.setText("Sẵn sàng (Auto-Key)")
+                self.api_status_badge.setStyleSheet(
+                    f"background: {SECONDARY_TEAL}; color: {BG_DARK}; border-radius: 9px; padding: 2px 8px; font-size: 10px; font-weight: 800;"
+                )
             else:
-                self.api_status_badge.setText("Chưa xác thực")
+                self.api_status_badge.setText("Chờ xác thực")
                 self.api_status_badge.setStyleSheet(
                     f"background: {BORDER_SLATE}; color: {TEXT_LIGHT}; border-radius: 9px; padding: 2px 8px; font-size: 10px; font-weight: 700;"
                 )
@@ -5117,6 +5683,8 @@ class AirTeachMainWindow(QMainWindow):
         self._refresh_status_pill()
 
     def _on_discover_local_ai(self) -> None:
+        if self._shutting_down:
+            return
         if self.discovery_worker is not None and self.discovery_worker.isRunning():
             return
         self.discovery_worker = LocalDiscoveryWorker(self.local_ai_manager)
@@ -5124,7 +5692,7 @@ class AirTeachMainWindow(QMainWindow):
         self.discovery_worker.start()
 
     def _on_local_discovered(self, servers: List[DiscoveredLocalServer]) -> None:
-        if not hasattr(self, "local_model_combo"):
+        if self._shutting_down or not hasattr(self, "local_model_combo"):
             return
         self.local_model_combo.blockSignals(True)
         self.local_model_combo.clear()
@@ -5217,13 +5785,26 @@ class AirTeachMainWindow(QMainWindow):
     def _analyze_full_board(self, prompt: str, structured_json: bool = False) -> None:
         self.right_dock.setVisible(True)
         self._active_lasso_action = None
-        png_bytes, cropped_pm = self.canvas.export_board_png(None, enhance_crop=True)
-        self.crop_preview_lbl.setVisible(True)
-        self.crop_preview_lbl.setPixmap(
-            cropped_pm.scaled(300, 86, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        ctx = self.canvas.capture_active_slide_context()
+        png_bytes = ctx.get("png_bytes")
+        cropped_pm = ctx.get("pixmap")
+        if isinstance(cropped_pm, QPixmap) and not cropped_pm.isNull():
+            self.crop_preview_lbl.setVisible(True)
+            self.crop_preview_lbl.setPixmap(
+                cropped_pm.scaled(300, 86, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        slide_txt = str(ctx.get("slide_text") or "")[:2800]
+        header_info = (
+            f"Trang {int(ctx.get('slide_index', 0)) + 1}/{int(ctx.get('slide_count', 1))}: "
+            f"{ctx.get('slide_title', '')}"
         )
-        self._set_sanitized_ai_html(f"Đang phân tích toàn bảng...")
-        self._start_hybrid_worker(prompt, png_bytes=png_bytes, structured_json=structured_json)
+        full_prompt = prompt
+        if slide_txt:
+            full_prompt = (
+                f"{prompt}\n\nNgữ cảnh tài liệu đang mở ({header_info}):\n\"\"\"\n{slide_txt}\n\"\"\""
+            )
+        self._set_sanitized_ai_html(f"✨ Đang phân tích **{header_info}** bằng AI...")
+        self._start_hybrid_worker(full_prompt, png_bytes=png_bytes, structured_json=structured_json)
 
     def _start_hybrid_worker(
         self,
@@ -5345,11 +5926,13 @@ class AirTeachMainWindow(QMainWindow):
         if self._shutting_down:
             return
         self._shutting_down = True
-        if hasattr(self, "ui_timer"):
-            try:
-                self.ui_timer.stop()
-            except Exception as exc:
-                _LOGGER.warning("ui_timer stop error: %s", exc)
+        for timer_attr in ("ui_timer", "cursor_60hz_timer", "_discovery_timer", "_onboarding_timer"):
+            tmr = getattr(self, timer_attr, None)
+            if tmr is not None:
+                try:
+                    tmr.stop()
+                except Exception as exc:
+                    _LOGGER.warning("%s stop error: %s", timer_attr, exc)
         self._stop_audio_stream()
         try:
             self.cam_worker.release_camera_hardware()

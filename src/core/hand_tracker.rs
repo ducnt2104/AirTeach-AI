@@ -131,7 +131,7 @@ impl HandLandmarks {
     /// - Rule 2: `bounding_box_area > 0.008` (supports normal & distant hands via ROI Zoom Crop)
     /// - Rule 3: Palm center (`LM 9`) must not coincide with the detected Face Center
     pub fn is_anatomically_valid(&self, face_bbox: Option<[f32; 4]>) -> bool {
-        self.is_anatomically_valid_with_threshold(face_bbox, 0.50)
+        self.is_anatomically_valid_with_threshold(face_bbox, 0.35)
     }
 
     pub fn is_anatomically_valid_with_threshold(
@@ -139,7 +139,7 @@ impl HandLandmarks {
         face_bbox: Option<[f32; 4]>,
         min_conf: f32,
     ) -> bool {
-        if self.confidence < min_conf.clamp(0.40, 0.85) {
+        if self.confidence < min_conf.clamp(0.28, 0.85) {
             return false;
         }
 
@@ -154,7 +154,7 @@ impl HandLandmarks {
             max_y = max_y.max(lm.y);
         }
         let bounding_box_area = (max_x - min_x).max(0.0) * (max_y - min_y).max(0.0);
-        if bounding_box_area <= 0.008 {
+        if bounding_box_area <= 0.001 {
             return false;
         }
 

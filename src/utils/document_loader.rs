@@ -79,7 +79,9 @@ impl DocumentLoader {
         ]
     }
 
-    /// Load a PDF document (via `pdfium-render` or pure-Rust fallback) or an image file into `SlidePage`s.
+    /// Load PDF / PPTX / PPT / DOCX / DOC or image files into real pixel-rendered `SlidePage`s.
+    /// Zero fake text placeholders: uses `pdfium-render` for native PDF or invokes
+    /// `python -m cv_engine.document_presenter --rasterize` (PyMuPDF + Story + python-pptx + Office COM).
     pub fn load_slides_from_path(path: &Path) -> Result<Vec<SlidePage>, String> {
         let ext = path
             .extension()
@@ -87,10 +89,12 @@ impl DocumentLoader {
             .unwrap_or("")
             .to_ascii_lowercase();
 
-        if ext == "pdf" {
-            Self::load_pdf_slides(path)
-        } else {
-            Self::load_image_slide(path)
+        match ext.as_str() {
+            "pdf" => Self::load_pdf_slides(path),
+            "pptx" | "ppt" | "ppsx" | "potx" | "docx" | "doc" => {
+                Self::load_via_document_presenter_cli(path)
+            }
+            _ => Self::load_image_slide(path),
         }
     }
 
@@ -109,8 +113,8 @@ impl DocumentLoader {
             if let Ok(doc) = pdfium.load_pdf_from_file(path, None) {
                 let mut pages = Vec::new();
                 let render_cfg = PdfRenderConfig::new()
-                    .set_target_width(1280)
-                    .set_maximum_height(720);
+                    .set_target_width(1920)
+                    .set_maximum_height(1440);
 
                 for (idx, page) in doc.pages().iter().enumerate() {
                     if let Ok(bitmap) = page.render_with_config(&render_cfg) {
@@ -137,26 +141,136 @@ impl DocumentLoader {
             };
         }
 
-        // 2. Zero-Dependency Pure-Rust PDF Page Inspector Fallback (when pdfium.dll is not bundled externally)
-        let raw_bytes = std::fs::read(path).map_err(|e| format!("Failed to read PDF: {e}"))?;
-        let lossy = String::from_utf8_lossy(&raw_bytes);
-        let page_count = lossy.matches("/Type /Page").count().max(1).min(20);
+        // 2. High-DPI PyMuPDF Rasterizer via `cv_engine.document_presenter` (zero placeholder cards)
+        Self::load_via_document_presenter_cli(path)
+    }
 
-        let mut slides = Vec::with_capacity(page_count);
-        for idx in 0..page_count {
-            slides.push(Self::build_procedural_slide(
-                &format!("{} — Page {} / {}", file_name, idx + 1, page_count),
-                "Loaded via AirTeach Embedded PDF Reader (Zero-Dependency Mode)",
-                "PDF",
-                "",
-                false,
-                vec![
-                    format!("Source File: {}", path.display()),
-                    "Ready for dual-hand vector ink annotation, shape snapping, and LaTeX OCR.".to_string(),
-                ],
-                r"\text{PDF Slide Layer Active}",
-                [22, 30, 46],
+    fn load_via_document_presenter_cli(path: &Path) -> Result<Vec<SlidePage>, String> {
+        use std::process::Command;
+
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let out_dir = std::env::temp_dir().join(format!("airteach_doc_ras_{ts}"));
+        let _ = std::fs::create_dir_all(&out_dir);
+
+        let mut last_err = String::new();
+        let mut ran_ok = false;
+        let candidates: &[(&str, &[&str])] = if cfg!(windows) {
+            &[("python", &[]), ("py", &["-3"]), ("python3", &[])]
+        } else {
+            &[("python3", &[]), ("python", &[])]
+        };
+
+        for (exe, prefix_args) in candidates {
+            let mut cmd = Command::new(exe);
+            for a in *prefix_args {
+                cmd.arg(a);
+            }
+            cmd.arg("-m")
+                .arg("cv_engine.document_presenter")
+                .arg("--rasterize")
+                .arg(path)
+                .arg(&out_dir);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000);
+            }
+            match cmd.output() {
+                Ok(output) if output.status.success() => {
+                    ran_ok = true;
+                    break;
+                }
+                Ok(output) => {
+                    last_err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                }
+            }
+        }
+
+        if !ran_ok {
+            let _ = std::fs::remove_dir_all(&out_dir);
+            return Err(format!(
+                "Không thể render tài liệu '{}': {last_err}",
+                path.display()
             ));
+        }
+
+        let manifest_path = out_dir.join("manifest.json");
+        let manifest_raw = match std::fs::read_to_string(&manifest_path) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&out_dir);
+                return Err(format!("Thiếu manifest render tài liệu: {e}"));
+            }
+        };
+        let manifest: serde_json::Value = match serde_json::from_str(&manifest_raw) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&out_dir);
+                return Err(format!("Manifest render không hợp lệ: {e}"));
+            }
+        };
+
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Document");
+        let doc_type = manifest
+            .get("doc_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("DOC")
+            .to_string();
+        let backend = manifest
+            .get("backend")
+            .and_then(|v| v.as_str())
+            .unwrap_or("PYMUPDF");
+
+        let mut slides = Vec::new();
+        if let Some(pages_arr) = manifest.get("pages").and_then(|v| v.as_array()) {
+            let total = pages_arr.len().max(1);
+            for (idx, p_val) in pages_arr.iter().enumerate() {
+                let img_name = match p_val.get("image_file").and_then(|v| v.as_str()) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let img_path = out_dir.join(img_name);
+                if let Ok(dyn_img) = image::open(&img_path) {
+                    let rgba = dyn_img.to_rgba8();
+                    let (w, h) = (rgba.width(), rgba.height());
+                    let page_text = p_val
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let bullets = if page_text.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![page_text]
+                    };
+                    slides.push(SlidePage {
+                        title: format!("{file_name} — Trang {}/{total}", idx + 1),
+                        subtitle: format!("Backend: {backend}"),
+                        subject_tag: doc_type.clone(),
+                        author: String::new(),
+                        is_tutorial: false,
+                        bullet_points: bullets,
+                        key_formula: String::new(),
+                        width: w,
+                        height: h,
+                        rgba_bytes: rgba.into_raw(),
+                    });
+                }
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&out_dir);
+        if slides.is_empty() {
+            return Err(format!("Tài liệu '{}' không có trang hiển thị hợp lệ.", path.display()));
         }
         Ok(slides)
     }

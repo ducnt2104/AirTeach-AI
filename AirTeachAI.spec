@@ -40,6 +40,7 @@ hiddenimports = [
     "PySide6.QtSvgWidgets",
     "pymupdf",
     "fitz",
+    "docx",
     "pptx",
     "google.genai",
     "matplotlib",

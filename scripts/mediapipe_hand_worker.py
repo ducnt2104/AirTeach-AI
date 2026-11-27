@@ -159,14 +159,14 @@ def enhance_adaptive_lighting_rgb(rgb_frame: np.ndarray) -> tuple:
 
 
 def validate_real_hand(lm_list, score: float, face_boxes) -> bool:
-    if score < 0.45 or len(lm_list) < 21:
+    if score < 0.30 or len(lm_list) < 21:
         return False
 
     xs = [p[0] for p in lm_list]
     ys = [p[1] for p in lm_list]
     bbox_w = max(xs) - min(xs)
     bbox_h = max(ys) - min(ys)
-    if (bbox_w * bbox_h) <= 0.008:
+    if (bbox_w * bbox_h) <= 0.001:
         return False
 
     px, py = lm_list[9][0], lm_list[9][1]
