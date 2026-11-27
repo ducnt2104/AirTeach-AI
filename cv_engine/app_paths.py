@@ -17,6 +17,7 @@ from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import sys
+import threading
 from typing import Union
 
 
@@ -79,8 +80,8 @@ def get_config_file_path() -> Path:
         if legacy.exists():
             try:
                 cfg_path.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
-            except OSError:
-                pass
+            except OSError as exc:
+                logging.getLogger("airteach.paths").warning("Failed migrating legacy api_settings.json: %s", exc)
     return cfg_path
 
 
@@ -90,6 +91,7 @@ def setup_app_logging() -> Path:
     root_logger = logging.getLogger("airteach")
     if not root_logger.handlers:
         root_logger.setLevel(logging.INFO)
+        root_logger.propagate = False
         try:
             handler = RotatingFileHandler(
                 str(log_path),
@@ -101,9 +103,53 @@ def setup_app_logging() -> Path:
                 logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
             )
             root_logger.addHandler(handler)
-        except OSError:
-            pass
+        except OSError as exc:
+            sys.stderr.write(f"[AirTeachAI] Cannot open log file {log_path}: {exc}\n")
     return log_path
+
+
+def get_app_logger(module_name: str = "airteach") -> logging.Logger:
+    """Return a child logger under `airteach` writing to `%APPDATA%/AirTeachAI/logs/app.log`."""
+    setup_app_logging()
+    if module_name == "airteach" or module_name.startswith("airteach."):
+        return logging.getLogger(module_name)
+    return logging.getLogger(f"airteach.{module_name}")
+
+
+def get_local_cache_db_path() -> Path:
+    """Return `%APPDATA%/AirTeachAI/local_ai_cache.sqlite` (writable even when installed to Program Files)."""
+    return get_user_data_dir() / "local_ai_cache.sqlite"
+
+
+def get_doc_cache_dir() -> Path:
+    """Return `%APPDATA%/AirTeachAI/doc_cache` for SHA-256 cached converted PDF/PPTX decks."""
+    cache_dir = get_user_data_dir() / "doc_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def install_global_excepthook() -> None:
+    """Route unhandled main-thread and worker-thread exceptions to `%APPDATA%/AirTeachAI/logs/app.log`."""
+    logger = get_app_logger("runtime")
+
+    def _sys_hook(exc_type, exc_value, exc_tb) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        logger.critical("Unhandled exception", exc_info=(exc_type, exc_value, exc_tb))
+
+    def _thread_hook(args: threading.ExceptHookArgs) -> None:  # type: ignore[name-defined]
+        if args.exc_type is SystemExit:
+            return
+        logger.critical(
+            "Unhandled thread exception in %s",
+            getattr(args.thread, "name", "unknown"),
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = _sys_hook
+    if hasattr(threading, "excepthook"):
+        threading.excepthook = _thread_hook
 
 
 def set_windows_app_user_model_id(app_id: str = APP_USER_MODEL_ID) -> bool:
@@ -115,5 +161,22 @@ def set_windows_app_user_model_id(app_id: str = APP_USER_MODEL_ID) -> bool:
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
         return True
-    except Exception:
+    except Exception as exc:
+        get_app_logger("app_paths").warning("SetCurrentProcessExplicitAppUserModelID failed: %s", exc)
         return False
+
+
+def ensure_concurrent_futures_eager() -> None:
+    """
+    Python 3.15 (PEP 810) defines `lazy from .thread import ThreadPoolExecutor` in
+    `concurrent/futures/__init__.py`, which can leak an uncallable `lazy_import` proxy into
+    MediaPipe's `serial_dispatcher.SerialDispatcher` (`TypeError: 'lazy_import' object is not callable`).
+    Binding the real classes directly onto `concurrent.futures` before `create_from_options()` guarantees
+    HandLandmarker / FaceDetector / PoseLandmarker never fail silently on Python 3.15+.
+    """
+    import concurrent.futures
+    from concurrent.futures.process import ProcessPoolExecutor as _RealProcessPoolExecutor
+    from concurrent.futures.thread import ThreadPoolExecutor as _RealThreadPoolExecutor
+
+    concurrent.futures.ThreadPoolExecutor = _RealThreadPoolExecutor
+    concurrent.futures.ProcessPoolExecutor = _RealProcessPoolExecutor

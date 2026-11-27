@@ -211,6 +211,7 @@ class ZeroStrayStrokeDrawingFsm:
         grace_period_ms: float = DRAWING_GRACE_PERIOD_MS,
         max_jump_distance: float = MAX_JUMP_DISTANCE_PX,
         interp_step_px: float = INTERP_STEP_PX,
+        allow_index_point_draw: bool = False,
     ) -> None:
         self.pinch_enter = float(pinch_enter)
         self.pinch_exit = float(pinch_exit)
@@ -222,11 +223,13 @@ class ZeroStrayStrokeDrawingFsm:
         self.grace_period_ms = max(120.0, min(200.0, float(grace_period_ms)))
         self.max_jump_distance = max(60.0, float(max_jump_distance))
         self.interp_step_px = max(3.0, float(interp_step_px))
+        self.allow_index_point_draw = bool(allow_index_point_draw)
 
         self.hud_mode: DrawingHudMode = DrawingHudMode.HOVER
         self.buffer = StrokeRingBuffer()
 
         self._pinch_hold_count: int = 0
+        self._draw_trigger_source: str = ""  # "PINCH" | "INDEX"
         self._locked_until_ms: float = -1e9
         self._last_commit_ms: float = -1e9
         self._last_undo_ms: float = -1e9
@@ -238,11 +241,14 @@ class ZeroStrayStrokeDrawingFsm:
         self._undo_since_ms: Optional[float] = None
         self._undo_fired_for_hold: bool = False
         self._eraser_suppress_until_ms: float = -1e9
+        self._fist_scrub_prev_xy: Optional[Tuple[float, float]] = None
+        self._fist_scrub_frames: int = 0
 
     def reset(self) -> None:
         self.hud_mode = DrawingHudMode.HOVER
         self.buffer.clear()
         self._pinch_hold_count = 0
+        self._draw_trigger_source = ""
         self._locked_until_ms = -1e9
         self._last_commit_ms = -1e9
         self._last_undo_ms = -1e9
@@ -253,6 +259,8 @@ class ZeroStrayStrokeDrawingFsm:
         self._undo_since_ms = None
         self._undo_fired_for_hold = False
         self._eraser_suppress_until_ms = -1e9
+        self._fist_scrub_prev_xy = None
+        self._fist_scrub_frames = 0
 
     def _append_with_interpolation(self, x: float, y: float, t_ms: float) -> Tuple[bool, bool]:
         """
@@ -296,9 +304,45 @@ class ZeroStrayStrokeDrawingFsm:
         left_pan_active: bool = False,
         esc_pressed: bool = False,
         undo_requested: bool = False,
+        suppress_drawing: bool = False,
     ) -> DrawingFsmUpdate:
         was_drawing = self.hud_mode == DrawingHudMode.DRAWING
         recently_committed = (t_ms - self._last_commit_ms) <= POST_COMMIT_CANCEL_WINDOW_MS
+
+        # ------------------------------------------------------------------
+        # 0. Two-Hand Gesture Override (Zoom/Pan suppresses single-hand ink)
+        # ------------------------------------------------------------------
+        if suppress_drawing:
+            self._pinch_hold_count = 0
+            self._cancel_candidate = ""
+            self._cancel_since_ms = None
+            if was_drawing:
+                committed = self.buffer.trim_and_extract(self.tail_trim_ms)
+                self._draw_trigger_source = ""
+                self.hud_mode = DrawingHudMode.PAN_ERASE
+                if len(committed) >= 2:
+                    self._last_commit_ms = t_ms
+                    return DrawingFsmUpdate(
+                        hud_mode=self.hud_mode,
+                        action="COMMIT_STROKE",
+                        cursor_xy=cursor_xy,
+                        committed_points=committed,
+                        pinch_ratio=pinch_ratio,
+                    )
+                return DrawingFsmUpdate(
+                    hud_mode=self.hud_mode,
+                    action="CANCEL_STROKE",
+                    cursor_xy=cursor_xy,
+                    cancel_reason="TWO_HAND",
+                    pinch_ratio=pinch_ratio,
+                )
+            self.hud_mode = DrawingHudMode.PAN_ERASE
+            return DrawingFsmUpdate(
+                hud_mode=self.hud_mode,
+                action="PAN",
+                cursor_xy=cursor_xy,
+                pinch_ratio=pinch_ratio,
+            )
 
         # ------------------------------------------------------------------
         # 1. Explicit Keyboard Escape -> Instant Cancel + 300ms Pen Lock
@@ -464,16 +508,28 @@ class ZeroStrayStrokeDrawingFsm:
                     )
                 should_release = True
             else:
-                should_release = (
-                    pinch_ratio is not None
-                    and pinch_ratio > self.pinch_exit
-                    and not self._cancel_candidate
-                )
+                if self._draw_trigger_source == "INDEX":
+                    is_pinch_keep = pinch_ratio is not None and pinch_ratio < self.pinch_enter
+                    should_release = (
+                        pose_tag not in ("INDEX", "PINCH")
+                        and not is_pinch_keep
+                        and not self._cancel_candidate
+                    )
+                    if is_pinch_keep:
+                        self._draw_trigger_source = "PINCH"
+                else:
+                    should_release = (
+                        pinch_ratio is not None
+                        and pinch_ratio > self.pinch_exit
+                        and not (self.allow_index_point_draw and pose_tag == "INDEX")
+                        and not self._cancel_candidate
+                    )
 
             if should_release:
                 self._in_grace_dropout = False
                 committed = self.buffer.trim_and_extract(self.tail_trim_ms)
                 self._pinch_hold_count = 0
+                self._draw_trigger_source = ""
                 self.hud_mode = DrawingHudMode.HOVER
                 if len(committed) >= 2:
                     self._last_commit_ms = t_ms
@@ -496,7 +552,7 @@ class ZeroStrayStrokeDrawingFsm:
                     cancel_hold_progress=cancel_progress,
                 )
 
-            # Still pinching (`pinch_ratio <= 0.40`): bridge gap / interpolate fast motion unless cancelling
+            # Still pinching (`pinch_ratio <= 0.40`) or index pointing: bridge gap / interpolate fast motion unless cancelling
             self._last_drawing_seen_ms = t_ms
             bridged = False
             if self._cancel_candidate == "" and cursor_xy is not None:
@@ -509,6 +565,7 @@ class ZeroStrayStrokeDrawingFsm:
                     self._in_grace_dropout = False
                     committed = self.buffer.trim_and_extract(self.tail_trim_ms)
                     self._pinch_hold_count = 0
+                    self._draw_trigger_source = ""
                     self.hud_mode = DrawingHudMode.HOVER
                     if len(committed) >= 2:
                         self._last_commit_ms = t_ms
@@ -544,16 +601,17 @@ class ZeroStrayStrokeDrawingFsm:
             )
 
         # Currently NOT drawing (`HOVER` or `PAN_ERASE`):
-        if (
-            hand_present
-            and cursor_xy is not None
-            and pinch_ratio is not None
+        pinch_draw_intent = (
+            pinch_ratio is not None
             and pinch_ratio < self.pinch_enter
             and pose_tag not in ("OPEN_PALM", "FIST", "THREE_FINGERS")
-        ):
+        )
+        index_draw_intent = self.allow_index_point_draw and pose_tag == "INDEX"
+        if hand_present and cursor_xy is not None and (pinch_draw_intent or index_draw_intent):
             self._pinch_hold_count += 1
             if self._pinch_hold_count >= self.pinch_enter_frames:
                 self._pinch_hold_count = 0
+                self._draw_trigger_source = "PINCH" if pinch_draw_intent else "INDEX"
                 self._in_grace_dropout = False
                 self._last_drawing_seen_ms = t_ms
                 self.hud_mode = DrawingHudMode.DRAWING
@@ -570,8 +628,10 @@ class ZeroStrayStrokeDrawingFsm:
         else:
             self._pinch_hold_count = 0
 
-        # Pan or Idle-Palm Erase Mode
+        # Pan or Idle-Palm / Fist-Scrub Erase Mode
         if hand_present and pose_tag == "OPEN_PALM" and not can_trigger_cancel and t_ms >= self._eraser_suppress_until_ms:
+            self._fist_scrub_prev_xy = None
+            self._fist_scrub_frames = 0
             self.hud_mode = DrawingHudMode.PAN_ERASE
             return DrawingFsmUpdate(
                 hud_mode=self.hud_mode,
@@ -581,6 +641,31 @@ class ZeroStrayStrokeDrawingFsm:
                 pinch_ratio=pinch_ratio,
                 cancel_hold_progress=cancel_progress,
             )
+
+        if hand_present and pose_tag == "FIST" and not can_trigger_cancel and cursor_xy is not None and t_ms >= self._eraser_suppress_until_ms:
+            if self._fist_scrub_prev_xy is not None:
+                step_dist = ((cursor_xy[0] - self._fist_scrub_prev_xy[0]) ** 2 + (cursor_xy[1] - self._fist_scrub_prev_xy[1]) ** 2) ** 0.5
+                if step_dist >= 14.0:
+                    self._fist_scrub_frames += 1
+                    self._fist_scrub_prev_xy = cursor_xy
+                elif step_dist >= 4.0 and self._fist_scrub_frames >= 2:
+                    self._fist_scrub_prev_xy = cursor_xy
+            else:
+                self._fist_scrub_prev_xy = cursor_xy
+                self._fist_scrub_frames = 0
+            if self._fist_scrub_frames >= 2:
+                self.hud_mode = DrawingHudMode.PAN_ERASE
+                return DrawingFsmUpdate(
+                    hud_mode=self.hud_mode,
+                    action="ERASE",
+                    cursor_xy=cursor_xy,
+                    undo_cooldown_remaining_ms=undo_rem,
+                    pinch_ratio=pinch_ratio,
+                    cancel_hold_progress=cancel_progress,
+                )
+        else:
+            self._fist_scrub_prev_xy = None
+            self._fist_scrub_frames = 0
 
         if left_pan_active:
             self.hud_mode = DrawingHudMode.PAN_ERASE

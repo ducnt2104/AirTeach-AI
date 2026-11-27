@@ -239,7 +239,8 @@ def run_self_test() -> int:
 
 def run_ipc_loop() -> None:
     import time
-    from cv_engine.app_paths import resource_path
+    from cv_engine.app_paths import get_app_logger, resource_path
+    from cv_engine.hand_gesture import DualHandGestureCoordinator
     from cv_engine.performance_pipeline import (
         AutoProfileController,
         PerformanceProfile,
@@ -249,6 +250,7 @@ def run_ipc_loop() -> None:
     from cv_engine.subject_tracker import PoseTorsoEstimator, PrimaryTeacherLockTracker
     from cv_engine.vision_config import load_vision_config
 
+    logger = get_app_logger("sidecar_worker")
     vision_cfg = load_vision_config()
     models_dir = resource_path("models")
     profile_ctrl = AutoProfileController(
@@ -257,9 +259,11 @@ def run_ipc_loop() -> None:
         downgrade_threshold_ms=45.0,
     )
     scheduler = StaggeredInferenceScheduler()
+    dual_coord = DualHandGestureCoordinator()
 
     hand_engine = HandGestureEngine(
         model_path=models_dir / "hand_landmarker.task",
+        num_hands=vision_cfg.hand_tracking.num_hands,
         min_detection_confidence=vision_cfg.hand_tracking.min_detection_confidence,
         min_presence_confidence=vision_cfg.hand_tracking.min_presence_confidence,
         min_tracking_confidence=vision_cfg.hand_tracking.min_tracking_confidence,
@@ -277,11 +281,12 @@ def run_ipc_loop() -> None:
         one_euro_beta=vision_cfg.gesture_3d.one_euro_beta,
     )
     if hand_engine.tasks_detector is None:
+        logger.error("Sidecar HandGestureEngine failed to initialize: %s", hand_engine.init_error)
         sys.exit(1)
 
     face_engine = ArcFace512Extractor(
         models_dir=models_dir,
-        min_detection_confidence=0.55,
+        min_detection_confidence=0.45,
     )
     exposure_ctrl = AdaptiveExposureController(
         check_interval_n=vision_cfg.preprocessing.exposure_check_interval_n,
@@ -304,6 +309,7 @@ def run_ipc_loop() -> None:
         match_iou_min=vision_cfg.subject_tracker.teacher_match_iou_min,
         face_sim_threshold=vision_cfg.subject_tracker.teacher_face_sim_threshold,
         wrist_gate_radius_scale=vision_cfg.subject_tracker.wrist_gate_radius_scale,
+        enabled=vision_cfg.subject_tracker.teacher_lock_enabled,
     )
 
     stdin_buf = sys.stdin.buffer
@@ -344,11 +350,12 @@ def run_ipc_loop() -> None:
             preset = profile_ctrl.preset
             exposure_ctrl.check_interval_n = preset.exposure_interval_n
 
-            rgb_orig = np.frombuffer(raw, dtype=np.uint8).reshape((int(h), int(w), 3))
+            rgb_orig = np.ascontiguousarray(
+                np.frombuffer(raw, dtype=np.uint8).reshape((int(h), int(w), 3))
+            )
             if preset.enable_full_frame_clahe:
                 rgb_work, diag = exposure_ctrl.process(rgb_orig, is_rgb=True, enabled=True)
             else:
-                # Zero-copy bypass for full-frame; ROI-only sharpening runs on cropped hand ROI
                 rgb_work = rgb_orig
                 diag = ExposureDiagnostics(
                     mean_luma=128.0,
@@ -404,6 +411,7 @@ def run_ipc_loop() -> None:
                 roi_target_size=preset.roi_size,
                 enable_roi_sharpen=preset.enable_roi_sharpen,
             )
+            dual_state = dual_coord.update(left_out, right_out, t_sec=now_mono)
 
             cv_latency_ms = round((time.perf_counter() - t_start) * 1000.0, 2)
             active_prof = profile_ctrl.record_inference_ms(cv_latency_ms)
@@ -411,6 +419,15 @@ def run_ipc_loop() -> None:
             resp = {
                 "left": left_out,
                 "right": right_out,
+                "raw_hands": hand_engine.last_raw_hands,
+                "dual_hand": {
+                    "primary_side": dual_state.primary_side,
+                    "mode": dual_state.two_hand_mode,
+                    "zoom_factor": dual_state.zoom_factor,
+                    "pan_delta_norm": list(dual_state.pan_delta_norm),
+                    "offhand_command": dual_state.offhand_command,
+                    "status_label_vi": dual_state.status_label_vi,
+                },
                 "face": subj_snap.locked_face_bbox or cached_face_info["face"],
                 "face_eyes": cached_face_info["face_eyes"],
                 "face_5pt": cached_face_info["face_5pt"],
@@ -426,6 +443,8 @@ def run_ipc_loop() -> None:
             line = (json.dumps(resp, separators=(",", ":")) + "\n").encode("utf-8")
             stdout_buf.write(line)
             stdout_buf.flush()
+        except Exception as exc:
+            logger.exception("Sidecar IPC frame processing error: %s", exc)
         finally:
             hand_engine.frame_skip_lock.release()
 

@@ -35,20 +35,28 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from cv_engine.app_paths import get_app_logger, get_config_file_path, resource_path
+
+_LOGGER = get_app_logger("gemini_client")
+
 try:
     from google import genai
     from google.genai import types as genai_types
 
     HAS_GENAI_SDK = True
-except Exception:
+except Exception as exc:
+    _LOGGER.warning("google-genai SDK import failed: %s", exc)
     genai = None  # type: ignore[assignment]
     genai_types = None  # type: ignore[assignment]
     HAS_GENAI_SDK = False
 
-from cv_engine.app_paths import get_config_file_path, resource_path
-
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
-DEFAULT_FALLBACK_MODELS: Tuple[str, ...] = ("gemini-3.5-flash", "gemini-3.5-flash-lite")
+DEFAULT_FALLBACK_MODELS: Tuple[str, ...] = (
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
 EXPONENTIAL_BACKOFF_DELAYS_SEC: Tuple[float, ...] = (1.0, 2.0, 4.0)
 MAX_VISION_IMAGE_DIM = 1024
 PLACEHOLDER_KEYS = {"", "your_gemini_api_key_here", "YOUR_GEMINI_API_KEY"}
@@ -77,6 +85,10 @@ class ResolvedApiKey:
     ui_key_present: bool
     env_key_present: bool
 
+    @property
+    def api_key(self) -> str:
+        return self.key
+
 
 @dataclass
 class GeminiHealthCheckResult:
@@ -85,6 +97,10 @@ class GeminiHealthCheckResult:
     message_vi: str
     latency_ms: float = 0.0
     http_status: Optional[int] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == ApiConnectionStatus.CONNECTED
 
 
 @dataclass
@@ -144,8 +160,8 @@ def load_ui_api_settings(settings_path: Path = DEFAULT_SETTINGS_PATH) -> Dict[st
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             return {str(k): str(v) for k, v in data.items() if v is not None}
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOGGER.warning("Cannot read UI settings from %s: %s", settings_path, exc)
     return {}
 
 
@@ -153,6 +169,7 @@ def save_ui_api_settings(
     ui_api_key: Optional[str] = None,
     preferred_model: Optional[str] = None,
     settings_path: Path = DEFAULT_SETTINGS_PATH,
+    onboarding_skipped: Optional[bool] = None,
 ) -> Dict[str, str]:
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     data = load_ui_api_settings(settings_path)
@@ -168,12 +185,52 @@ def save_ui_api_settings(
             data["gemini_model_id"] = m
         else:
             data.pop("gemini_model_id", None)
+    if onboarding_skipped is not None:
+        data["onboarding_skipped"] = "true" if onboarding_skipped else "false"
     settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return data
 
 
 def clear_ui_api_key(settings_path: Path = DEFAULT_SETTINGS_PATH) -> None:
     save_ui_api_settings(ui_api_key="", settings_path=settings_path)
+
+
+def split_api_keys(raw: str) -> List[str]:
+    """Split comma/semicolon/newline-separated Gemini API keys into a deduplicated ordered list."""
+    out: List[str] = []
+    for part in re.split(r"[\s,;]+", raw or ""):
+        cleaned = _clean_env_value(part)
+        if cleaned and cleaned not in out:
+            out.append(cleaned)
+    return out
+
+
+def resolve_api_key_pool(
+    ui_key_override: Optional[str] = None,
+    settings_path: Path = DEFAULT_SETTINGS_PATH,
+    env_path: Optional[Path] = None,
+) -> List[str]:
+    """
+    Resolve all configured Gemini API keys in priority order (UI keys first, then `.env`/OS env)
+    for automatic rotation on HTTP 429/quota exhaustion or invalid secondary keys.
+    """
+    ui_settings = load_ui_api_settings(settings_path)
+    dotenv = read_dotenv_values(env_path)
+    candidates: List[str] = []
+    raw_sources = (
+        ui_key_override if ui_key_override is not None else ui_settings.get("ui_gemini_api_key", ""),
+        os.environ.get("GEMINI_API_KEYS", ""),
+        os.environ.get("GEMINI_API_KEY", ""),
+        os.environ.get("GOOGLE_API_KEY", ""),
+        dotenv.get("GEMINI_API_KEYS", ""),
+        dotenv.get("GEMINI_API_KEY", ""),
+        dotenv.get("GOOGLE_API_KEY", ""),
+    )
+    for raw in raw_sources:
+        for k in split_api_keys(raw):
+            if k not in candidates:
+                candidates.append(k)
+    return candidates
 
 
 def resolve_api_key_layered(
@@ -187,18 +244,22 @@ def resolve_api_key_layered(
     (2) `GEMINI_API_KEY` / `GOOGLE_API_KEY` from OS environment or `.env`
     """
     ui_settings = load_ui_api_settings(settings_path)
-    ui_key = _clean_env_value(
+    ui_keys = split_api_keys(
         ui_key_override if ui_key_override is not None else ui_settings.get("ui_gemini_api_key", "")
     )
+    ui_key = ui_keys[0] if ui_keys else ""
 
     dotenv = read_dotenv_values(env_path)
-    env_key = _clean_env_value(
-        os.environ.get("GEMINI_API_KEY")
+    env_keys = split_api_keys(
+        os.environ.get("GEMINI_API_KEYS")
+        or os.environ.get("GEMINI_API_KEY")
         or os.environ.get("GOOGLE_API_KEY")
+        or dotenv.get("GEMINI_API_KEYS")
         or dotenv.get("GEMINI_API_KEY")
         or dotenv.get("GOOGLE_API_KEY")
         or ""
     )
+    env_key = env_keys[0] if env_keys else ""
 
     if ui_key:
         return ResolvedApiKey(
@@ -390,6 +451,18 @@ class ResilientGeminiClient:
     ) -> None:
         self._client_factory = client_factory or self._default_client_factory
         self._sleep = sleep_fn or time.sleep
+        self._key_cooldowns: Dict[str, float] = {}
+
+    def _ordered_healthy_keys(self, api_keys: Sequence[str] | str) -> List[str]:
+        raw_list = split_api_keys(api_keys) if isinstance(api_keys, str) else [k.strip() for k in api_keys if str(k).strip()]
+        dedup: List[str] = []
+        for k in raw_list:
+            if k not in dedup:
+                dedup.append(k)
+        now = time.monotonic()
+        healthy = [k for k in dedup if self._key_cooldowns.get(k, 0.0) <= now]
+        cooling = [k for k in dedup if self._key_cooldowns.get(k, 0.0) > now]
+        return healthy + cooling
 
     @staticmethod
     def _default_client_factory(api_key: str) -> Any:
@@ -514,40 +587,31 @@ class ResilientGeminiClient:
 
     def generate_multimodal(
         self,
-        api_key: str,
+        api_key: str | Sequence[str],
         prompt: str,
         png_bytes: Optional[bytes] = None,
         primary_model: Optional[str] = None,
         fallback_models: Optional[Sequence[str]] = None,
         structured_json: bool = False,
+        on_token: Optional[Callable[[str], None]] = None,
     ) -> GeminiCallResult:
         """
         Execute multimodal Gemini request with:
         - Snapshot downscale to <= 1024px
+        - Multi-key rotation when multiple keys are configured
         - Exponential Backoff retries on HTTP 429 (`1s, 2s, 4s`)
         - Model fallback on HTTP 404 or exhausted 429
+        - Optional live token streaming via `on_token`
         - Structured Vietnamese error translation on failure
         """
-        clean_key = (api_key or "").strip()
-        if not clean_key:
+        keys = self._ordered_healthy_keys(api_key)
+        if not keys:
             return GeminiCallResult(
                 ok=False,
                 text="",
                 model_used="",
                 error_code=None,
                 error_message_vi="Chưa cấu hình GEMINI_API_KEY trong UI Settings hoặc file .env.",
-            )
-
-        try:
-            client = self._client_factory(clean_key)
-        except Exception as exc:
-            code, _, msg_vi = classify_gemini_error(exc)
-            return GeminiCallResult(
-                ok=False,
-                text="",
-                model_used="",
-                error_code=code,
-                error_message_vi=msg_vi,
             )
 
         compressed_png = compress_snapshot_png(png_bytes, max_dim=MAX_VISION_IMAGE_DIM)
@@ -564,33 +628,112 @@ class ResilientGeminiClient:
         total_attempts = 0
         last_code: Optional[int] = None
         last_msg = "Không thể kết nối Gemini API."
+        has_multi_keys = len(keys) > 1
 
-        for model_id in chain:
-            rate_limit_retries = 0
-            transient_retries = 0
-            while True:
-                total_attempts += 1
-                try:
-                    txt = self._invoke_generate(
-                        client,
-                        model_id=model_id,
-                        contents=contents,
-                        structured_json=structured_json,
-                    )
-                    if not txt:
-                        txt = "Không nhận được phản hồi văn bản từ Gemini."
-                    return GeminiCallResult(
-                        ok=True,
-                        text=txt,
-                        model_used=model_id,
-                        attempts=total_attempts,
-                    )
-                except Exception as exc:
-                    code, cat, msg_vi = classify_gemini_error(exc)
-                    last_code = code
-                    last_msg = msg_vi
+        for active_key in keys:
+            try:
+                client = self._client_factory(active_key)
+            except Exception as exc:
+                code, _, msg_vi = classify_gemini_error(exc)
+                last_code, last_msg = code, msg_vi
+                if has_multi_keys:
+                    continue
+                return GeminiCallResult(
+                    ok=False,
+                    text="",
+                    model_used="",
+                    error_code=code,
+                    error_message_vi=msg_vi,
+                )
 
-                    if cat in ("AUTH", "BAD_REQUEST"):
+            rotate_to_next_key = False
+            for model_id in chain:
+                rate_limit_retries = 0
+                transient_retries = 0
+                while True:
+                    total_attempts += 1
+                    try:
+                        stream_fn = getattr(getattr(client, "models", None), "generate_content_stream", None)
+                        if on_token is not None and not structured_json and callable(stream_fn):
+                            cfg_kwargs: Dict[str, Any] = {}
+                            if genai_types is not None and hasattr(genai_types, "GenerateContentConfig"):
+                                stream_iter = stream_fn(
+                                    model=model_id,
+                                    contents=contents,
+                                    config=genai_types.GenerateContentConfig(**cfg_kwargs),
+                                )
+                            else:
+                                stream_iter = stream_fn(model=model_id, contents=contents)
+                            chunks: List[str] = []
+                            for ev in stream_iter:
+                                piece = getattr(ev, "text", None) or ""
+                                if piece:
+                                    chunks.append(piece)
+                                    on_token(piece)
+                            txt = "".join(chunks).strip()
+                        else:
+                            txt = self._invoke_generate(
+                                client,
+                                model_id=model_id,
+                                contents=contents,
+                                structured_json=structured_json,
+                            )
+                            if on_token is not None and txt and not structured_json:
+                                on_token(txt)
+                        if not txt:
+                            txt = "Không nhận được phản hồi văn bản từ Gemini."
+                        return GeminiCallResult(
+                            ok=True,
+                            text=txt,
+                            model_used=model_id,
+                            attempts=total_attempts,
+                        )
+                    except Exception as exc:
+                        code, cat, msg_vi = classify_gemini_error(exc)
+                        last_code = code
+                        last_msg = msg_vi
+
+                        if cat in ("AUTH", "BAD_REQUEST"):
+                            if has_multi_keys and cat == "AUTH":
+                                self._key_cooldowns[active_key] = time.monotonic() + 300.0
+                                rotate_to_next_key = True
+                                break
+                            return GeminiCallResult(
+                                ok=False,
+                                text="",
+                                model_used=model_id,
+                                error_code=code,
+                                error_message_vi=msg_vi,
+                                attempts=total_attempts,
+                            )
+
+                        if cat == "NOT_FOUND":
+                            break
+
+                        if cat == "RATE_LIMIT":
+                            if has_multi_keys:
+                                self._key_cooldowns[active_key] = time.monotonic() + 45.0
+                                rotate_to_next_key = True
+                                break
+                            if rate_limit_retries < len(EXPONENTIAL_BACKOFF_DELAYS_SEC):
+                                delay = EXPONENTIAL_BACKOFF_DELAYS_SEC[rate_limit_retries]
+                                rate_limit_retries += 1
+                                self._sleep(delay)
+                                continue
+                            break
+
+                        if cat == "SERVER":
+                            if transient_retries < 2:
+                                delay = EXPONENTIAL_BACKOFF_DELAYS_SEC[transient_retries]
+                                transient_retries += 1
+                                self._sleep(delay)
+                                continue
+                            break
+
+                        if cat == "NETWORK" and transient_retries < 1:
+                            transient_retries += 1
+                            self._sleep(1.0)
+                            continue
                         return GeminiCallResult(
                             ok=False,
                             text="",
@@ -599,41 +742,8 @@ class ResilientGeminiClient:
                             error_message_vi=msg_vi,
                             attempts=total_attempts,
                         )
-
-                    if cat == "NOT_FOUND":
-                        # Immediately fall back to next model in chain
-                        break
-
-                    if cat == "RATE_LIMIT":
-                        if rate_limit_retries < len(EXPONENTIAL_BACKOFF_DELAYS_SEC):
-                            delay = EXPONENTIAL_BACKOFF_DELAYS_SEC[rate_limit_retries]
-                            rate_limit_retries += 1
-                            self._sleep(delay)
-                            continue
-                        # Exhausted 3 retries (1s, 2s, 4s) on this model -> try fallback model
-                        break
-
-                    if cat == "SERVER":
-                        if transient_retries < 2:
-                            delay = EXPONENTIAL_BACKOFF_DELAYS_SEC[transient_retries]
-                            transient_retries += 1
-                            self._sleep(delay)
-                            continue
-                        break
-
-                    # NETWORK or UNKNOWN
-                    if cat == "NETWORK" and transient_retries < 1:
-                        transient_retries += 1
-                        self._sleep(1.0)
-                        continue
-                    return GeminiCallResult(
-                        ok=False,
-                        text="",
-                        model_used=model_id,
-                        error_code=code,
-                        error_message_vi=msg_vi,
-                        attempts=total_attempts,
-                    )
+                if rotate_to_next_key:
+                    break
 
         return GeminiCallResult(
             ok=False,
